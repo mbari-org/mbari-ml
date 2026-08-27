@@ -1,4 +1,4 @@
-mbariml Cheat Sheet
+mbari-ml Cheat Sheet
 ========================================
 Regenerated for the unified `mbariml` CLI (v0.7.0). This walks through the
 pipeline in order, with one working example command per step. The full,
@@ -240,11 +240,11 @@ time to get the current, authoritative version of any of this.
 
 mbariml --help
 
-                                                                                                      
- Usage: mbariml [OPTIONS] COMMAND [ARGS]...                                                           
-                                                                                                      
- mbariml: YOLO detection -> embedding -> clustering -> curation pipeline.                             
-                                                                                                      
+
+ Usage: mbariml [OPTIONS] COMMAND [ARGS]...
+
+ mbariml: YOLO detection -> embedding -> clustering -> curation pipeline.
+
 ╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
 │ --install-completion          Install completion for the current shell.                            │
 │ --show-completion             Show completion for the current shell, to copy it or customize the   │
@@ -281,11 +281,11 @@ mbariml --help
 
 mbariml detect --help
 
-                                                                                                      
- Usage: mbariml detect [OPTIONS] {model_path} {image_dir} {output_dir}                                
-                                                                                                      
- Detect objects using YOLO, extract ROIs, and store results in a DuckDB database.                     
-                                                                                                      
+
+ Usage: mbariml detect [OPTIONS] {model_path} {image_dir} {output_dir}
+
+ Detect objects using YOLO, extract ROIs, and store results in a DuckDB database.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    model_path      <str>  Path to the YOLO model. [required]                                     │
 │ *    image_dir       <str>  Directory containing input images. [required]                          │
@@ -315,11 +315,11 @@ mbariml detect --help
 
 mbariml embed --help
 
-                                                                                                      
- Usage: mbariml embed [OPTIONS] {db_path}                                                             
-                                                                                                      
- Generate embeddings for ROIs stored as blobs in the database and update the database.                
-                                                                                                      
+
+ Usage: mbariml embed [OPTIONS] {db_path}
+
+ Generate embeddings for ROIs stored as blobs in the database and update the database.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database (from step 1). [required]                     │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -349,11 +349,11 @@ mbariml embed --help
 
 mbariml cluster --help
 
-                                                                                                      
- Usage: mbariml cluster [OPTIONS] {db_path}                                                           
-                                                                                                      
- Cluster ROI embeddings with EVoC and export review grids.                                            
-                                                                                                      
+
+ Usage: mbariml cluster [OPTIONS] {db_path}
+
+ Cluster ROI embeddings with EVoC and export review grids.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database (from step 1/2). [required]                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -403,11 +403,11 @@ mbariml cluster --help
 
 mbariml refine --help
 
-                                                                                                      
- Usage: mbariml refine [OPTIONS] {db_path} {output_dir}                                               
-                                                                                                      
- Cluster embeddings for a specific label into finer sub-clusters and generate ROI grids.              
-                                                                                                      
+
+ Usage: mbariml refine [OPTIONS] {db_path} {output_dir}
+
+ Cluster embeddings for a specific label into finer sub-clusters and generate ROI grids.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path         <str>  Path to the DuckDB database. [required]                                │
 │ *    output_dir      <str>  Directory to write filtered_roi_grids/ into. [required]                │
@@ -445,11 +445,11 @@ mbariml refine --help
 
 mbariml review --help
 
-                                                                                                      
- Usage: mbariml review [OPTIONS] {database_path}                                                      
-                                                                                                      
- Launch the interactive ROI review/labeling GUI (step 5).                                             
-                                                                                                      
+
+ Usage: mbariml review [OPTIONS] {database_path}
+
+ Launch the interactive ROI review/labeling GUI (step 5).
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    database_path      <str>  Path to the DuckDB database. [required]                             │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -463,15 +463,15 @@ mbariml review --help
 
 mbariml export-voc --help
 
-                                                                                                      
- Usage: mbariml export-voc [OPTIONS] {db_path} {output_dir}                                           
-                                                                                                      
- Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels used.          
-                                                                                                      
- Images are located via the path recorded at detection time -- no                                     
- separate image directory argument needed (removed in v0.3.0; it was a                                
- source of the image-name-collision bug described above).                                             
-                                                                                                      
+
+ Usage: mbariml export-voc [OPTIONS] {db_path} {output_dir}
+
+ Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels used.
+
+ Images are located via the path recorded at detection time -- no
+ separate image directory argument needed (removed in v0.3.0; it was a
+ source of the image-name-collision bug described above).
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path         <str>  Path to the DuckDB database. [required]                                │
 │ *    output_dir      <str>  Directory to write pascal_voc/ and new_names.txt into. [required]      │
@@ -484,15 +484,15 @@ mbariml export-voc --help
 
 mbariml html --help
 
-                                                                                                      
- Usage: mbariml html [OPTIONS] {db_path} {output_dir}                                                 
-                                                                                                      
- Generate a paginated HTML gallery of images and their labeled crops.                                 
-                                                                                                      
- Images are located via the path recorded at detection time -- no                                     
- separate image directory argument needed (removed in v0.3.0; it was a                                
- source of the image-name-collision bug described above).                                             
-                                                                                                      
+
+ Usage: mbariml html [OPTIONS] {db_path} {output_dir}
+
+ Generate a paginated HTML gallery of images and their labeled crops.
+
+ Images are located via the path recorded at detection time -- no
+ separate image directory argument needed (removed in v0.3.0; it was a
+ source of the image-name-collision bug described above).
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path         <str>  Path to the DuckDB database. [required]                                │
 │ *    output_dir      <str>  Directory to save the generated HTML files. [required]                 │
@@ -506,11 +506,11 @@ mbariml html --help
 
 mbariml query --help
 
-                                                                                                      
- Usage: mbariml query [OPTIONS] {db_path} {sql}                                                       
-                                                                                                      
- Run SQL against DB_PATH and print the result as a table.                                             
-                                                                                                      
+
+ Usage: mbariml query [OPTIONS] {db_path} {sql}
+
+ Run SQL against DB_PATH and print the result as a table.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
 │ *    sql          <str>  SQL to run, e.g. "SELECT new_label, COUNT(*) FROM predictions GROUP BY    │
@@ -527,12 +527,12 @@ mbariml query --help
 
 mbariml infer-images --help
 
-                                                                                                      
- Usage: mbariml infer-images [OPTIONS] {model_path} {input_dir} {output_dir}                          
-                                                                                                      
- Run YOLO inference over every image under INPUT_DIR and store detections (with ROI crops, ready for  
- review/clustering/export) in OUTPUT_DIR/yolo_predictions.duckdb.                                     
-                                                                                                      
+
+ Usage: mbariml infer-images [OPTIONS] {model_path} {input_dir} {output_dir}
+
+ Run YOLO inference over every image under INPUT_DIR and store detections (with ROI crops, ready for
+ review/clustering/export) in OUTPUT_DIR/yolo_predictions.duckdb.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    model_path      <str>  Path to a YOLO .pt model, or a stock Ultralytics model name.           │
 │                             [required]                                                             │
@@ -561,11 +561,11 @@ mbariml infer-images --help
 
 mbariml remap-labels --help
 
-                                                                                                      
- Usage: mbariml remap-labels [OPTIONS] {db_path} {changes_file}                                       
-                                                                                                      
- Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs from CHANGES_FILE.       
-                                                                                                      
+
+ Usage: mbariml remap-labels [OPTIONS] {db_path} {changes_file}
+
+ Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs from CHANGES_FILE.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path           <str>  Path to the DuckDB database. [required]                              │
 │ *    changes_file      <str>  CSV file of 'old_label,new_label' rows. [required]                   │
@@ -578,11 +578,11 @@ mbariml remap-labels --help
 
 mbariml backfill-sharpness --help
 
-                                                                                                      
- Usage: mbariml backfill-sharpness [OPTIONS] {db_path}                                                
-                                                                                                      
- Compute and store a sharpness (blur) score for every ROI, from its stored crop.                      
-                                                                                                      
+
+ Usage: mbariml backfill-sharpness [OPTIONS] {db_path}
+
+ Compute and store a sharpness (blur) score for every ROI, from its stored crop.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -596,11 +596,11 @@ mbariml backfill-sharpness --help
 
 mbariml export-ids --help
 
-                                                                                                      
- Usage: mbariml export-ids [OPTIONS] {db_path}                                                        
-                                                                                                      
- Write a *.id sidecar file next to each source image with at least one curated identification.        
-                                                                                                      
+
+ Usage: mbariml export-ids [OPTIONS] {db_path}
+
+ Write a *.id sidecar file next to each source image with at least one curated identification.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -614,15 +614,15 @@ mbariml export-ids --help
 
 mbariml run --help
 
-                                                                                                      
- Usage: mbariml run [OPTIONS] {model_path} {image_dir} {output_dir}                                   
-                                                                                                      
- Run the scriptable curation chain (detect -> embed -> cluster -> export-voc -> html).                
-                                                                                                      
- Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running                            
- with --from-step > 1 resumes against whatever is already in that database                            
- -- nothing upstream is re-run or overwritten.                                                        
-                                                                                                      
+
+ Usage: mbariml run [OPTIONS] {model_path} {image_dir} {output_dir}
+
+ Run the scriptable curation chain (detect -> embed -> cluster -> export-voc -> html).
+
+ Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
+ with --from-step > 1 resumes against whatever is already in that database
+ -- nothing upstream is re-run or overwritten.
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    model_path      <str>  Path to the YOLO model (used by the detect step). [required]           │
 │ *    image_dir       <str>  Directory containing input images. [required]                          │
