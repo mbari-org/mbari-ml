@@ -1,0 +1,23 @@
+# Fixed: this file previously contained a dump of raw `import` statements
+# copied from 5_roi_editor_gui.py (e.g. "from PySide6.QtCore import Qt"),
+# not actual pip requirements -- `pip install -r requirements.txt` would
+# have failed outright, silently leaving packages like duckdb/evoc
+# uninstalled. These are the real package names, pinned to what this
+# codebase was verified against.
+#
+# Prefer `pip install -e .` (see pyproject.toml) if you want the `mbariml`
+# command installed too; this file is kept for environments that just want
+# `pip install -r requirements.txt`.
+typer>=0.25
+duckdb>=1.5
+ultralytics>=8.4
+torch>=2.10
+torchvision>=0.25
+timm>=1.0.28
+pillow>=10.0
+opencv-python>=4.13
+numpy>=2.0
+pandas>=2.0
+tqdm>=4.67
+evoc>=0.3
+PySide6>=6.11
