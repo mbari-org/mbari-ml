@@ -158,7 +158,7 @@ def detect(
         final_count = db.row_count(conn)
 
         # Record which model produced this run, for provenance in later steps
-        # (e.g. `mbariml export-ids`). Replaces any previous record -- this
+        # (e.g. `mbariml export id`). Replaces any previous record -- this
         # reflects only the most recent `detect` run against this database.
         conn.execute("DELETE FROM run_info")
         conn.execute("INSERT INTO run_info VALUES (?, CURRENT_TIMESTAMP)", (model_path,))

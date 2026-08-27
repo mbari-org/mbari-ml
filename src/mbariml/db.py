@@ -5,7 +5,7 @@ including step 9 (inference): it stores the ROI image itself (as a JPEG
 blob), its embedding, and the human-curated ``new_label``. Step 9 used to
 write a separate, lighter schema (no ROI blob, no embedding) -- but that
 meant its output couldn't be fed into `mbariml review`, `cluster`, `refine`,
-`export-voc`, or `remap-labels` at all, none of which is what you want from
+`export voc`, or `remap-labels` at all, none of which is what you want from
 a "run inference on a new survey, then review/export it" workflow. Every
 step now reads/writes the same schema, so any step's output is usable by
 any other step that needs what it has.

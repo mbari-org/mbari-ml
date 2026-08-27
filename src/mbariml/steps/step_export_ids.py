@@ -1,8 +1,8 @@
 """Export *.id identification sidecar files into the mission directory structure.
 
 For every source image that has at least one curated identification
-(``new_label`` set, excluding ``noise`` -- the same convention as the
-Pascal VOC export in step 6), writes a ``<image_stem>.id`` file *next to
+(``new_label`` set, excluding ``noise`` -- the same convention as
+``export voc``/``export yolo``), writes a ``<image_stem>.id`` file *next to
 that image* (wherever it actually lives on disk -- this walks whatever path
 was recorded in ``image_path`` at detection time, so it naturally follows
 the mission's own directory structure without needing a separate

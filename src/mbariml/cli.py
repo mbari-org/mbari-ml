@@ -14,13 +14,19 @@ runs an already-trained model over new data -- a different job, hence the
 separate name rather than folding it into ``detect``.
 
 ``mbariml run`` additionally chains the scriptable steps of the curation
-pipeline (1 detect -> 2 embed -> 3 cluster -> 6 export-voc -> 7 html) for
+pipeline (1 detect -> 2 embed -> 3 cluster -> 6 export voc -> 7 html) for
 convenience, and can start or stop anywhere in that chain via
 ``--from-step``/``--to-step``. Step 5 (the interactive review GUI) and step 8
 (ad hoc queries) are not part of that chain since they aren't scriptable/
 batch operations; step 9 (inference) and step 10 (label remapping) are
 intentionally excluded from ``run`` too, since they aren't links in the same
 database's chain -- run them directly with their own subcommand instead.
+
+``mbariml export`` groups every downstream annotation-format export under
+one subcommand (``export voc``, ``export yolo``, ``export id``) rather than
+a flat ``export-voc``/``export-ids`` per format (pre-v0.8.0); ``mbariml
+stats`` is a separate, read-only command for label counts and per-image
+detection stats, not an export.
 """
 
 from __future__ import annotations
@@ -43,6 +49,8 @@ from mbariml.steps import (
     step10_remap_labels,
     step_backfill_sharpness,
     step_export_ids,
+    step_export_yolo,
+    step_stats,
 )
 
 logger = get_logger(__name__)
@@ -53,13 +61,23 @@ app.command("detect")(step1_detect.detect)
 app.command("embed")(step2_embed.embed)
 app.command("cluster")(step3_cluster_evoc.cluster)
 app.command("refine")(step4_cluster_refine.refine)
-app.command("export-voc")(step6_export_voc.export_voc)
 app.command("html")(step7_generate_html.generate_html)
 app.command("query")(step8_query.query)
 app.command("infer-images")(step9_inference.infer)
 app.command("remap-labels")(step10_remap_labels.remap_labels)
 app.command("backfill-sharpness")(step_backfill_sharpness.backfill_sharpness)
-app.command("export-ids")(step_export_ids.export_ids)
+app.command("stats")(step_stats.stats)
+
+# `mbariml export {voc,yolo,id}` -- one downstream annotation format per
+# subcommand, each writing its own image_manifest.csv/copy_images.py (voc,
+# yolo) so the matching source images can be pulled later (see
+# mbariml.export_common). Replaces the old flat `export-voc`/`export-ids`
+# commands (v0.8.0) now that there's a third format (yolo) to group with them.
+export_app = typer.Typer(help="Export curated labels to a specific downstream annotation format.")
+export_app.command("voc")(step6_export_voc.export_voc)
+export_app.command("yolo")(step_export_yolo.export_yolo)
+export_app.command("id")(step_export_ids.export_ids)
+app.add_typer(export_app, name="export")
 
 
 @app.command("review")
@@ -76,7 +94,7 @@ def review(
 
 
 # The scriptable curation chain, in order. Each entry is (step number, label).
-_CHAIN_STEPS = [(1, "detect"), (2, "embed"), (3, "cluster"), (6, "export-voc"), (7, "html")]
+_CHAIN_STEPS = [(1, "detect"), (2, "embed"), (3, "cluster"), (6, "export voc"), (7, "html")]
 
 
 @app.command("run")
@@ -96,7 +114,7 @@ def run(
     approx_n_clusters: Optional[int] = typer.Option(18, help="Passed through to step 3; see `mbariml cluster --help`."),
     noise_level: float = typer.Option(0.2, help="Passed through to step 3; see `mbariml cluster --help`."),
 ) -> None:
-    """Run the scriptable curation chain (detect -> embed -> cluster -> export-voc -> html).
+    """Run the scriptable curation chain (detect -> embed -> cluster -> export voc -> html).
 
     Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
     with --from-step > 1 resumes against whatever is already in that database
@@ -142,7 +160,7 @@ def run(
                 approx_n_clusters=approx_n_clusters, noise_level=noise_level,
                 base_min_cluster_size=2, n_neighbors=40, min_samples=5, seed=seed,
             )
-        elif name == "export-voc":
+        elif name == "export voc":
             step6_export_voc.export_voc(str(db_path), str(output_dir_path))
         elif name == "html":
             step7_generate_html.generate_html(str(db_path), str(output_dir_path / "html"), items_per_page=250)

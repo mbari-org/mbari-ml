@@ -10,13 +10,14 @@ import typer
 from tqdm import tqdm
 
 from mbariml import db
+from mbariml.export_common import write_image_manifest_and_script
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Export curated labels to Pascal VOC XML annotation files.")
 logger = get_logger(__name__)
 
 
-def _export_to_pascal_voc(conn, output_dir: Path) -> int:
+def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
     """Bug fixed here: this used to group detections by bare image_name and
     reconstruct the path as image_dir/image_name. For a mission with nested
     per-dive subdirectories, two images with the same filename in different
@@ -91,7 +92,7 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> int:
 
     if missing:
         logger.warning("%d image(s) recorded in the database could not be found on disk and were skipped.", missing)
-    return written
+    return written, list(grouped.keys())
 
 
 def _export_new_names(conn, output_dir: Path) -> Path:
@@ -104,19 +105,25 @@ def _export_new_names(conn, output_dir: Path) -> Path:
 @app.command()
 def export_voc(
     db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
-    output_dir: str = typer.Argument(..., help="Directory to write pascal_voc/ and new_names.txt into."),
+    output_dir: str = typer.Argument(
+        ..., help="Directory to write pascal_voc/, new_names.txt, and the image manifest/copy script into."
+    ),
 ) -> None:
     """Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels used.
 
     Images are located via the path recorded at detection time -- no
     separate image directory argument needed (removed in v0.3.0; it was a
-    source of the image-name-collision bug described above).
+    source of the image-name-collision bug described above). Also writes
+    image_manifest.csv and copy_images.py (see mbariml.export_common) so the
+    matching source images can be pulled down later, e.g. to Desktop.
     """
     output_dir_path = Path(output_dir)
 
     with db.connect(db_path) as conn:
-        written = _export_to_pascal_voc(conn, output_dir_path)
+        written, image_paths = _export_to_pascal_voc(conn, output_dir_path)
         names_file = _export_new_names(conn, output_dir_path)
+
+    write_image_manifest_and_script(image_paths, output_dir_path, export_name="voc")
 
     logger.info("Wrote %d Pascal VOC annotation file(s) to %s", written, output_dir_path / "pascal_voc")
     logger.info("Wrote distinct label list to %s", names_file)

@@ -1,9 +1,10 @@
-# mbariml pipeline
+# mbari-ml pipeline
 
 A chain of steps that go from raw survey imagery to a curated, labeled
 DuckDB database: **detect → embed → cluster → refine → review → export →
 query → remap**, plus a standalone **infer** step for running an
-already-trained model on a new batch of images.
+already-trained model on a new batch of images, and a **stats** command for
+label counts and per-image detection stats.
 
 ## Setup
 
@@ -50,19 +51,27 @@ All subcommands:
 | `mbariml cluster`       | 3  | Cluster embeddings with EVoC, tag dominant labels, export review grids |
 | `mbariml refine`        | 4  | Re-cluster one label's ROIs into finer sub-clusters |
 | `mbariml review`        | 5  | Interactive GUI for labeling/deleting ROIs |
-| `mbariml export-voc`    | 6  | Export curated labels as Pascal VOC XML |
+| `mbariml export voc`    | 6  | Export curated labels as Pascal VOC XML (see below) |
+| `mbariml export yolo`   | 6  | Export curated labels as YOLO-format label files + names.txt (see below) |
 | `mbariml html`          | 7  | Paginated HTML gallery of images + crops |
 | `mbariml query`         | 8  | Run ad hoc SQL against a database |
 | `mbariml infer-images`         | 9  | Run a trained model over new images (standalone) |
 | `mbariml remap-labels`  | 10 | Bulk-rename `new_label` values from a CSV |
 | `mbariml backfill-sharpness` | -  | Compute real sharpness scores for a database created before step 1 did (see below) |
-| `mbariml export-ids`    | -  | Write a `*.id` sidecar file next to each source image with a curated identification (see below) |
+| `mbariml export id`     | -  | Write a `*.id` sidecar file next to each source image with a curated identification (see below) |
+| `mbariml stats`         | -  | Label counts, boxes-per-image stats, and an optional image × label count matrix CSV (see below) |
 
-Note: `export-voc` and `html` no longer take an `image_dir` argument (removed
-in v0.3.0) — images are located via the path recorded at detection time,
-which also fixes a real bug (see "What changed" below).
+`mbariml export {voc,yolo,id}` groups every downstream annotation-format
+export under one subcommand (before v0.8.0 these were flat `export-voc` /
+`export-ids` commands, with no YOLO format at all).
 
-Run `mbariml <command> --help` for each step's full option list.
+Note: `export voc`/`export yolo` and `html` don't take an `image_dir`
+argument (removed in v0.3.0, before the `export` group existed) — images are
+located via the path recorded at detection time, which also fixes a real bug
+(see "What changed" below).
+
+Run `mbariml <command> --help` for each step's full option list (`mbariml
+export --help` for the export group itself).
 
 ### Using the review GUI (step 5) well
 
@@ -205,15 +214,45 @@ in an explicit transaction. Steps 1 and 9 already committed incrementally
 per image/batch for resumability -- that's unchanged; this fix is about
 what happens *inside* each of those commits, not how often they happen.
 
+### Exporting to YOLO format, and pulling the matching images
+
+`mbariml export yolo DB_PATH OUTPUT_DIR` writes curated labels (`new_label`,
+excluding `noise`) as YOLO-format label files — one `labels/<name>.txt` per
+image, each line `class_id x_center y_center width height` normalized
+against that image's actual pixel dimensions — plus `names.txt` (class index
+→ label, in the order the label files use):
+
+```bash
+mbariml export yolo /data/survey_results/yolo_predictions.duckdb /data/survey_results/yolo_out/
+```
+
+It deliberately doesn't copy the source images into an `images/` folder
+itself (they already exist on the survey volume this ran against). Instead,
+`export yolo` and `export voc` both also write `image_manifest.csv` (every
+distinct source image referenced, mapped to a collision-safe destination
+filename) and a standalone `copy_images.py` next to it. Run that script
+later — from this machine or any other that can see the recorded source
+paths — to actually pull the matching images down, e.g. to Desktop or
+straight into an `images/` directory next to the label files:
+
+```bash
+python3 /data/survey_results/yolo_out/copy_images.py
+python3 /data/survey_results/yolo_out/copy_images.py --dest /data/survey_results/yolo_out/images
+```
+
+`copy_images.py` is stdlib-only (`argparse`/`csv`/`shutil`/`pathlib`) and
+doesn't import `mbariml` — it's meant to be portable, not tied to this repo
+being installed wherever it eventually runs.
+
 ### Exporting `*.id` identification files
 
-`mbariml export-ids DB_PATH` writes a `<image_stem>.id` sidecar file next to
+`mbariml export id DB_PATH` writes a `<image_stem>.id` sidecar file next to
 every source image that has at least one curated identification (`new_label`
 set, excluding `noise`) — wherever that image actually lives on disk, so it
 naturally follows a nested mission directory structure:
 
 ```bash
-mbariml export-ids /data/survey_results/yolo_predictions.duckdb
+mbariml export id /data/survey_results/yolo_predictions.duckdb
 ```
 
 Each file has a header (generator + version, the user who ran the export,
@@ -226,7 +265,7 @@ to be filled in later by a separate navigation-merge process:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.7.0
+# generator: mbariml v0.8.0
 # generated_by: lonny
 # generated_at: 2026-08-19T17:36:28Z
 # model: /path/to/best.pt
@@ -238,13 +277,40 @@ to be filled in later by a separate navigation-merge process:
 1 Actiniaria 0.6110  40,200,0.0,0.0,0.0  95,200,0.0,0.0,0.0  95,260,0.0,0.0,0.0  40,260,0.0,0.0,0.0
 ```
 
+### Label counts and per-image detection stats
+
+`mbariml stats DB_PATH` prints two tables to the console: label counts (with
+percent of total) and boxes-per-image summary stats (avg/min/median/max,
+across every image with at least one detection). Both use
+`COALESCE(new_label, label)` as the effective label — the same per-row
+fallback `html` uses — so this is useful both before curation (nothing but
+the raw YOLO `label` yet) and after (`new_label` set). `noise` is included
+by default (useful while curating, to see how much of the database is still
+noise/unlabeled); pass `--exclude-noise` once you want real-identification
+counts only:
+
+```bash
+mbariml stats /data/survey_results/yolo_predictions.duckdb
+mbariml stats /data/survey_results/yolo_predictions.duckdb --exclude-noise --top 20
+```
+
+Pass `--output-dir` to also write `label_by_image_matrix.csv` — an image ×
+label count matrix (rows are images, columns are labels, values are box
+counts) for granular, per-concept-per-image analysis, e.g. loading straight
+into pandas/R for ecological statistics (per-image richness, per-label
+frequency-of-occurrence across images, etc.):
+
+```bash
+mbariml stats /data/survey_results/yolo_predictions.duckdb --output-dir /data/survey_results/stats/
+```
+
 ## Running the whole curation chain
 
 ```bash
 mbariml run best.pt /data/survey_images/ /data/survey_results/
 ```
 
-This chains detect → embed → cluster → export-voc → html against
+This chains detect → embed → cluster → export voc → html against
 `/data/survey_results/yolo_predictions.duckdb`. Use `--from-step`/`--to-step`
 (values from `1, 2, 3, 6, 7`) to run only part of it — e.g. to resume after
 already reviewing in the GUI and just re-export:
@@ -255,9 +321,25 @@ mbariml run best.pt /data/survey_images/ /data/survey_results/ --from-step 6 --t
 
 Step 5 (interactive review) and step 8 (queries) aren't part of `run` since
 they're not batch operations. Step 9 (`infer`) and 10 (`remap-labels`) also
-aren't, since they don't chain against the same database — run them directly.
+aren't, since they don't chain against the same database — run them
+directly. `export yolo`/`export id` and `stats` aren't part of the chain
+either — run them directly, any time, against whatever database `run` (or
+any individual step) already produced.
 
 ## What changed from the original scripts
+
+**`export`/`stats` restructuring (v0.8.0)**: the flat `export-voc` and
+`export-ids` commands are now grouped as `mbariml export voc` and `mbariml
+export id`, alongside a new `mbariml export yolo` (YOLO-format label files +
+`names.txt`) — one downstream annotation format per subcommand instead of a
+flat command per format, now that there are three. `export voc`/`export
+yolo` also each write `image_manifest.csv` + a standalone `copy_images.py`
+so the matching source images can be pulled down later (e.g. to Desktop)
+without walking the mission's own nested directory structure by hand — see
+"Exporting to YOLO format, and pulling the matching images" above. New
+`mbariml stats` command for label counts, boxes-per-image summary stats, and
+an optional image × label count matrix CSV for ecological analysis — see
+"Label counts and per-image detection stats" above.
 
 **Clustering (step 3) could take hours with no visible progress, and
 DuckDB's Python driver fsyncs per statement by default (v0.7.0 fix)**: see
@@ -305,7 +387,7 @@ separately rather than guessing:
 
 **Step 9's database used a different schema than every other step**, missing
 `roi_index`, `roi` (the actual crop blob), `embedding`, and `new_label`.
-That meant `mbariml review`, `cluster`, `refine`, `export-voc`, and
+That meant `mbariml review`, `cluster`, `refine`, `export voc`, and
 `remap-labels` would all fail outright against step 9's output -- only
 `html` and `query` happened to work. Fixed by having step 9 write the same
 curation schema as every other step (cropping each ROI directly from
@@ -320,7 +402,7 @@ yet curated, `new_label` NULL on every row) would show "None" as every
 crop's caption instead of the model's actual prediction. Fixed to fall back
 per *row* (`COALESCE(new_label, label)`) instead.
 
-**Cross-dive image collision bug (export-voc, html)**: both used to group
+**Cross-dive image collision bug (export voc, html)**: both used to group
 detections by *bare filename* and reconstruct each image's path as
 `image_dir / image_name`. For a mission with nested per-dive subdirectories,
 two images with the same filename in different dives (e.g.
@@ -329,7 +411,7 @@ both got silently mapped onto whichever single flat path happened to exist —
 merging detections from different dives onto the wrong image, or exporting
 one dive's identifications under the other's filename. Fixed by grouping on
 the full `image_path` already recorded at detection time (which is also why
-`export-voc`/`html` no longer need a separate `image_dir` argument), and by
+`export voc`/`html` no longer need a separate `image_dir` argument), and by
 disambiguating output filenames with their parent directory name. Verified
 with two images sharing a filename in different subdirectories.
 

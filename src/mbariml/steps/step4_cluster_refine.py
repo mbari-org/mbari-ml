@@ -83,7 +83,7 @@ def _label_for_cluster(cluster_id: int, new_label: str) -> str:
 
     cluster_id == -1 is EVoC's "still not clustered" bucket, mapped to the
     literal string "noise" -- matching step 3's convention. Every export
-    step (export-voc, export-ids, ...) filters on ``new_label != 'noise'``,
+    step (export voc, export yolo, export id, ...) filters on ``new_label != 'noise'``,
     so a still-noise point must keep exactly that label; an earlier revision
     of this function instead produced e.g. "noise_1" for it, which silently
     escaped that filter and would have counted as a curated identification.

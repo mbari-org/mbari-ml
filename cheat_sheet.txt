@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.7.0). This walks through the
+Regenerated for the unified `mbariml` CLI (v0.8.0). This walks through the
 pipeline in order, with one working example command per step. The full,
 authoritative --help output for every command is captured verbatim at the
 bottom of this file -- if this walkthrough and --help ever disagree, trust
@@ -18,6 +18,11 @@ HOW TO READ A TYPER COMMAND (read this once)
 ---------------------------------------------
 Every command has the shape:
     mbariml <command> [ARGUMENTS] [OPTIONS]
+
+Some commands are grouped under a sub-command, e.g. `mbariml export voc` --
+`export` itself isn't runnable, it just groups `voc`/`yolo`/`id` under one
+name; run `mbariml export --help` to see the group, `mbariml export voc
+--help` for that specific subcommand's own arguments/options.
 
 - ARGUMENTS are positional, required, and passed in order with no flag --
   e.g. in `mbariml detect models/best.pt /data/images/ /data/out/` the three
@@ -151,11 +156,33 @@ STEP 5 -- review (interactive GUI)
   for "Delete". A single image with hundreds of detections caps the boxes
   shown (an image's own status line says so) to keep this responsive.
 
-STEP 6 -- export-voc
-  Export curated labels (new_label, excluding "noise") as Pascal VOC XML,
-  plus a new_names.txt list of every distinct label used.
+STEP 6 -- export (voc / yolo / id)
+  Export curated labels (new_label, excluding "noise") to whichever
+  downstream annotation format you need. All three subcommands share the
+  same convention: images are located via the path recorded at detection
+  time, so no separate image_dir argument is needed, and output filenames
+  are disambiguated with their parent directory name so two dives sharing a
+  filename (e.g. dive01/img_0001.jpg and dive02/img_0001.jpg) never collide.
 
-    mbariml export-voc /data/survey_results/yolo_predictions.duckdb /data/survey_results/
+    mbariml export voc /data/survey_results/yolo_predictions.duckdb /data/survey_results/voc_out/
+    mbariml export yolo /data/survey_results/yolo_predictions.duckdb /data/survey_results/yolo_out/
+    mbariml export id /data/survey_results/yolo_predictions.duckdb
+
+  export voc -- Pascal VOC XML, one file per image, in pascal_voc/, plus
+  new_names.txt (every distinct label used).
+
+  export yolo -- YOLO-format label files, one file per image in labels/
+  (normalized `class_id x_center y_center width height` per line), plus
+  names.txt (class index -> label, in the same order the label files use).
+  Doesn't copy the source images into an images/ folder itself -- see
+  "Image manifest + copy_images.py" below to actually assemble a
+  self-contained, trainable images/ + labels/ dataset.
+
+  export id -- see the export-ids description under UTILITIES below (it
+  doesn't take an output_dir -- files are written next to the originals).
+
+  export voc/yolo also each write image_manifest.csv and copy_images.py
+  into their output_dir -- see "Image manifest + copy_images.py" below.
 
 STEP 7 -- html
   Generate a paginated HTML gallery of images and their labeled crops --
@@ -165,6 +192,8 @@ STEP 7 -- html
 
 STEP 8 -- query (as needed, any time)
   Run any SQL you want against the database -- spot checks, counts, etc.
+  (For routine label-count/boxes-per-image numbers, prefer `mbariml stats`
+  under UTILITIES below -- it's the same kind of query, already written.)
 
     mbariml query /data/survey_results/yolo_predictions.duckdb "SELECT new_label, COUNT(*) FROM predictions GROUP BY 1 ORDER BY 2 DESC"
 
@@ -198,18 +227,56 @@ backfill-sharpness -- compute real sharpness (blur) scores for a database
 
     mbariml backfill-sharpness /data/survey_results/yolo_predictions.duckdb
 
-export-ids -- write a *.id sidecar file next to each source image that has
-  at least one curated identification (new_label set, not "noise"), wherever
-  that image actually lives on disk. Header records the model, who ran it,
-  and when; each identification is a 4-vertex pixel polygon with lon/lat/
-  depth left as 0.0 placeholders for a later navigation-merge step:
+export id (== `mbariml export-ids` in versions before v0.8.0) -- write a
+  *.id sidecar file next to each source image that has at least one curated
+  identification (new_label set, not "noise"), wherever that image actually
+  lives on disk. Header records the model, who ran it, and when; each
+  identification is a 4-vertex pixel polygon with lon/lat/depth left as 0.0
+  placeholders for a later navigation-merge step:
 
-    mbariml export-ids /data/survey_results/yolo_predictions.duckdb
+    mbariml export id /data/survey_results/yolo_predictions.duckdb
+
+stats -- print label counts (with percent of total) and boxes-per-image
+  summary stats (avg/min/median/max across all images with at least one
+  detection); optionally also write an image x label count matrix CSV --
+  rows are images, columns are labels, values are box counts -- for
+  downstream ecological analysis (per-concept counts per image). Uses
+  new_label where curated, falling back to the raw detected label where it
+  isn't (same COALESCE(new_label, label) convention `html` uses), so it's
+  useful both before and after review/clustering. Includes "noise" by
+  default (useful while curating, to see how much is still noise/unlabeled)
+  -- pass --exclude-noise once you want real-identification-only counts:
+
+    mbariml stats /data/survey_results/yolo_predictions.duckdb --output-dir /data/survey_results/stats/
+    mbariml stats /data/survey_results/yolo_predictions.duckdb --exclude-noise --top 20
+
+  Produces (with --output-dir): stats/label_by_image_matrix.csv. Read it
+  straight into pandas/R/Excel for the actual ecological stats work
+  (per-image richness, per-label frequency-of-occurrence across images,
+  etc.) -- this command only computes the raw counts, not those derived
+  statistics.
+
+Image manifest + copy_images.py (written by `export voc` / `export yolo`)
+  Both export formats write annotation files, not image copies -- the
+  source images already exist wherever the mission's own directory
+  structure put them. Each also writes image_manifest.csv (source_path ->
+  a collision-safe dest_filename, one row per distinct image referenced)
+  and a standalone copy_images.py next to it. Running that script later
+  pulls the actual images to a destination directory (default
+  ~/Desktop/<voc|yolo>_images):
+
+    python3 /data/survey_results/voc_out/copy_images.py
+    python3 /data/survey_results/voc_out/copy_images.py --dest ~/Desktop/my_training_images
+
+  copy_images.py is stdlib-only (argparse/csv/shutil/pathlib) and doesn't
+  import mbariml -- it's meant to run standalone later, from any machine
+  that can see the source paths recorded in the manifest, without needing
+  this repo installed there.
 
 SHORTCUT: RUN THE WHOLE CHAIN AT ONCE
 ========================================
-`mbariml run` chains detect -> embed -> cluster -> export-voc -> html against
-one database:
+`mbariml run` chains detect -> embed -> cluster -> export voc -> html
+against one database:
 
     mbariml run models/best.pt /data/survey_images/ /data/survey_results/
 
@@ -230,425 +297,489 @@ For every other EVoC knob (--base-min-cluster-size, --n-neighbors,
 Step 5 (review) and step 8 (query) aren't part of this chain since they
 aren't batch operations. Step 9 (infer-images) and step 10 (remap-labels) aren't
 either, since they don't chain against the same database -- run those
-directly with their own subcommand.
+directly with their own subcommand. `mbariml export yolo`/`export id` and
+`mbariml stats` also aren't part of the chain -- run them directly whenever
+you want them, against whatever database `run` (or any individual step)
+already produced.
 
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.7.0. Run `mbariml <command> --help` yourself any
+Captured verbatim against v0.8.0. Run `mbariml <command> --help` yourself any
 time to get the current, authoritative version of any of this.
 
 mbariml --help
 
 
- Usage: mbariml [OPTIONS] COMMAND [ARGS]...
+ Usage: mbariml [OPTIONS] COMMAND [ARGS]...                                                         
 
- mbariml: YOLO detection -> embedding -> clustering -> curation pipeline.
+ mbariml: YOLO detection -> embedding -> clustering -> curation pipeline.                           
 
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --install-completion          Install completion for the current shell.                            │
-│ --show-completion             Show completion for the current shell, to copy it or customize the   │
-│                               installation.                                                        │
-│ --help                        Show this message and exit.                                          │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ─────────────────────────────────────────────────────────────────────────────────────────╮
-│ detect              Detect objects using YOLO, extract ROIs, and store results in a DuckDB         │
-│                     database.                                                                      │
-│ embed               Generate embeddings for ROIs stored as blobs in the database and update the    │
-│                     database.                                                                      │
-│ cluster             Cluster ROI embeddings with EVoC and export review grids.                      │
-│ refine              Cluster embeddings for a specific label into finer sub-clusters and generate   │
-│                     ROI grids.                                                                     │
-│ export-voc          Export curated labels to Pascal VOC XML files, plus a list of the distinct new │
-│                     labels used.                                                                   │
-│ html                Generate a paginated HTML gallery of images and their labeled crops.           │
-│ query               Run SQL against DB_PATH and print the result as a table.                       │
-│ infer-images        Run YOLO inference over every image under INPUT_DIR and store detections       │
-│                     (with ROI crops, ready for review/clustering/export) in                        │
-│                     OUTPUT_DIR/yolo_predictions.duckdb.                                            │
-│ remap-labels        Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs    │
-│                     from CHANGES_FILE.                                                             │
-│ backfill-sharpness  Compute and store a sharpness (blur) score for every ROI, from its stored      │
-│                     crop.                                                                          │
-│ export-ids          Write a *.id sidecar file next to each source image with at least one curated  │
-│                     identification.                                                                │
-│ review              Launch the interactive ROI review/labeling GUI (step 5).                       │
-│ run                 Run the scriptable curation chain (detect -> embed -> cluster -> export-voc -> │
-│                     html).                                                                         │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --install-completion          Install completion for the current shell.                          │
+│ --show-completion             Show completion for the current shell, to copy it or customize the │
+│                               installation.                                                      │
+│ --help                        Show this message and exit.                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ detect              Detect objects using YOLO, extract ROIs, and store results in a DuckDB       │
+│                     database.                                                                    │
+│ embed               Generate embeddings for ROIs stored as blobs in the database and update the  │
+│                     database.                                                                    │
+│ cluster             Cluster ROI embeddings with EVoC and export review grids.                    │
+│ refine              Cluster embeddings for a specific label into finer sub-clusters and generate │
+│                     ROI grids.                                                                   │
+│ html                Generate a paginated HTML gallery of images and their labeled crops.         │
+│ query               Run SQL against DB_PATH and print the result as a table.                     │
+│ infer-images        Run YOLO inference over every image under INPUT_DIR and store detections     │
+│                     (with ROI crops, ready for review/clustering/export) in                      │
+│                     OUTPUT_DIR/yolo_predictions.duckdb.                                          │
+│ remap-labels        Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs  │
+│                     from CHANGES_FILE.                                                           │
+│ backfill-sharpness  Compute and store a sharpness (blur) score for every ROI, from its stored    │
+│                     crop.                                                                        │
+│ stats               Print label counts and per-image detection stats; optionally write an        │
+│                     image x label count matrix CSV for downstream ecological analysis.           │
+│ review              Launch the interactive ROI review/labeling GUI (step 5).                     │
+│ run                 Run the scriptable curation chain (detect -> embed -> cluster -> export voc  │
+│                     -> html).                                                                    │
+│ export              Export curated labels to a specific downstream annotation format.            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml detect --help
 
 
- Usage: mbariml detect [OPTIONS] {model_path} {image_dir} {output_dir}
+ Usage: mbariml detect [OPTIONS] {model_path} {image_dir} {output_dir}                              
 
- Detect objects using YOLO, extract ROIs, and store results in a DuckDB database.
+ Detect objects using YOLO, extract ROIs, and store results in a DuckDB database.                   
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    model_path      <str>  Path to the YOLO model. [required]                                     │
-│ *    image_dir       <str>  Directory containing input images. [required]                          │
-│ *    output_dir      <str>  Directory to save the database and class-name file. [required]         │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --limit                     <int>    Limit the number of images processed.                         │
-│ --random     --no-random             With --limit, take a seeded random sample spread across       │
-│                                      image_dir instead of the first N in sorted order. Useful for  │
-│                                      right-sizing a real run (e.g. --limit 1000 out of 9000+       │
-│                                      images), not just a quick test -- sorted-order limiting on a  │
-│                                      chronologically-named survey is a contiguous time slice, not  │
-│                                      a representative sample.                                      │
-│                                      [default: no-random]                                          │
-│ --seed                      <int>    Random seed for --random. Same directory + --limit + --seed   │
-│                                      always picks the same images.                                 │
-│ --conf                      <float>  Confidence threshold. [default: 0.005]                        │
-│ --iou                       <float>  IoU threshold. [default: 0.05]                                │
-│ --max-det                   <int>    Maximum detections per image. [default: 500]                  │
-│ --imgsz                     <int>    Inference image size. [default: 1952]                         │
-│ --device                    <str>    Device to run on: 'auto', 'mps', 'cuda', or 'cpu'.            │
-│                                      [default: auto]                                               │
-│ --help                               Show this message and exit.                                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    model_path      <str>  Path to the YOLO model. [required]                                   │
+│ *    image_dir       <str>  Directory containing input images. [required]                        │
+│ *    output_dir      <str>  Directory to save the database and class-name file. [required]       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --limit                     <int>    Limit the number of images processed.                       │
+│ --random     --no-random             With --limit, take a seeded random sample spread across     │
+│                                      image_dir instead of the first N in sorted order. Useful    │
+│                                      for right-sizing a real run (e.g. --limit 1000 out of 9000+ │
+│                                      images), not just a quick test -- sorted-order limiting on  │
+│                                      a chronologically-named survey is a contiguous time slice,  │
+│                                      not a representative sample.                                │
+│                                      [default: no-random]                                        │
+│ --seed                      <int>    Random seed for --random. Same directory + --limit + --seed │
+│                                      always picks the same images.                               │
+│ --conf                      <float>  Confidence threshold. [default: 0.005]                      │
+│ --iou                       <float>  IoU threshold. [default: 0.05]                              │
+│ --max-det                   <int>    Maximum detections per image. [default: 500]                │
+│ --imgsz                     <int>    Inference image size. [default: 1952]                       │
+│ --device                    <str>    Device to run on: 'auto', 'mps', 'cuda', or 'cpu'.          │
+│                                      [default: auto]                                             │
+│ --help                               Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml embed --help
 
 
- Usage: mbariml embed [OPTIONS] {db_path}
+ Usage: mbariml embed [OPTIONS] {db_path}                                                           
 
- Generate embeddings for ROIs stored as blobs in the database and update the database.
+ Generate embeddings for ROIs stored as blobs in the database and update the database.              
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path      <str>  Path to the DuckDB database (from step 1). [required]                     │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --limit                           <int>  Limit the number of ROIs processed, for testing.          │
-│ --batch-size                      <int>  Number of ROIs embedded per forward pass. Bigger is       │
-│                                          faster on a GPU/MPS up to a point; shrink it if you hit   │
-│                                          an out-of-memory error.                                   │
-│                                          [default: 32]                                             │
-│ --decode-workers                  <int>  Threads used to decode/preprocess ROIs in parallel        │
-│                                          (CPU-bound work, independent of the GPU forward pass). 0  │
-│                                          (default) auto-picks min(16, cpu_count).                  │
-│                                          [default: 0]                                              │
-│ --flush-size                      <int>  Apply this many newly-computed embeddings to the database │
-│                                          per bulk UPDATE. Larger means fewer, bigger writes (much  │
-│                                          faster on DuckDB); smaller means less work lost if the    │
-│                                          run is interrupted between flushes.                       │
-│                                          [default: 2000]                                           │
-│ --force             --no-force           Recompute embeddings even for ROIs that already have one. │
-│                                          Required after changing EMBEDDING_MODEL_NAME -- never mix │
-│                                          embeddings from two different models in one database.     │
-│                                          [default: no-force]                                       │
-│ --help                                   Show this message and exit.                               │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database (from step 1). [required]                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --limit                           <int>  Limit the number of ROIs processed, for testing.        │
+│ --batch-size                      <int>  Number of ROIs embedded per forward pass. Bigger is     │
+│                                          faster on a GPU/MPS up to a point; shrink it if you hit │
+│                                          an out-of-memory error.                                 │
+│                                          [default: 32]                                           │
+│ --decode-workers                  <int>  Threads used to decode/preprocess ROIs in parallel      │
+│                                          (CPU-bound work, independent of the GPU forward pass).  │
+│                                          0 (default) auto-picks min(16, cpu_count).              │
+│                                          [default: 0]                                            │
+│ --flush-size                      <int>  Apply this many newly-computed embeddings to the        │
+│                                          database per bulk UPDATE. Larger means fewer, bigger    │
+│                                          writes (much faster on DuckDB); smaller means less work │
+│                                          lost if the run is interrupted between flushes.         │
+│                                          [default: 2000]                                         │
+│ --force             --no-force           Recompute embeddings even for ROIs that already have    │
+│                                          one. Required after changing EMBEDDING_MODEL_NAME --    │
+│                                          never mix embeddings from two different models in one   │
+│                                          database.                                               │
+│                                          [default: no-force]                                     │
+│ --help                                   Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml cluster --help
 
 
- Usage: mbariml cluster [OPTIONS] {db_path}
+ Usage: mbariml cluster [OPTIONS] {db_path}                                                         
 
- Cluster ROI embeddings with EVoC and export review grids.
+ Cluster ROI embeddings with EVoC and export review grids.                                          
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path      <str>  Path to the DuckDB database (from step 1/2). [required]                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --limit                                <int>    Only read this many embedded rows for clustering   │
-│                                                 (does not delete data).                            │
-│ --off                      --no-off             Disable grouping ROI grids by dominant cluster     │
-│                                                 label (use raw evoc_clust instead).                │
-│                                                 [default: no-off]                                  │
-│ --approx-n-clusters                    <int>    Target number of clusters EVoC aims for. If your   │
-│                                                 data actually has more distinct visual groups than │
-│                                                 this, EVoC will tend to merge some of them         │
-│                                                 together or push borderline ones into noise --     │
-│                                                 raise this (or pass --approx-n-clusters=0 to let   │
-│                                                 EVoC choose the count itself) if clearly distinct  │
-│                                                 things keep landing in 'noise'.                    │
-│                                                 [default: 18]                                      │
-│ --base-min-cluster-size                <int>    Minimum points to count as a cluster at all        │
-│                                                 (EVoC's base_min_cluster_size). Smaller allows     │
-│                                                 more, smaller clusters.                            │
-│                                                 [default: 2]                                       │
-│ --noise-level                          <float>  0.0-1.0: EVoC's primary noise/outlier-sensitivity  │
-│                                                 knob. Lower tries to cluster more of the data      │
-│                                                 (fewer points called noise, at some cost to        │
-│                                                 cluster accuracy); higher is stricter about what   │
-│                                                 counts as a real cluster (more noise, more         │
-│                                                 accurate clusters).                                │
-│                                                 [default: 0.2]                                     │
-│ --n-neighbors                          <int>    Nearest-neighbor graph size EVoC builds            │
-│                                                 internally. Higher smooths over finer local        │
-│                                                 structure; lower preserves it (more, smaller       │
-│                                                 clusters).                                         │
-│                                                 [default: 40]                                      │
-│ --min-samples                          <int>    EVoC's density-estimation parameter (like          │
-│                                                 HDBSCAN's min_samples). Higher makes noise         │
-│                                                 classification more conservative (more points      │
-│                                                 called noise).                                     │
-│                                                 [default: 5]                                       │
-│ --seed                                 <int>    Random seed for EVoC (its random_state). Unset     │
-│                                                 means a different, non-reproducible result every   │
-│                                                 run -- set this while iterating on the other       │
-│                                                 options above so changes are comparable.           │
-│ --help                                          Show this message and exit.                        │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database (from step 1/2). [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --limit                                <int>    Only read this many embedded rows for clustering │
+│                                                 (does not delete data).                          │
+│ --off                      --no-off             Disable grouping ROI grids by dominant cluster   │
+│                                                 label (use raw evoc_clust instead).              │
+│                                                 [default: no-off]                                │
+│ --approx-n-clusters                    <int>    Target number of clusters EVoC aims for. If your │
+│                                                 data actually has more distinct visual groups    │
+│                                                 than this, EVoC will tend to merge some of them  │
+│                                                 together or push borderline ones into noise --   │
+│                                                 raise this (or pass --approx-n-clusters=0 to let │
+│                                                 EVoC choose the count itself) if clearly         │
+│                                                 distinct things keep landing in 'noise'.         │
+│                                                 [default: 18]                                    │
+│ --base-min-cluster-size                <int>    Minimum points to count as a cluster at all      │
+│                                                 (EVoC's base_min_cluster_size). Smaller allows   │
+│                                                 more, smaller clusters.                          │
+│                                                 [default: 2]                                     │
+│ --noise-level                          <float>  0.0-1.0: EVoC's primary                          │
+│                                                 noise/outlier-sensitivity knob. Lower tries to   │
+│                                                 cluster more of the data (fewer points called    │
+│                                                 noise, at some cost to cluster accuracy); higher │
+│                                                 is stricter about what counts as a real cluster  │
+│                                                 (more noise, more accurate clusters).            │
+│                                                 [default: 0.2]                                   │
+│ --n-neighbors                          <int>    Nearest-neighbor graph size EVoC builds          │
+│                                                 internally. Higher smooths over finer local      │
+│                                                 structure; lower preserves it (more, smaller     │
+│                                                 clusters).                                       │
+│                                                 [default: 40]                                    │
+│ --min-samples                          <int>    EVoC's density-estimation parameter (like        │
+│                                                 HDBSCAN's min_samples). Higher makes noise       │
+│                                                 classification more conservative (more points    │
+│                                                 called noise).                                   │
+│                                                 [default: 5]                                     │
+│ --seed                                 <int>    Random seed for EVoC (its random_state). Unset   │
+│                                                 means a different, non-reproducible result every │
+│                                                 run -- set this while iterating on the other     │
+│                                                 options above so changes are comparable.         │
+│ --help                                          Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml refine --help
 
 
- Usage: mbariml refine [OPTIONS] {db_path} {output_dir}
+ Usage: mbariml refine [OPTIONS] {db_path} {output_dir}                                             
 
- Cluster embeddings for a specific label into finer sub-clusters and generate ROI grids.
+ Cluster embeddings for a specific label into finer sub-clusters and generate ROI grids.            
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path         <str>  Path to the DuckDB database. [required]                                │
-│ *    output_dir      <str>  Directory to write filtered_roi_grids/ into. [required]                │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --new-label                    <str>    Label to filter and re-cluster (e.g. 'Muusoctopus' or      │
-│                                         'noise').                                                  │
-│ --limit                        <int>    Limit the number of rows processed, for testing.           │
-│ --approx-n-clusters            <int>    Target number of sub-clusters EVoC aims for. Unset         │
-│                                         (default) lets EVoC choose based on the data.              │
-│ --base-min-cluster-size        <int>    Minimum points to count as a sub-cluster at all (EVoC's    │
-│                                         base_min_cluster_size). Smaller allows more, smaller       │
-│                                         sub-clusters.                                              │
-│                                         [default: 5]                                               │
-│ --noise-level                  <float>  0.0-1.0: EVoC's primary noise/outlier-sensitivity knob.    │
-│                                         Lower tries to find structure in more of this subset       │
-│                                         (fewer points left as noise); higher is stricter (more     │
-│                                         left as noise). Worth lowering when refining a big 'noise' │
-│                                         bucket specifically to dig out hidden distinct groups.     │
-│                                         [default: 0.5]                                             │
-│ --n-neighbors                  <int>    Nearest-neighbor graph size EVoC builds internally. Higher │
-│                                         smooths over finer local structure; lower preserves it.    │
-│                                         [default: 15]                                              │
-│ --min-samples                  <int>    EVoC's density-estimation parameter (like HDBSCAN's        │
-│                                         min_samples). Higher makes noise classification more       │
-│                                         conservative.                                              │
-│                                         [default: 5]                                               │
-│ --seed                         <int>    Random seed for EVoC (its random_state). Set this while    │
-│                                         iterating on the other options above so changes are        │
-│                                         comparable.                                                │
-│ --help                                  Show this message and exit.                                │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path         <str>  Path to the DuckDB database. [required]                              │
+│ *    output_dir      <str>  Directory to write filtered_roi_grids/ into. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --new-label                    <str>    Label to filter and re-cluster (e.g. 'Muusoctopus' or    │
+│                                         'noise').                                                │
+│ --limit                        <int>    Limit the number of rows processed, for testing.         │
+│ --approx-n-clusters            <int>    Target number of sub-clusters EVoC aims for. Unset       │
+│                                         (default) lets EVoC choose based on the data.            │
+│ --base-min-cluster-size        <int>    Minimum points to count as a sub-cluster at all (EVoC's  │
+│                                         base_min_cluster_size). Smaller allows more, smaller     │
+│                                         sub-clusters.                                            │
+│                                         [default: 5]                                             │
+│ --noise-level                  <float>  0.0-1.0: EVoC's primary noise/outlier-sensitivity knob.  │
+│                                         Lower tries to find structure in more of this subset     │
+│                                         (fewer points left as noise); higher is stricter (more   │
+│                                         left as noise). Worth lowering when refining a big       │
+│                                         'noise' bucket specifically to dig out hidden distinct   │
+│                                         groups.                                                  │
+│                                         [default: 0.5]                                           │
+│ --n-neighbors                  <int>    Nearest-neighbor graph size EVoC builds internally.      │
+│                                         Higher smooths over finer local structure; lower         │
+│                                         preserves it.                                            │
+│                                         [default: 15]                                            │
+│ --min-samples                  <int>    EVoC's density-estimation parameter (like HDBSCAN's      │
+│                                         min_samples). Higher makes noise classification more     │
+│                                         conservative.                                            │
+│                                         [default: 5]                                             │
+│ --seed                         <int>    Random seed for EVoC (its random_state). Set this while  │
+│                                         iterating on the other options above so changes are      │
+│                                         comparable.                                              │
+│ --help                                  Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml review --help
 
 
- Usage: mbariml review [OPTIONS] {database_path}
+ Usage: mbariml review [OPTIONS] {database_path}                                                    
 
- Launch the interactive ROI review/labeling GUI (step 5).
+ Launch the interactive ROI review/labeling GUI (step 5).                                           
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    database_path      <str>  Path to the DuckDB database. [required]                             │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --label            <str>  Filter ROIs by label                                                     │
-│ --page-size        <int>  Number of ROIs to show per page. [default: 500]                          │
-│ --help                    Show this message and exit.                                              │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-
-mbariml export-voc --help
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    database_path      <str>  Path to the DuckDB database. [required]                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --label            <str>  Filter ROIs by label                                                   │
+│ --page-size        <int>  Number of ROIs to show per page. [default: 500]                        │
+│ --help                    Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
- Usage: mbariml export-voc [OPTIONS] {db_path} {output_dir}
+mbariml export voc --help
 
- Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels used.
 
- Images are located via the path recorded at detection time -- no
- separate image directory argument needed (removed in v0.3.0; it was a
- source of the image-name-collision bug described above).
+ Usage: mbariml export voc [OPTIONS] {db_path} {output_dir}                                         
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path         <str>  Path to the DuckDB database. [required]                                │
-│ *    output_dir      <str>  Directory to write pascal_voc/ and new_names.txt into. [required]      │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                                        │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels used.        
 
+ Images are located via the path recorded at detection time -- no                                   
+ separate image directory argument needed (removed in v0.3.0; it was a                              
+ source of the image-name-collision bug described above). Also writes                               
+ image_manifest.csv and copy_images.py (see mbariml.export_common) so the                           
+ matching source images can be pulled down later, e.g. to Desktop.                                  
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path         <str>  Path to the DuckDB database. [required]                              │
+│ *    output_dir      <str>  Directory to write pascal_voc/, new_names.txt, and the image         │
+│                             manifest/copy script into.                                           │
+│                             [required]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+mbariml export yolo --help
+
+
+ Usage: mbariml export yolo [OPTIONS] {db_path} {output_dir}                                        
+
+ Export curated labels to YOLO-format label files, plus a names file.                               
+
+ Images are located via the path recorded at detection time -- no                                   
+ separate image_dir argument needed (same convention as `export voc`).                              
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path         <str>  Path to the DuckDB database. [required]                              │
+│ *    output_dir      <str>  Directory to write labels/, names.txt, and the image manifest/copy   │
+│                             script into.                                                         │
+│                             [required]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml html --help
 
 
- Usage: mbariml html [OPTIONS] {db_path} {output_dir}
+ Usage: mbariml html [OPTIONS] {db_path} {output_dir}                                               
 
- Generate a paginated HTML gallery of images and their labeled crops.
+ Generate a paginated HTML gallery of images and their labeled crops.                               
 
- Images are located via the path recorded at detection time -- no
- separate image directory argument needed (removed in v0.3.0; it was a
- source of the image-name-collision bug described above).
+ Images are located via the path recorded at detection time -- no                                   
+ separate image directory argument needed (removed in v0.3.0; it was a                              
+ source of the image-name-collision bug described above).                                           
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path         <str>  Path to the DuckDB database. [required]                                │
-│ *    output_dir      <str>  Directory to save the generated HTML files. [required]                 │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --items-per-page        <int>  Number of items per HTML page. [default: 250]                       │
-│ --help                         Show this message and exit.                                         │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path         <str>  Path to the DuckDB database. [required]                              │
+│ *    output_dir      <str>  Directory to save the generated HTML files. [required]               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --items-per-page        <int>  Number of items per HTML page. [default: 250]                     │
+│ --help                         Show this message and exit.                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml query --help
 
 
- Usage: mbariml query [OPTIONS] {db_path} {sql}
+ Usage: mbariml query [OPTIONS] {db_path} {sql}                                                     
 
- Run SQL against DB_PATH and print the result as a table.
+ Run SQL against DB_PATH and print the result as a table.                                           
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
-│ *    sql          <str>  SQL to run, e.g. "SELECT new_label, COUNT(*) FROM predictions GROUP BY    │
-│                          1".                                                                       │
-│                          [required]                                                                │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --limit        <int>  Cap on rows printed to the console (the full result is still returned).      │
-│                       [default: 50]                                                                │
-│ --help                Show this message and exit.                                                  │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database. [required]                                 │
+│ *    sql          <str>  SQL to run, e.g. "SELECT new_label, COUNT(*) FROM predictions GROUP BY  │
+│                          1".                                                                     │
+│                          [required]                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --limit        <int>  Cap on rows printed to the console (the full result is still returned).    │
+│                       [default: 50]                                                              │
+│ --help                Show this message and exit.                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml infer-images --help
 
 
- Usage: mbariml infer-images [OPTIONS] {model_path} {input_dir} {output_dir}
+ Usage: mbariml infer-images [OPTIONS] {model_path} {input_dir} {output_dir}                        
 
- Run YOLO inference over every image under INPUT_DIR and store detections (with ROI crops, ready for
- review/clustering/export) in OUTPUT_DIR/yolo_predictions.duckdb.
+ Run YOLO inference over every image under INPUT_DIR and store detections (with ROI crops, ready    
+ for review/clustering/export) in OUTPUT_DIR/yolo_predictions.duckdb.                               
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    model_path      <str>  Path to a YOLO .pt model, or a stock Ultralytics model name.           │
-│                             [required]                                                             │
-│ *    input_dir       <str>  Directory containing input images (searched recursively). [required]   │
-│ *    output_dir      <str>  Directory to save the database, annotated images, and (optionally) a   │
-│                             CSV.                                                                   │
-│                             [required]                                                             │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --export-csv    --no-export-csv             Also export a taxa-by-image count matrix to            │
-│                                             predictions.csv.                                       │
-│                                             [default: no-export-csv]                               │
-│ --limit                            <int>    Limit the number of images processed (for a quick test │
-│                                             run).                                                  │
-│ --batch-size                       <int>    Number of images sent to YOLO per batch. [default: 50] │
-│ --conf                             <float>  Confidence threshold. [default: 0.08]                  │
-│ --iou                              <float>  IoU threshold for NMS. [default: 0.15]                 │
-│ --max-det                          <int>    Maximum detections per image. [default: 500]           │
-│ --imgsz                            <int>    Inference image size. [default: 992]                   │
-│ --device                           <str>    Device to run on: 'auto', 'mps', 'cuda', or 'cpu'.     │
-│                                             [default: auto]                                        │
-│ --help                                      Show this message and exit.                            │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    model_path      <str>  Path to a YOLO .pt model, or a stock Ultralytics model name.         │
+│                             [required]                                                           │
+│ *    input_dir       <str>  Directory containing input images (searched recursively). [required] │
+│ *    output_dir      <str>  Directory to save the database, annotated images, and (optionally) a │
+│                             CSV.                                                                 │
+│                             [required]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --export-csv    --no-export-csv             Also export a taxa-by-image count matrix to          │
+│                                             predictions.csv.                                     │
+│                                             [default: no-export-csv]                             │
+│ --limit                            <int>    Limit the number of images processed (for a quick    │
+│                                             test run).                                           │
+│ --batch-size                       <int>    Number of images sent to YOLO per batch.             │
+│                                             [default: 50]                                        │
+│ --conf                             <float>  Confidence threshold. [default: 0.08]                │
+│ --iou                              <float>  IoU threshold for NMS. [default: 0.15]               │
+│ --max-det                          <int>    Maximum detections per image. [default: 500]         │
+│ --imgsz                            <int>    Inference image size. [default: 992]                 │
+│ --device                           <str>    Device to run on: 'auto', 'mps', 'cuda', or 'cpu'.   │
+│                                             [default: auto]                                      │
+│ --help                                      Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml remap-labels --help
 
 
- Usage: mbariml remap-labels [OPTIONS] {db_path} {changes_file}
+ Usage: mbariml remap-labels [OPTIONS] {db_path} {changes_file}                                     
 
- Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs from CHANGES_FILE.
+ Update the new_label column in the database using OLD_LABEL,NEW_LABEL pairs from CHANGES_FILE.     
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path           <str>  Path to the DuckDB database. [required]                              │
-│ *    changes_file      <str>  CSV file of 'old_label,new_label' rows. [required]                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                                        │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path           <str>  Path to the DuckDB database. [required]                            │
+│ *    changes_file      <str>  CSV file of 'old_label,new_label' rows. [required]                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml backfill-sharpness --help
 
 
- Usage: mbariml backfill-sharpness [OPTIONS] {db_path}
+ Usage: mbariml backfill-sharpness [OPTIONS] {db_path}                                              
 
- Compute and store a sharpness (blur) score for every ROI, from its stored crop.
+ Compute and store a sharpness (blur) score for every ROI, from its stored crop.                    
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --force    --no-force      Recompute even for rows that already have a non-zero sharpness value.   │
-│                            [default: no-force]                                                     │
-│ --help                     Show this message and exit.                                             │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-
-mbariml export-ids --help
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database. [required]                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --force    --no-force      Recompute even for rows that already have a non-zero sharpness value. │
+│                            [default: no-force]                                                   │
+│ --help                     Show this message and exit.                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
- Usage: mbariml export-ids [OPTIONS] {db_path}
+mbariml export id --help
 
- Write a *.id sidecar file next to each source image with at least one curated identification.
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    db_path      <str>  Path to the DuckDB database. [required]                                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --model        <str>  Model identifier to record in each file's header. Defaults to what `mbariml  │
-│                       detect` recorded for this database, or 'unknown' if that's not available.    │
-│ --help                Show this message and exit.                                                  │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Usage: mbariml export id [OPTIONS] {db_path}                                                       
 
+ Write a *.id sidecar file next to each source image with at least one curated identification.      
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database. [required]                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --model        <str>  Model identifier to record in each file's header. Defaults to what         │
+│                       `mbariml detect` recorded for this database, or 'unknown' if that's not    │
+│                       available.                                                                 │
+│ --help                Show this message and exit.                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+mbariml stats --help
+
+
+ Usage: mbariml stats [OPTIONS] {db_path}                                                           
+
+ Print label counts and per-image detection stats; optionally write an image x label count matrix   
+ CSV for downstream ecological analysis.                                                            
+
+ Uses new_label where curated, falling back to the raw detected label                               
+ where it isn't (same convention `html` uses) -- so this works both                                 
+ before and after running through `review`/`cluster`.                                               
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    db_path      <str>  Path to the DuckDB database. [required]                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --output-dir                             <str>  If set, write label_by_image_matrix.csv here     │
+│                                                 (rows=image, columns=label, value=box count).    │
+│ --exclude-noise    --no-exclude-noise           Exclude 'noise' from the label counts and the    │
+│                                                 matrix.                                          │
+│                                                 [default: no-exclude-noise]                      │
+│ --top                                    <int>  Only print the top N labels by count to the      │
+│                                                 console (a written matrix CSV always includes    │
+│                                                 every label).                                    │
+│ --help                                          Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 mbariml run --help
 
 
- Usage: mbariml run [OPTIONS] {model_path} {image_dir} {output_dir}
+ Usage: mbariml run [OPTIONS] {model_path} {image_dir} {output_dir}                                 
 
- Run the scriptable curation chain (detect -> embed -> cluster -> export-voc -> html).
+ Run the scriptable curation chain (detect -> embed -> cluster -> export voc -> html).              
 
- Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
- with --from-step > 1 resumes against whatever is already in that database
- -- nothing upstream is re-run or overwritten.
+ Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running                          
+ with --from-step > 1 resumes against whatever is already in that database                          
+ -- nothing upstream is re-run or overwritten.                                                      
 
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    model_path      <str>  Path to the YOLO model (used by the detect step). [required]           │
-│ *    image_dir       <str>  Directory containing input images. [required]                          │
-│ *    output_dir      <str>  Directory for the database and all step outputs. [required]            │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────╮
-│ --from-step                           <int>    First step to run: one of 1, 2, 3, 6, 7.            │
-│                                                [default: 1]                                        │
-│ --to-step                             <int>    Last step to run (inclusive): one of 1, 2, 3, 6, 7. │
-│                                                [default: 7]                                        │
-│ --limit                               <int>    Limit passed through to steps that support it, for  │
-│                                                a quick test run.                                   │
-│ --random               --no-random             With --limit, sample images randomly (step 1)       │
-│                                                instead of taking the first N in sorted order.      │
-│                                                [default: no-random]                                │
-│ --seed                                <int>    Random seed, shared by --random image sampling      │
-│                                                (step 1) and EVoC clustering (step 3), for a        │
-│                                                reproducible run.                                   │
-│ --approx-n-clusters                   <int>    Passed through to step 3; see `mbariml cluster      │
-│                                                --help`.                                            │
-│                                                [default: 18]                                       │
-│ --noise-level                         <float>  Passed through to step 3; see `mbariml cluster      │
-│                                                --help`.                                            │
-│                                                [default: 0.2]                                      │
-│ --help                                         Show this message and exit.                         │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    model_path      <str>  Path to the YOLO model (used by the detect step). [required]         │
+│ *    image_dir       <str>  Directory containing input images. [required]                        │
+│ *    output_dir      <str>  Directory for the database and all step outputs. [required]          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --from-step                           <int>    First step to run: one of 1, 2, 3, 6, 7.          │
+│                                                [default: 1]                                      │
+│ --to-step                             <int>    Last step to run (inclusive): one of 1, 2, 3, 6,  │
+│                                                7.                                                │
+│                                                [default: 7]                                      │
+│ --limit                               <int>    Limit passed through to steps that support it,    │
+│                                                for a quick test run.                             │
+│ --random               --no-random             With --limit, sample images randomly (step 1)     │
+│                                                instead of taking the first N in sorted order.    │
+│                                                [default: no-random]                              │
+│ --seed                                <int>    Random seed, shared by --random image sampling    │
+│                                                (step 1) and EVoC clustering (step 3), for a      │
+│                                                reproducible run.                                 │
+│ --approx-n-clusters                   <int>    Passed through to step 3; see `mbariml cluster    │
+│                                                --help`.                                          │
+│                                                [default: 18]                                     │
+│ --noise-level                         <float>  Passed through to step 3; see `mbariml cluster    │
+│                                                --help`.                                          │
+│                                                [default: 0.2]                                    │
+│ --help                                         Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+mbariml export --help
 
+
+ Usage: mbariml export [OPTIONS] COMMAND [ARGS]...                                                  
+
+ Export curated labels to a specific downstream annotation format.                                  
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ voc   Export curated labels to Pascal VOC XML files, plus a list of the distinct new labels      │
+│       used.                                                                                      │
+│ yolo  Export curated labels to YOLO-format label files, plus a names file.                       │
+│ id    Write a *.id sidecar file next to each source image with at least one curated              │
+│       identification.                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

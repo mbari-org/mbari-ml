@@ -3,7 +3,7 @@
 Writes to the SAME curation schema as step 1 (ROI crop blob + sharpness,
 with embedding/new_label left NULL) -- not a separate lighter schema, which
 is what earlier versions of this file did. That mattered: `mbariml review`,
-`cluster`, `refine`, `export-voc`, and `remap-labels` all require columns
+`cluster`, `refine`, `export voc`, and `remap-labels` all require columns
 (`roi_index`, `roi`, `embedding`, `new_label`) that the old lighter schema
 never had, so none of them could run against step 9's output at all. Now
 they can -- run `mbariml infer-images` on a new survey, then go straight to
