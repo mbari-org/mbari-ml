@@ -1,10 +1,10 @@
 # mbari-ml pipeline
 
 A chain of steps that go from raw survey imagery to a curated, labeled
-DuckDB database: **detect → embed → cluster → refine → review → export →
-query → remap**, plus a standalone **infer** step for running an
-already-trained model on a new batch of images, and a **stats** command for
-label counts and per-image detection stats.
+DuckDB database: **detect → embed → cluster → refine → review → export
+(voc/yolo/id/html) → query → remap**, plus a standalone **infer-images**
+step for running an already-trained model on a new batch of images, and a
+**stats** step for label counts and per-image detection stats.
 
 ## Setup
 
@@ -22,7 +22,7 @@ Every step reads/writes the **same database schema** and just operates on
 whatever database you point it at — there's no hidden state, and no step
 needs any specific earlier step to have run, only a database that already
 has what that step needs (e.g. `embed` needs ROI blobs, `cluster` needs
-embeddings). In particular, **step 9 (inference on a new set of images) is a
+embeddings). In particular, **step 8 (inference on a new set of images) is a
 standalone entry point** — it doesn't need any earlier step's output to run:
 
 ```bash
@@ -35,11 +35,11 @@ embed it, cluster it, export it — without ever running `detect`:
 
 ```bash
 mbariml review /data/new_survey_results/yolo_predictions.duckdb
-mbariml html /data/new_survey_results/yolo_predictions.duckdb /data/new_survey_results/html
+mbariml export html /data/new_survey_results/yolo_predictions.duckdb /data/new_survey_results/html
 mbariml embed /data/new_survey_results/yolo_predictions.duckdb
 ```
 
-(This wasn't always true — see "What changed" below; step 9 used to write a
+(This wasn't always true — see "What changed" below; step 8 used to write a
 separate, lighter schema that none of those commands could read.)
 
 All subcommands:
@@ -53,19 +53,24 @@ All subcommands:
 | `mbariml review`        | 5  | Interactive GUI for labeling/deleting ROIs |
 | `mbariml export voc`    | 6  | Export curated labels as Pascal VOC XML (see below) |
 | `mbariml export yolo`   | 6  | Export curated labels as YOLO-format label files + names.txt (see below) |
-| `mbariml html`          | 7  | Paginated HTML gallery of images + crops |
-| `mbariml query`         | 8  | Run ad hoc SQL against a database |
-| `mbariml infer-images`         | 9  | Run a trained model over new images (standalone) |
-| `mbariml remap-labels`  | 10 | Bulk-rename `new_label` values from a CSV |
-| `mbariml backfill-sharpness` | -  | Compute real sharpness scores for a database created before step 1 did (see below) |
-| `mbariml export id`     | -  | Write a `*.id` sidecar file next to each source image with a curated identification (see below) |
-| `mbariml stats`         | -  | Label counts, boxes-per-image stats, and an optional image × label count matrix CSV (see below) |
+| `mbariml export id`     | 6  | Write a `*.id` sidecar file next to each source image with a curated identification (see below) |
+| `mbariml export html`   | 6  | Paginated HTML gallery of images + crops |
+| `mbariml query`         | 7  | Run ad hoc SQL against a database |
+| `mbariml infer-images`  | 8  | Run a trained model over new images (standalone) |
+| `mbariml remap-labels`  | 9  | Bulk-rename `new_label` values from a CSV |
+| *(reserved)*            | 10 | `infer-videos` -- video+tracking counterpart to `infer-images`; not built yet |
+| `mbariml stats`         | 11 | Label counts, boxes-per-image stats, and an optional image × label count matrix CSV (see below) |
 
-`mbariml export {voc,yolo,id}` groups every downstream annotation-format
-export under one subcommand (before v0.8.0 these were flat `export-voc` /
-`export-ids` commands, with no YOLO format at all).
+`mbariml export {voc,yolo,id,html}` groups every downstream annotation
+format *and* the HTML gallery under one subcommand, as step 6 (before
+v0.8.0 these were flat `export-voc`/`export-ids` commands with no YOLO
+format at all; `html` was its own separate step 7 before v0.9.0 folded it
+in here instead). `backfill-sharpness` (a one-time migration utility for
+databases created before sharpness scoring existed) was removed in v0.9.0 —
+every database has gotten a real sharpness score at write time (`detect`/
+`infer-images`) since v0.7.0.
 
-Note: `export voc`/`export yolo` and `html` don't take an `image_dir`
+Note: `export voc`/`export yolo`/`export html` don't take an `image_dir`
 argument (removed in v0.3.0, before the `export` group existed) — images are
 located via the path recorded at detection time, which also fixes a real bug
 (see "What changed" below).
@@ -101,14 +106,15 @@ paging still do a full rebuild, since the visible set of ROIs actually
 changes then.
 
 **Sort by Sharpness now actually means something.** It used to sort by a
-column that was hardcoded to `0.0` for every row -- a no-op. `mbariml detect`
-now computes a real blur score (Laplacian variance) per ROI as it extracts
-it. For a database built before this change, backfill it once from the
-already-stored ROI crops (no need to re-run detection):
-
-```bash
-mbariml backfill-sharpness /data/survey_results/yolo_predictions.duckdb
-```
+column that was hardcoded to `0.0` for every row -- a no-op. `mbariml
+detect`/`infer-images` now compute a real blur score (Laplacian variance)
+per ROI as they extract it, so every database built since v0.7.0 has real
+values to sort by. (A `backfill-sharpness` utility used to exist for
+databases built *before* that change, recomputing the score after the fact
+from each row's already-stored ROI crop; it was removed in v0.9.0 once every
+current write path covered it at the source. If you're still holding a
+pre-v0.7.0 database that needs backfilling, ask for that utility back rather
+than assuming a migration path still exists.)
 
 Sorting by sharpness (ascending) then surfaces the blurriest ROIs first —
 useful for quickly finding and deleting unusable crops.
@@ -209,8 +215,8 @@ around it, and **0.82 seconds** wrapped in one (`BEGIN TRANSACTION` /
 of row count or which column is touched. This affected every step that
 writes many rows directly to the persistent `predictions` table:
 `mbariml.db.fast_executemany` (a drop-in replacement for
-`conn.executemany`) now wraps every such call in steps 1, 2, 3, 4, 5, and 9
-in an explicit transaction. Steps 1 and 9 already committed incrementally
+`conn.executemany`) now wraps every such call in steps 1, 2, 3, 4, 5, and 8
+in an explicit transaction. Steps 1 and 8 already committed incrementally
 per image/batch for resumability -- that's unchanged; this fix is about
 what happens *inside* each of those commits, not how often they happen.
 
@@ -265,7 +271,7 @@ to be filled in later by a separate navigation-merge process:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.8.0
+# generator: mbariml v0.9.0
 # generated_by: lonny
 # generated_at: 2026-08-19T17:36:28Z
 # model: /path/to/best.pt
@@ -283,7 +289,7 @@ to be filled in later by a separate navigation-merge process:
 percent of total) and boxes-per-image summary stats (avg/min/median/max,
 across every image with at least one detection). Both use
 `COALESCE(new_label, label)` as the effective label — the same per-row
-fallback `html` uses — so this is useful both before curation (nothing but
+fallback `export html` uses — so this is useful both before curation (nothing but
 the raw YOLO `label` yet) and after (`new_label` set). `noise` is included
 by default (useful while curating, to see how much of the database is still
 noise/unlabeled); pass `--exclude-noise` once you want real-identification
@@ -310,23 +316,42 @@ mbariml stats /data/survey_results/yolo_predictions.duckdb --output-dir /data/su
 mbariml run best.pt /data/survey_images/ /data/survey_results/
 ```
 
-This chains detect → embed → cluster → export voc → html against
+This chains detect → embed → cluster → export (voc + html) against
 `/data/survey_results/yolo_predictions.duckdb`. Use `--from-step`/`--to-step`
-(values from `1, 2, 3, 6, 7`) to run only part of it — e.g. to resume after
+(values from `1, 2, 3, 6`) to run only part of it — e.g. to resume after
 already reviewing in the GUI and just re-export:
 
 ```bash
-mbariml run best.pt /data/survey_images/ /data/survey_results/ --from-step 6 --to-step 7
+mbariml run best.pt /data/survey_images/ /data/survey_results/ --from-step 6 --to-step 6
 ```
 
-Step 5 (interactive review) and step 8 (queries) aren't part of `run` since
-they're not batch operations. Step 9 (`infer`) and 10 (`remap-labels`) also
-aren't, since they don't chain against the same database — run them
-directly. `export yolo`/`export id` and `stats` aren't part of the chain
-either — run them directly, any time, against whatever database `run` (or
-any individual step) already produced.
+Step 6 always runs both `export voc` and `export html` together when
+reached — they were separate steps (6 and 7) before v0.9.0 folded `html`
+into `export`; if you only want one of the two, run it directly
+(`mbariml export voc ...` or `mbariml export html ...`) instead of via `run`.
+
+Step 5 (interactive review) and step 7 (queries) aren't part of `run` since
+they're not batch operations. Step 8 (`infer-images`) and step 9
+(`remap-labels`) also aren't, since they don't chain against the same
+database — run them directly. `export yolo`/`export id` and `stats` (step
+11) aren't part of the chain either — run them directly, any time, against
+whatever database `run` (or any individual step) already produced.
 
 ## What changed from the original scripts
+
+**`export`/step-numbering restructuring (v0.9.0)**: `mbariml html` (step 7)
+is now `mbariml export html`, grouped into step 6 alongside `export
+voc`/`export yolo`/`export id` -- one step for "produce some downstream
+output from curated data" instead of two. Steps after it shifted down by one
+to fill the gap: `query` is now step 7, `infer-images` step 8,
+`remap-labels` step 9 (a step 10, `infer-videos`, is reserved for a future
+video+tracking counterpart to `infer-images` -- not built). `mbariml stats`
+is now numbered step 11. `backfill-sharpness` was removed -- see "Using the
+review GUI (step 5) well" above for why it's no longer needed. `mbariml
+run`'s scriptable chain is now `1 detect -> 2 embed -> 3 cluster -> 6
+export` (`--from-step`/`--to-step` values `1, 2, 3, 6`); reaching step 6
+still runs both `export voc` and `export html`, same as the old chain
+running through the old steps 6 and 7.
 
 **`export`/`stats` restructuring (v0.8.0)**: the flat `export-voc` and
 `export-ids` commands are now grouped as `mbariml export voc` and `mbariml
@@ -385,25 +410,26 @@ separately rather than guessing:
    was isolated. See "Embeddings (DINOv3)" above for the full numbers,
    including why an MLX port was investigated and not adopted.
 
-**Step 9's database used a different schema than every other step**, missing
+**Step 8's database used a different schema than every other step**, missing
 `roi_index`, `roi` (the actual crop blob), `embedding`, and `new_label`.
 That meant `mbariml review`, `cluster`, `refine`, `export voc`, and
-`remap-labels` would all fail outright against step 9's output -- only
-`html` and `query` happened to work. Fixed by having step 9 write the same
-curation schema as every other step (cropping each ROI directly from
-Ultralytics' already-loaded image, not by re-reading files), so its output
-is immediately usable by anything downstream. Verified by running `infer`
-then `embed`, `review` (headless), and `html` against the same database.
-While fixing this, also caught and fixed a related gap it exposed: `html`
-picked which label column to use (`new_label` vs raw `label`) once per
-*database*, based on whether the column existed -- but now every database
-has a `new_label` column, so a database fresh out of `infer`/`detect` (not
-yet curated, `new_label` NULL on every row) would show "None" as every
-crop's caption instead of the model's actual prediction. Fixed to fall back
-per *row* (`COALESCE(new_label, label)`) instead.
+`remap-labels` would all fail outright against step 8's output -- only the
+HTML gallery step and `query` happened to work. Fixed by having step 8 write
+the same curation schema as every other step (cropping each ROI directly
+from Ultralytics' already-loaded image, not by re-reading files), so its
+output is immediately usable by anything downstream. Verified by running
+`infer` then `embed`, `review` (headless), and the HTML gallery step against
+the same database. While fixing this, also caught and fixed a related gap
+it exposed: the HTML gallery step picked which label column to use
+(`new_label` vs raw `label`) once per *database*, based on whether the
+column existed -- but now every database has a `new_label` column, so a
+database fresh out of `infer`/`detect` (not yet curated, `new_label` NULL on
+every row) would show "None" as every crop's caption instead of the model's
+actual prediction. Fixed to fall back per *row* (`COALESCE(new_label,
+label)`) instead.
 
-**Cross-dive image collision bug (export voc, html)**: both used to group
-detections by *bare filename* and reconstruct each image's path as
+**Cross-dive image collision bug (export voc, export html)**: both used to
+group detections by *bare filename* and reconstruct each image's path as
 `image_dir / image_name`. For a mission with nested per-dive subdirectories,
 two images with the same filename in different dives (e.g.
 `dive01/img_0001.jpg` and `dive02/img_0001.jpg`) collided into one key, and
@@ -411,12 +437,13 @@ both got silently mapped onto whichever single flat path happened to exist —
 merging detections from different dives onto the wrong image, or exporting
 one dive's identifications under the other's filename. Fixed by grouping on
 the full `image_path` already recorded at detection time (which is also why
-`export voc`/`html` no longer need a separate `image_dir` argument), and by
-disambiguating output filenames with their parent directory name. Verified
-with two images sharing a filename in different subdirectories.
+`export voc`/`export html` no longer need a separate `image_dir` argument),
+and by disambiguating output filenames with their parent directory name.
+Verified with two images sharing a filename in different subdirectories.
 
-**The step-9 bug ("code seemed to run, but no results saved, no db
-generated")**: `9_inference.py` used to buffer every detection row from
+**The step-8 bug ("code seemed to run, but no results saved, no db
+generated")**: `9_inference.py` (the original pre-refactor script; this is
+step 8 in the current numbering) used to buffer every detection row from
 *every* image batch in memory and write them to the database in a single
 `executemany()` call **after the entire run finished**, outside any
 try/except. YOLO would visibly process every image and even save annotated
@@ -460,11 +487,10 @@ finishes, so progress is durable as the run proceeds, and:
   so the traceback is never lost in the console output.
 - The review GUI's "Sort by Sharpness" was sorting by a column hardcoded to
   `0.0` for every row — a no-op. Step 1 now computes a real per-ROI blur
-  score, and `mbariml backfill-sharpness` fills it in for existing databases
-  (see "Using the review GUI (step 5) well" above). While reworking that
-  screen, labeling/deleting were also changed to update only the affected
-  thumbnails instead of rebuilding the entire ~500-thumbnail page on every
-  click, and 1-9 keyboard shortcuts were added for the most-used labels.
+  score (see "Using the review GUI (step 5) well" above). While reworking
+  that screen, labeling/deleting were also changed to update only the
+  affected thumbnails instead of rebuilding the entire ~500-thumbnail page on
+  every click, and 1-9 keyboard shortcuts were added for the most-used labels.
 - The embedding backbone switched from DINOv2 to DINOv3 (see "Embeddings
   (DINOv3)" above) for accuracy. While there, preprocessing switched from
   hand-picked constants (a fixed 518x518 resize + CLIP's mean/std, regardless

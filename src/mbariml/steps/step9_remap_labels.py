@@ -1,4 +1,4 @@
-"""Step 10: bulk-rename `new_label` values from a two-column changes file."""
+"""Step 9: bulk-rename `new_label` values from a two-column changes file."""
 
 from __future__ import annotations
 

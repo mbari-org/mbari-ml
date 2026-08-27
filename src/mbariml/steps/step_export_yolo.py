@@ -17,7 +17,10 @@ self-contained, trainable ``images/`` + ``labels/`` dataset directory: run
 ``python3 copy_images.py --dest <output_dir>/images`` after this.
 
 Images are located via the path recorded at detection time, the same as
-``export voc``/``html`` -- no separate image_dir argument needed.
+``export voc``/``export html`` -- no separate image_dir argument needed.
+
+Grouped under step 6 (``export``) alongside ``export voc``/``export id``/
+``export html``.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Shared DuckDB helpers.
 
 One schema (``CURATION_SCHEMA_SQL``) is used across the whole pipeline,
-including step 9 (inference): it stores the ROI image itself (as a JPEG
-blob), its embedding, and the human-curated ``new_label``. Step 9 used to
+including step 8 (inference): it stores the ROI image itself (as a JPEG
+blob), its embedding, and the human-curated ``new_label``. Step 8 used to
 write a separate, lighter schema (no ROI blob, no embedding) -- but that
 meant its output couldn't be fed into `mbariml review`, `cluster`, `refine`,
 `export voc`, or `remap-labels` at all, none of which is what you want from
@@ -14,7 +14,7 @@ any other step that needs what it has.
 (and therefore flushed) even if the caller raises. The original
 ``9_inference.py`` opened a DuckDB connection and never closed it, relying on
 the interpreter to clean it up on exit; combined with buffering all insert
-rows in memory until the very end of the run (see ``mbariml.steps.step9_inference``),
+rows in memory until the very end of the run (see ``mbariml.steps.step8_inference``),
 that meant a run that hit any error, or was interrupted, could finish having
 written nothing at all despite YOLO visibly having processed every image.
 """
@@ -55,7 +55,7 @@ CURATION_SCHEMA_SQL = """
     CREATE INDEX IF NOT EXISTS idx_predictions_roi_index ON predictions(roi_index);
 
     -- Added after the fact rather than in the CREATE TABLE column list
-    -- above: several steps (step1_detect, step9_inference) INSERT into
+    -- above: several steps (step1_detect, step8_inference) INSERT into
     -- this table positionally ("VALUES (?, ?, ..., ?)", no column names),
     -- so a column added to the CREATE TABLE list would silently require
     -- updating every one of those in lockstep or break them. ALTER TABLE
@@ -97,7 +97,7 @@ def connect(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
 @contextlib.contextmanager
 def init_curation_db(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open (creating if needed) the curation-schema database used by every
-    step, including step 9 (inference)."""
+    step, including step 8 (inference)."""
     with connect(db_path) as conn:
         conn.execute(CURATION_SCHEMA_SQL)
         logger.info("Curation schema ready in %s", db_path)

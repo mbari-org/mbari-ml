@@ -1,18 +1,21 @@
-"""stats: label counts, boxes-per-image summary stats, and an optional
+"""Step 11: label counts, boxes-per-image summary stats, and an optional
 image x label count matrix CSV -- the raw numbers behind an ecological read
 of a curation database (e.g. "how many Muusoctopus per image, and across how
 many images").
 
 Every query here uses ``COALESCE(new_label, label)`` as the effective label
--- the same per-row fallback ``html`` uses (see README's "What changed"),
-so this is useful both before curation (nothing but the raw YOLO ``label``
-set yet) and after (curated ``new_label`` set). Noise is included by default
-(seeing how much of a database is still 'noise' is itself a useful number
-while curating) -- pass --exclude-noise once you actually want ecological
-counts of real identifications only.
+-- the same per-row fallback ``export html`` uses (see README's "What
+changed"), so this is useful both before curation (nothing but the raw YOLO
+``label`` set yet) and after (curated ``new_label`` set). Noise is included
+by default (seeing how much of a database is still 'noise' is itself a
+useful number while curating) -- pass --exclude-noise once you actually want
+ecological counts of real identifications only.
 
-Not part of the numbered step chain (like `backfill-sharpness`/`export id`)
--- run it directly, any time, read-only.
+Numbered like every other step for reference (this doc, the cheat sheet,
+--help), but -- like review (5), query (7), infer-images (8), and
+remap-labels (9) -- it isn't part of `mbariml run`'s scriptable chain (only
+detect/embed/cluster/export are): run it directly, any time, read-only,
+against whatever database you already have.
 """
 
 from __future__ import annotations
@@ -114,8 +117,8 @@ def stats(
     image x label count matrix CSV for downstream ecological analysis.
 
     Uses new_label where curated, falling back to the raw detected label
-    where it isn't (same convention `html` uses) -- so this works both
-    before and after running through `review`/`cluster`.
+    where it isn't (same convention `export html` uses) -- so this works
+    both before and after running through `review`/`cluster`.
     """
     with db.connect(db_path) as conn:
         total_rows = db.row_count(conn)

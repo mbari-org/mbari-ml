@@ -4,29 +4,29 @@ Every step is available as its own subcommand (``mbariml detect``,
 ``mbariml infer-images``, etc.) so you can run -- or re-run -- any single
 step on its own, pointed at whatever database/directory you already have.
 That's the main way to "start at any step": e.g. to run inference on a new
-set of images (step 9) you don't need to touch anything upstream:
+set of images (step 8) you don't need to touch anything upstream:
 
     mbariml infer-images runs/best.pt /data/new_survey/ /data/new_survey_results/
 
 ``detect``/``embed``/``cluster``/``refine`` build curated *training* data;
-``infer-images`` (and, eventually, a video+tracking counterpart) instead
-runs an already-trained model over new data -- a different job, hence the
-separate name rather than folding it into ``detect``.
+``infer-images`` (step 8; and, eventually, a step 10 ``infer-videos``
+counterpart -- not built yet) instead runs an already-trained model over new
+data -- a different job, hence the separate name rather than folding it into
+``detect``.
 
 ``mbariml run`` additionally chains the scriptable steps of the curation
-pipeline (1 detect -> 2 embed -> 3 cluster -> 6 export voc -> 7 html) for
+pipeline (1 detect -> 2 embed -> 3 cluster -> 6 export: voc + html) for
 convenience, and can start or stop anywhere in that chain via
-``--from-step``/``--to-step``. Step 5 (the interactive review GUI) and step 8
-(ad hoc queries) are not part of that chain since they aren't scriptable/
-batch operations; step 9 (inference) and step 10 (label remapping) are
-intentionally excluded from ``run`` too, since they aren't links in the same
-database's chain -- run them directly with their own subcommand instead.
+``--from-step``/``--to-step``. Step 5 (the interactive review GUI), step 7
+(ad hoc queries), step 8 (inference), step 9 (label remapping), and step 11
+(stats) are not part of that chain since they aren't scriptable/batch
+operations, or don't chain against the same database -- run them directly
+with their own subcommand instead.
 
-``mbariml export`` groups every downstream annotation-format export under
-one subcommand (``export voc``, ``export yolo``, ``export id``) rather than
-a flat ``export-voc``/``export-ids`` per format (pre-v0.8.0); ``mbariml
-stats`` is a separate, read-only command for label counts and per-image
-detection stats, not an export.
+``mbariml export`` groups every downstream annotation-format/gallery export
+under one subcommand (``export voc``, ``export yolo``, ``export id``,
+``export html``) as step 6, rather than a flat command per format
+(pre-v0.8.0) with ``html`` as its own separate step 7 (pre-v0.9.0).
 """
 
 from __future__ import annotations
@@ -43,14 +43,13 @@ from mbariml.steps import (
     step3_cluster_evoc,
     step4_cluster_refine,
     step6_export_voc,
-    step7_generate_html,
-    step8_query,
-    step9_inference,
-    step10_remap_labels,
-    step_backfill_sharpness,
+    step7_query,
+    step8_inference,
+    step9_remap_labels,
+    step11_stats,
+    step_export_html,
     step_export_ids,
     step_export_yolo,
-    step_stats,
 )
 
 logger = get_logger(__name__)
@@ -61,22 +60,25 @@ app.command("detect")(step1_detect.detect)
 app.command("embed")(step2_embed.embed)
 app.command("cluster")(step3_cluster_evoc.cluster)
 app.command("refine")(step4_cluster_refine.refine)
-app.command("html")(step7_generate_html.generate_html)
-app.command("query")(step8_query.query)
-app.command("infer-images")(step9_inference.infer)
-app.command("remap-labels")(step10_remap_labels.remap_labels)
-app.command("backfill-sharpness")(step_backfill_sharpness.backfill_sharpness)
-app.command("stats")(step_stats.stats)
+app.command("query")(step7_query.query)
+app.command("infer-images")(step8_inference.infer)
+app.command("remap-labels")(step9_remap_labels.remap_labels)
+app.command("stats")(step11_stats.stats)
 
-# `mbariml export {voc,yolo,id}` -- one downstream annotation format per
-# subcommand, each writing its own image_manifest.csv/copy_images.py (voc,
-# yolo) so the matching source images can be pulled later (see
-# mbariml.export_common). Replaces the old flat `export-voc`/`export-ids`
-# commands (v0.8.0) now that there's a third format (yolo) to group with them.
-export_app = typer.Typer(help="Export curated labels to a specific downstream annotation format.")
+# `mbariml export {voc,yolo,id,html}` -- step 6, one downstream annotation
+# format/gallery per subcommand. voc/yolo also each write their own
+# image_manifest.csv/copy_images.py so the matching source images can be
+# pulled later (see mbariml.export_common). Replaces the old flat
+# `export-voc`/`export-ids` commands (v0.8.0), and folded in `html` as
+# `export html` instead of a separate step 7 (v0.9.0) -- backfill-sharpness
+# was dropped the same release: every database has gotten a real sharpness
+# score at write time (detect/infer-images) since v0.7.0, so the one-time
+# migration utility for pre-v0.7.0 databases no longer earns a place here.
+export_app = typer.Typer(help="Export curated labels to a specific downstream annotation format, or an HTML gallery.")
 export_app.command("voc")(step6_export_voc.export_voc)
 export_app.command("yolo")(step_export_yolo.export_yolo)
 export_app.command("id")(step_export_ids.export_ids)
+export_app.command("html")(step_export_html.generate_html)
 app.add_typer(export_app, name="export")
 
 
@@ -94,7 +96,12 @@ def review(
 
 
 # The scriptable curation chain, in order. Each entry is (step number, label).
-_CHAIN_STEPS = [(1, "detect"), (2, "embed"), (3, "cluster"), (6, "export voc"), (7, "html")]
+# Step 6 ("export") runs both export_voc and generate_html -- html folded
+# into step 6 (v0.9.0) rather than keeping its own step number, so it's no
+# longer separately selectable via --from-step/--to-step; run `mbariml
+# export html` directly if you want the gallery without re-running voc, or
+# vice versa.
+_CHAIN_STEPS = [(1, "detect"), (2, "embed"), (3, "cluster"), (6, "export")]
 
 
 @app.command("run")
@@ -102,8 +109,8 @@ def run(
     model_path: str = typer.Argument(..., help="Path to the YOLO model (used by the detect step)."),
     image_dir: str = typer.Argument(..., help="Directory containing input images."),
     output_dir: str = typer.Argument(..., help="Directory for the database and all step outputs."),
-    from_step: int = typer.Option(1, help="First step to run: one of 1, 2, 3, 6, 7."),
-    to_step: int = typer.Option(7, help="Last step to run (inclusive): one of 1, 2, 3, 6, 7."),
+    from_step: int = typer.Option(1, help="First step to run: one of 1, 2, 3, 6."),
+    to_step: int = typer.Option(6, help="Last step to run (inclusive): one of 1, 2, 3, 6."),
     limit: Optional[int] = typer.Option(None, help="Limit passed through to steps that support it, for a quick test run."),
     random_sample: bool = typer.Option(
         False, "--random/--no-random", help="With --limit, sample images randomly (step 1) instead of taking the first N in sorted order."
@@ -114,7 +121,7 @@ def run(
     approx_n_clusters: Optional[int] = typer.Option(18, help="Passed through to step 3; see `mbariml cluster --help`."),
     noise_level: float = typer.Option(0.2, help="Passed through to step 3; see `mbariml cluster --help`."),
 ) -> None:
-    """Run the scriptable curation chain (detect -> embed -> cluster -> export voc -> html).
+    """Run the scriptable curation chain (detect -> embed -> cluster -> export: voc + html).
 
     Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
     with --from-step > 1 resumes against whatever is already in that database
@@ -160,10 +167,9 @@ def run(
                 approx_n_clusters=approx_n_clusters, noise_level=noise_level,
                 base_min_cluster_size=2, n_neighbors=40, min_samples=5, seed=seed,
             )
-        elif name == "export voc":
+        elif name == "export":
             step6_export_voc.export_voc(str(db_path), str(output_dir_path))
-        elif name == "html":
-            step7_generate_html.generate_html(str(db_path), str(output_dir_path / "html"), items_per_page=250)
+            step_export_html.generate_html(str(db_path), str(output_dir_path / "html"), items_per_page=250)
 
     logger.info("Pipeline run complete: %s", db_path)
 

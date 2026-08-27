@@ -1,15 +1,15 @@
-"""Step 9: run a trained YOLO model over a new batch of images.
+"""Step 8: run a trained YOLO model over a new batch of images.
 
 Writes to the SAME curation schema as step 1 (ROI crop blob + sharpness,
 with embedding/new_label left NULL) -- not a separate lighter schema, which
 is what earlier versions of this file did. That mattered: `mbariml review`,
 `cluster`, `refine`, `export voc`, and `remap-labels` all require columns
 (`roi_index`, `roi`, `embedding`, `new_label`) that the old lighter schema
-never had, so none of them could run against step 9's output at all. Now
+never had, so none of them could run against step 8's output at all. Now
 they can -- run `mbariml infer-images` on a new survey, then go straight to
-`mbariml embed`/`mbariml review`/`mbariml html` on what it produced, with no
-need to run step 1 first. This step is still fully standalone otherwise: it
-doesn't need any earlier step's database to run.
+`mbariml embed`/`mbariml review`/`mbariml export html` on what it produced,
+with no need to run step 1 first. This step is still fully standalone
+otherwise: it doesn't need any earlier step's database to run.
 
 ROIs are cropped directly from ``result.orig_img`` (the image array
 Ultralytics already loaded for that prediction), not by re-reading each file
@@ -225,7 +225,7 @@ def infer(
     )
     if final_count:
         logger.info(
-            "Ready to continue with: mbariml embed %s | mbariml review %s | mbariml html %s <out_dir>",
+            "Ready to continue with: mbariml embed %s | mbariml review %s | mbariml export html %s <out_dir>",
             db_path, db_path, db_path,
         )
 
