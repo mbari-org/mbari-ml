@@ -4,7 +4,9 @@ Adapted from MBARI vars-gridview's pyqtgraph-based detail pane
 (``BoxHandler``/``DetailPaneCoordinator`` in ``ui/coordinators/``; MIT
 License, see ``THIRD_PARTY_NOTICES.md``). Wheel-zoom and drag-pan are
 entirely default ``pyqtgraph.ViewBox`` behavior -- no custom mouse-event
-code needed here, matching the original, which has none either.
+code needed here, matching the original, which has none either -- except for
+"draw mode" (see ``_DrawableViewBox``), added for the "Add New ROI" tool,
+which is new here (not present in vars-gridview).
 
 Dropped relative to vars-gridview: the dirty-flag/deferred-save machinery
 and the dedicated background thread pool for image loading. This class
@@ -32,6 +34,53 @@ from mbariml.gui.query_service import FrameRoi
 # transposed.
 pg.setConfigOptions(imageAxisOrder="row-major")
 
+# Minimum drag size (in image pixels) to count as a real box, not an
+# accidental click/jitter -- same idea as BoundingBox's own 1px minimum size
+# guard in bounding_box.py.
+MIN_DRAWN_BOX_SIZE = 3
+
+
+class _DrawableViewBox(pg.ViewBox):
+    """A ``ViewBox`` that behaves exactly like the plain default (wheel-zoom,
+    drag-to-pan) unless ``draw_mode`` is on, in which case a left-button drag
+    draws a rubber-band rectangle instead of panning, and reports the
+    finished rectangle -- in image-pixel coordinates -- via ``box_drawn``.
+
+    Reuses ``ViewBox``'s own built-in ``RectMode`` scale-box mechanics
+    (``updateScaleBox``/``rbScaleBox``, and the same
+    ``childGroup.mapRectFromParent`` coordinate mapping ``RectMode`` itself
+    uses on release -- see ``pyqtgraph.graphicsItems.ViewBox.ViewBox.
+    mouseDragEvent``) purely for the live selection-box visuals and the
+    scene-to-image-pixel coordinate math, not for the "zoom to the drawn
+    rect" behavior ``RectMode`` normally triggers on release -- that's
+    replaced with the ``box_drawn`` callback instead, and the view's zoom
+    level is left untouched.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.draw_mode = False
+        self.box_drawn: Callable[[float, float, float, float], None] | None = None
+
+    def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        if not self.draw_mode or ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            super().mouseDragEvent(ev, axis=axis)
+            return
+
+        ev.accept()
+        if ev.isFinish():
+            self.rbScaleBox.hide()
+            rect = QtCore.QRectF(ev.buttonDownPos(ev.button()), ev.pos())
+            rect = self.childGroup.mapRectFromParent(rect).normalized()
+            if (
+                self.box_drawn is not None
+                and rect.width() >= MIN_DRAWN_BOX_SIZE
+                and rect.height() >= MIN_DRAWN_BOX_SIZE
+            ):
+                self.box_drawn(rect.left(), rect.top(), rect.right(), rect.bottom())
+        else:
+            self.updateScaleBox(ev.buttonDownPos(), ev.pos())
+
 
 class DetailView(QtWidgets.QWidget):
     """Full-image panel: wheel-zoom/drag-pan plus editable detection boxes."""
@@ -44,7 +93,7 @@ class DetailView(QtWidgets.QWidget):
         # its default is a light gray background, which would otherwise be
         # the one bright panel left over in an all-dark window.
         self._graphics_view.setBackground("#1e1f22")
-        self._view_box = pg.ViewBox()
+        self._view_box = _DrawableViewBox()
         self._view_box.setAspectLocked()
         self._view_box.invertY(True)  # match image pixel coords (y grows downward)
         self._graphics_view.setCentralItem(self._view_box)
@@ -86,6 +135,25 @@ class DetailView(QtWidgets.QWidget):
         self._image_item.clear()
         self._current_image_path = None
         self._image_size = None
+
+    def set_draw_mode(
+        self, enabled: bool, on_box_drawn: Callable[[float, float, float, float], None] | None = None
+    ) -> None:
+        """Turn "Add New ROI" drawing on/off for the ``ViewBox`` (see
+        ``_DrawableViewBox``). While on, a left-drag on empty image
+        background draws a new box instead of panning, reported via
+        *on_box_drawn* as ``(x_min, y_min, x_max, y_max)`` in image-pixel
+        coordinates; wheel-zoom and dragging an *existing* box (which
+        intercepts the drag itself, before it ever reaches the ViewBox) both
+        keep working exactly as before. A crosshair cursor is the only other
+        visible sign draw mode is active -- there's no separate "drawing
+        overlay" to tear down on exit.
+        """
+        self._view_box.draw_mode = enabled
+        self._view_box.box_drawn = on_box_drawn if enabled else None
+        self._graphics_view.setCursor(
+            QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor
+        )
 
     def set_boxes(
         self,

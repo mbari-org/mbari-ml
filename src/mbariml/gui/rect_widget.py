@@ -83,7 +83,6 @@ class RectWidget(QtWidgets.QGraphicsWidget):
 
         self.roi: np.ndarray | None = None
         self.pic: QtGui.QPixmap | None = None
-        self._roi_loaded = False
         if preload_roi:
             self.update_roi_pic()
         else:
@@ -132,11 +131,6 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         self.update()
 
     @property
-    def roi_loaded(self) -> bool:
-        """Whether this tile currently has a decoded (non-placeholder) ROI."""
-        return self._roi_loaded
-
-    @property
     def roi_batch_generation(self) -> int:
         """Current ROI loading batch generation assigned by the loading coordinator."""
         return self._roi_batch_generation
@@ -180,7 +174,6 @@ class RectWidget(QtWidgets.QGraphicsWidget):
 
     def update_roi_pic(self) -> None:
         self.roi = self.get_roi()
-        self._roi_loaded = True
         self.pic = self.getpic(self.roi)
         self.update()
 
@@ -222,7 +215,6 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         if generation != self._roi_refresh_generation:
             return
         self.roi = roi
-        self._roi_loaded = True
         self.pic = self.getpic(roi)
         self.update()
         self.roiRefreshed.emit(self)
@@ -235,7 +227,6 @@ class RectWidget(QtWidgets.QGraphicsWidget):
 
         placeholder = self._make_placeholder_roi()
         self.roi = placeholder
-        self._roi_loaded = False
         self.pic = self.getpic(placeholder)
         self.update()
         self.roiRefreshed.emit(self)

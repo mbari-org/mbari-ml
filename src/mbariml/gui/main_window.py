@@ -22,11 +22,17 @@ change, a tile zoom slider, a "verified" flag (with a Verify button and a
 range selection, wheel-zoom/drag-pan on the full-image panel, and
 draggable/resizable bounding boxes for every detection on the shown image
 (not just the current mosaic page's rows -- other detections on the same
-source frame may be sorted onto a different page).
+source frame may be sorted onto a different page). Also new: an "Add New
+ROI" tool for detections YOLO missed entirely -- click the green button,
+drag a box on the full-image panel, type a label, and repeat for as many
+boxes as needed before clicking the button again (or pressing Esc) to stop.
+See ``_DrawableViewBox`` in ``detail_view.py`` for the drawing mechanics and
+``_on_new_box_drawn`` below for what happens on each finished box.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QEvent, QThreadPool, Qt, Slot
@@ -36,6 +42,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QGraphicsView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -55,7 +62,9 @@ from mbariml.gui.roi_loading_coordinator import MosaicRoiLoadingCoordinator
 from mbariml.gui.roi_service import RoiService, crop_and_encode
 from mbariml.gui.runnables import Worker
 from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, SelectionModel
+from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
+from mbariml.steps.step2_embed import embed_roi_bgr
 
 logger = get_logger(__name__)
 
@@ -245,6 +254,9 @@ class MainWindow(QMainWindow):
         self._frame_roi_total: int = 0
         self._detail_only_active_roi_index: int | None = None
 
+        # "Add New ROI" tool state -- see _on_add_new_toggled/_on_new_box_drawn.
+        self._add_new_active = False
+
         self.graphics_view = QGraphicsView()
         self.graphics_view.installEventFilter(self)
         self._mosaic_view = MosaicView(self.graphics_view)
@@ -293,13 +305,20 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _install_shortcuts(self) -> None:
-        """Delete removes the selection (with confirmation); Escape clears
-        it; V verifies the selection, Shift+V unverifies it; arrow keys
+        """Delete removes the selection (with confirmation); Escape stops
+        "Add New ROI" mode if it's active, otherwise clears the selection; V
+        verifies the selection, Shift+V unverifies it; arrow keys
         navigate/extend the selection (handled in eventFilter)."""
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self.delete_selected_rois)
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.unselect_all)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._on_escape_pressed)
         QShortcut(QKeySequence(Qt.Key.Key_V), self, activated=self.verify_selected)
         QShortcut(QKeySequence("Shift+V"), self, activated=self.unverify_selected)
+
+    def _on_escape_pressed(self) -> None:
+        if self._add_new_active:
+            self.add_new_button.setChecked(False)  # triggers _on_add_new_toggled(False)
+        else:
+            self.unselect_all()
 
     def eventFilter(self, source, event) -> bool:  # noqa: N802
         if source is self.graphics_view and event.type() == QEvent.Type.Resize:
@@ -323,6 +342,25 @@ class MainWindow(QMainWindow):
 
     def _create_controls(self) -> QWidget:
         controls_layout = QVBoxLayout()
+
+        add_new_layout = QHBoxLayout()
+        self.add_new_button = QPushButton("+ Add New ROI")
+        self.add_new_button.setCheckable(True)
+        self.add_new_button.setStyleSheet(
+            "QPushButton { background-color: #2fa84f; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #36bd59; }"
+            "QPushButton:checked { background-color: #1f7a38; }"
+        )
+        self.add_new_button.toggled.connect(self._on_add_new_toggled)
+        add_new_layout.addWidget(self.add_new_button)
+        controls_layout.addLayout(add_new_layout)
+        controls_layout.addWidget(
+            QLabel(
+                "Missed a detection? Click Add New ROI, drag a box on the image panel above, "
+                "then type its label. Keep drawing more boxes, or click the button again "
+                "(or press Esc) when done."
+            )
+        )
 
         sort_layout = QHBoxLayout()
         sort_layout.addWidget(QLabel("Sort by:"))
@@ -1004,6 +1042,145 @@ class MainWindow(QMainWindow):
         logger.info("Deleted ROI #%s via the detail view.", roi_index)
         self.status_label.setText(f"Deleted ROI #{roi_index}.")
         self._refresh_verified_count_label()
+
+    # -- Add New ROI -----------------------------------------------------------
+
+    def _on_add_new_toggled(self, checked: bool) -> None:
+        """The green "Add New ROI" button: toggling it on arms drawing mode
+        on the detail view (see DetailView.set_draw_mode); toggling it off
+        (button click, or Esc via _on_escape_pressed) disarms it. Requires an
+        image already shown in the detail panel -- there's nothing to draw
+        on otherwise -- so turning it on with none shown is refused with an
+        explanatory message instead of silently doing nothing."""
+        if checked and self._current_detail_image_path is None:
+            QMessageBox.information(
+                self,
+                "No Image Shown",
+                "Select an ROI first so its source image is shown in the panel above -- "
+                "new boxes are drawn on that image.",
+            )
+            self.add_new_button.blockSignals(True)
+            self.add_new_button.setChecked(False)
+            self.add_new_button.blockSignals(False)
+            return
+
+        self._add_new_active = checked
+        self.add_new_button.setText("Done Adding (Esc)" if checked else "+ Add New ROI")
+        self._detail_view.set_draw_mode(checked, self._on_new_box_drawn if checked else None)
+        if checked:
+            self.status_label.setText(
+                "Drag a box on the image panel above, then enter a label for it."
+            )
+        else:
+            self.update_status_bar()
+
+    def _on_new_box_drawn(self, x_min: float, y_min: float, x_max: float, y_max: float) -> None:
+        """A box was just rubber-banded on the detail view while "Add New
+        ROI" is active: prompt for a label, then persist it as a brand-new
+        ROI (annotation_service.insert_roi) -- cropping/encoding/sharpness
+        follow the exact same path a box *edit* already uses
+        (_on_detail_box_changed), just inserting instead of updating -- and
+        kick off its embedding in the background (see
+        _embed_new_roi_worker/_on_new_roi_embedded), so it's immediately
+        usable by similarity search/clustering instead of sitting with
+        embedding IS NULL until someone remembers to run `mbariml embed`.
+
+        Cancelling the label prompt (Escape, or an empty label) discards the
+        box entirely -- nothing is written to the database, and the
+        temporary rubber-band rectangle is already gone (removed by
+        _DrawableViewBox itself on drag-release, before this is even
+        called), so there's nothing left to clean up.
+        """
+        image_path = self._current_detail_image_path
+        if image_path is None:
+            return  # shouldn't happen -- draw mode requires an image (see _on_add_new_toggled)
+
+        known_labels = query_service.fetch_known_labels(self.conn)
+        label, ok = QInputDialog.getItem(
+            self, "New ROI", "Label for this box:", known_labels, 0, editable=True,
+        )
+        label = label.strip() if ok else ""
+        if not label:
+            logger.info("New ROI discarded (no label entered).")
+            self.status_label.setText("New ROI discarded (no label entered). Draw another, or click Done.")
+            return
+
+        image = self._roi_service.fetch_full_image(image_path)
+        roi_blob = crop_and_encode(image, x_min, y_min, x_max, y_max) if image is not None else None
+        roi_bgr = self._roi_service.decode_roi(roi_blob) if roi_blob is not None else None
+        sharpness = compute_sharpness(roi_bgr) if roi_bgr is not None else 0.0
+
+        try:
+            roi_index = annotation_service.insert_roi(
+                self.conn,
+                image_name=Path(image_path).name,
+                image_path=image_path,
+                x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max,
+                label=label,
+                roi_blob=roi_blob,
+                sharpness=sharpness,
+            )
+        except Exception:
+            logger.exception("Error saving new ROI")
+            self.status_label.setText("Failed to save new ROI -- see log.")
+            return
+
+        # Reflect it in the detail view immediately (synchronous -- it's the
+        # panel this whole tool operates on); the grid tile and the total/
+        # verified counts follow shortly after via load_page()'s async
+        # requery, same as delete_selected_rois() does for the opposite
+        # operation.
+        self._frame_rois.append(query_service.FrameRoi(
+            id=roi_index, roi_index=roi_index, label=label,
+            x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max, original_label=label,
+        ))
+        self._frame_roi_total += 1
+        self._rebuild_detail_boxes()
+        self._refresh_known_labels()
+        self.load_page()
+
+        logger.info("Added new ROI #%s ('%s') on %s", roi_index, label, image_path)
+        self.status_label.setText(f'Added ROI #{roi_index} ("{label}"). Computing its embedding...')
+
+        if roi_bgr is not None:
+            worker = Worker(self._embed_new_roi_worker, roi_index, roi_bgr)
+            worker.signals.result.connect(self._on_new_roi_embedded)
+            worker.signals.error.connect(self._on_new_roi_embed_error)
+            self._workers.append(worker)  # see __init__ comment: must outlive the thread pool run
+            QThreadPool.globalInstance().start(worker)
+        else:
+            logger.warning("New ROI #%s has no crop to embed (degenerate box); leaving embedding NULL.", roi_index)
+
+    @staticmethod
+    def _embed_new_roi_worker(roi_index: int, roi_bgr) -> tuple[int, list[float]]:
+        """Compute one embedding off the GUI thread -- the first call in a
+        session loads (and caches) the DINOv3 model, which can take a while
+        (weight download on a fresh machine, then loading it onto the
+        GPU/MPS device); every call after that is fast. See
+        mbariml.steps.step2_embed.embed_roi_bgr for the model/preprocessing
+        itself, shared with `mbariml embed` so embeddings computed here are
+        directly comparable to every other embedding in the database."""
+        return roi_index, embed_roi_bgr(roi_bgr)
+
+    @Slot(object)
+    def _on_new_roi_embedded(self, payload) -> None:
+        roi_index, embedding = payload
+        try:
+            annotation_service.set_embedding(self.conn, roi_index, embedding)
+        except Exception:
+            logger.exception("Error saving embedding for new ROI #%s", roi_index)
+            self.status_label.setText(f"ROI #{roi_index} saved, but its embedding failed to save -- see log.")
+            return
+        logger.info("Computed and saved embedding for new ROI #%s", roi_index)
+        self.status_label.setText(f"ROI #{roi_index} embedded. Draw another, or click Done.")
+
+    @Slot(tuple)
+    def _on_new_roi_embed_error(self, err: tuple) -> None:
+        logger.error("Failed to compute embedding for new ROI: %s", err[1])
+        self.status_label.setText(
+            "New ROI saved, but computing its embedding failed -- see log. "
+            "Run `mbariml embed` later to fill it in."
+        )
 
     def _on_similarity_sort_requested(self, rect_widget: RectWidget, same_label_only: bool) -> None:
         """Right-click menu action: re-rank every ROI (optionally restricted to

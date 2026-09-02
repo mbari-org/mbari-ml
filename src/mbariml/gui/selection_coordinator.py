@@ -124,23 +124,17 @@ class MosaicSelectionCoordinator(QObject):
         """The fixed anchor for Shift-based range selection."""
         return self._anchor
 
-    def get_selected(self) -> list:
-        return self._selection_model.selected
-
-    def clear_selected(self) -> None:
-        self._selection_model.clear()
-
     def reset(self) -> None:
         """Clear selection and forget the anchor/nav-cursor widgets entirely.
 
-        Unlike ``clear_selected()``, this drops the coordinator's *own*
-        references to specific widgets. Call this before discarding the
-        widget list itself (e.g. a page reload) -- otherwise a stale anchor
-        or nav-cursor keeps a discarded widget reachable, which is exactly
-        the kind of leftover reference that (combined with the reference
-        cycle RectWidget.cleanup() breaks) can leave a QGraphicsItem waiting
-        on the unpredictable cyclic GC instead of being collected
-        immediately.
+        Unlike a plain ``selection_model.clear()``, this also drops the
+        coordinator's *own* references to specific widgets. Call this before
+        discarding the widget list itself (e.g. a page reload) -- otherwise
+        a stale anchor or nav-cursor keeps a discarded widget reachable,
+        which is exactly the kind of leftover reference that (combined with
+        the reference cycle RectWidget.cleanup() breaks) can leave a
+        QGraphicsItem waiting on the unpredictable cyclic GC instead of
+        being collected immediately.
         """
         self._selection_model.clear()
         self._anchor = None

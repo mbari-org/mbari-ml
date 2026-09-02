@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.9.0). This walks through the
+Regenerated for the unified `mbariml` CLI (v0.10.0). This walks through the
 pipeline in order, with one working example command per step. The full,
 authoritative --help output for every command is captured verbatim at the
 bottom of this file -- if this walkthrough and --help ever disagree, trust
@@ -131,14 +131,14 @@ STEP 5 -- review (interactive GUI)
 
   In the grid: click a thumbnail to select it, Shift-click for a range,
   Ctrl/Cmd-click to add to the selection; arrow keys navigate/extend a
-  selection too. Press 1-9 to instantly apply one of the 9 most-used labels
-  (also shown as buttons); type a label and press Enter to apply something
-  new/rare; right-click an ROI to sort every page by embedding similarity to
-  it (needs step 2 to have run); Delete removes the selection (asks first --
-  it's permanent); Escape clears it. A tile-size slider and "hide
-  labeled"/"hide unlabeled" checkboxes control what the grid shows. The
-  status bar shows progress while a page loads or a similarity sort runs,
-  and always shows "Page X/Y" -- a "Go to page" spinbox next to
+  selection too. Type a label into the relabel field (free text, or pick
+  from the dropdown of labels already in use) and press Enter, or click
+  Label, to apply it to the selection; right-click an ROI to sort every page
+  by embedding similarity to it (needs step 2 to have run); Delete removes
+  the selection (asks first -- it's permanent); Escape clears it. A
+  tile-size slider and a "Hide verified" checkbox control what the grid
+  shows. The status bar shows progress while a page loads or a similarity
+  sort runs, and always shows "Page X/Y" -- a "Go to page" spinbox next to
   Previous/Next jumps straight to any page.
 
   "Show label" toggles what each tile/box displays: "New Label" (the
@@ -155,9 +155,22 @@ STEP 5 -- review (interactive GUI)
   detections on the same frame can be sorted onto a different page. Drag a
   box's handles to resize/reposition it (saved immediately, and the crop
   stored in the database is regenerated to match); the box for whatever's
-  currently selected shows green, the rest pale blue-grey; right-click a box
+  currently selected shows red, the rest pale blue-grey; right-click a box
   for "Delete". A single image with hundreds of detections caps the boxes
   shown (an image's own status line says so) to keep this responsive.
+
+  Missing a detection entirely (YOLO never drew a box for it)? Click "+ Add
+  New ROI" (green button, top of the controls panel) -- the same panel
+  switches into drawing mode: drag a box on the image, type a label in the
+  prompt that pops up, and keep going (draw another, or select a different
+  ROI first to switch images -- drawing mode stays armed either way) until
+  you click the button again or press Escape. Each box is saved the moment
+  you type its label -- confidence fixed at 1.0 and verified set, since a
+  human drew and named it, not YOLO -- and its embedding is computed right
+  after in the background (status line says so), using the same DINOv3
+  model `mbariml embed` uses, so it's immediately usable by similarity
+  search/clustering rather than sitting with a NULL embedding. An
+  empty/cancelled label prompt discards that one box; nothing else changes.
 
 STEP 6 -- export (voc / yolo / id / html)
   Export curated labels (new_label, excluding "noise") to whichever
@@ -328,7 +341,7 @@ individual step) already produced.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.9.0. Run `mbariml <command> --help` yourself any
+Captured verbatim against v0.10.0. Run `mbariml <command> --help` yourself any
 time to get the current, authoritative version of any of this.
 
 mbariml --help

@@ -1,10 +1,10 @@
 """Step 1: detect objects with YOLO, extract ROI crops, and seed the curation database.
 
 This is the first link in the curation chain (1 -> 2 embed -> 3 cluster ->
-4 refine -> 5 review GUI -> 6/7 export -> 8 query -> 10 remap). Its database
-uses the richer ``CURATION`` schema (see ``mbariml.db``), which stores each
-ROI as a JPEG blob so later steps can embed/cluster/review it without
-re-reading the original imagery.
+4 refine -> 5 review GUI -> 6 export -> 7 query -> 8 infer-images ->
+9 remap-labels -> 11 stats). Its database uses the richer ``CURATION``
+schema (see ``mbariml.db``), which stores each ROI as a JPEG blob so later
+steps can embed/cluster/review it without re-reading the original imagery.
 
 Each image's detections are inserted via ``db.fast_executemany`` rather than
 a bare ``conn.executemany`` -- DuckDB's Python driver commits (and fsyncs to

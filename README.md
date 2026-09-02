@@ -84,10 +84,9 @@ export --help` for the export group itself).
 
 - **Click** a thumbnail to select it, **Shift-click** to select a range,
   **Ctrl-click** to add to the selection.
-- **Press 1-9** to instantly apply one of the 9 most-used labels in the
-  database to the current selection (also shown as clickable buttons, with
-  counts, in the right panel — the panel updates as label usage changes).
-- Type a new/rare label into the text field and press **Enter** to apply it.
+- Type a label into the relabel field (free text, or pick from the dropdown
+  of labels already in use) and press **Enter**, or click **Label**, to
+  apply it to the current selection.
 - **Delete** removes the current selection (asks for confirmation first —
   it's permanent).
 - **Escape** clears the selection.
@@ -98,6 +97,26 @@ export --help` for the export group itself).
   normal sorting.
 - The status line under the buttons always shows the current page, how many
   ROIs are shown, and how many are selected, so a keypress never surprises you.
+- **Add New ROI** (green button, top of the controls panel): for a detection
+  YOLO missed entirely. Click it, drag a box on the full-image panel, type a
+  label in the prompt that pops up, and repeat -- it stays armed for
+  drawing as many boxes as you need, on the currently shown image or any
+  other you select next, until you click the button again or press
+  **Escape**. Each finished box is inserted immediately (confidence fixed at
+  `1.0`, `verified` set -- a human drew and named it, there's nothing left
+  to review) and shows up in the detail view right away; the grid picks it
+  up shortly after via the normal page refresh. Its embedding is computed
+  right after, in the background (the status line says so), using the exact
+  same DINOv3 model/preprocessing `mbariml embed` uses -- directly
+  comparable to every other embedding in the database, so a new box is
+  immediately usable by similarity search/clustering, not stuck with
+  `embedding IS NULL` until someone remembers to run `mbariml embed`
+  (if that background step ever fails, the ROI itself is still saved and
+  `mbariml embed` remains a safe fallback -- it only ever fills in rows
+  that are still NULL). An empty/cancelled label prompt discards that box --
+  nothing is written. Wheel-zoom, dragging an *existing* box, and everything
+  else on the panel work exactly as before; only a drag on empty image
+  background behaves differently while armed.
 
 Labeling and deleting no longer rebuild the entire page of thumbnails (the
 original did, on every single click, which is why review used to feel slow) —
@@ -271,7 +290,7 @@ to be filled in later by a separate navigation-merge process:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.9.0
+# generator: mbariml v0.10.0
 # generated_by: lonny
 # generated_at: 2026-08-19T17:36:28Z
 # model: /path/to/best.pt
@@ -338,6 +357,30 @@ database — run them directly. `export yolo`/`export id` and `stats` (step
 whatever database `run` (or any individual step) already produced.
 
 ## What changed from the original scripts
+
+**"Add New ROI" in the review GUI (v0.10.0)**: previously the only way to
+fix a missed detection was to run `detect`/`infer-images` again with a lower
+`--conf`, or add it out-of-band and re-import -- there was no way to just
+draw the box YOLO should have found. The review GUI (step 5) now has a
+green "Add New ROI" button that arms drawing mode on the full-image panel:
+drag a box, type its label in the prompt, and repeat for as many as needed
+before clicking the button again or pressing Escape. Implemented as
+`_DrawableViewBox` in `detail_view.py` (a `pyqtgraph.ViewBox` subclass that
+reuses pyqtgraph's own built-in `RectMode` scale-box mechanics for the
+rubber-band visual and coordinate math, but reports the finished rect
+instead of zooming to it) plus `annotation_service.insert_roi` (new row:
+`confidence` fixed at `1.0`, `class_id` left `NULL`, `new_label` and `label`
+both set to the typed value, `verified` set immediately -- a human drew and
+named it, there's nothing left to review). Its embedding is computed right
+after, off the GUI thread (`MainWindow._embed_new_roi_worker`, applied via
+`annotation_service.set_embedding` once it finishes), using
+`mbariml.steps.step2_embed.embed_roi_bgr` -- a new single-item entry point
+into the exact same model/preprocessing `mbariml embed`'s batched pipeline
+uses (verified directly: byte-for-byte identical output to running the same
+crop through the batched path), so a hand-drawn box's embedding is
+guaranteed comparable to every other embedding in the database, not a
+second, potentially-drifted implementation. Not adapted from vars-gridview;
+new here.
 
 **`export`/step-numbering restructuring (v0.9.0)**: `mbariml html` (step 7)
 is now `mbariml export html`, grouped into step 6 alongside `export
@@ -490,7 +533,7 @@ finishes, so progress is durable as the run proceeds, and:
   score (see "Using the review GUI (step 5) well" above). While reworking
   that screen, labeling/deleting were also changed to update only the
   affected thumbnails instead of rebuilding the entire ~500-thumbnail page on
-  every click, and 1-9 keyboard shortcuts were added for the most-used labels.
+  every click, instead of the full rebuild the original did on every action.
 - The embedding backbone switched from DINOv2 to DINOv3 (see "Embeddings
   (DINOv3)" above) for accuracy. While there, preprocessing switched from
   hand-picked constants (a fixed 518x518 resize + CLIP's mean/std, regardless

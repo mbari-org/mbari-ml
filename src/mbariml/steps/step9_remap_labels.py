@@ -1,4 +1,21 @@
-"""Step 9: bulk-rename `new_label` values from a two-column changes file."""
+"""Step 9: bulk-rename `new_label` values from a two-column changes file.
+
+Bug fixed here: this used to apply each (old_label, new_label) pair as its
+own sequential UPDATE. That's fine for independent renames, but a changes
+file with any chained or overlapping rule -- most obviously a two-way swap
+like `A,B` / `B,A` -- silently corrupted the data instead of doing what a
+"remap" file obviously means: relabel everything based on where it started,
+all at once. Confirmed directly: a swap file (`A,B` then `B,A`) applied
+sequentially renamed every A to B first, then renamed *every* B (including
+the rows that had just become B) back to A, leaving every row -- both
+original As and original Bs -- as 'A', with no error and a misleadingly
+"successful" per-rule row count. Every pair is now applied as ONE UPDATE
+against a staged changes table (same ``UPDATE ... FROM`` staging idiom as
+``mbariml.db.bulk_update``, just joined on ``new_label`` instead of a row
+id), so every row's new value is computed from its *original* new_label,
+matching every other row's, in a single atomic pass -- a swap file now
+actually swaps.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +44,40 @@ def _load_changes(changes_file: Path) -> dict[str, str]:
     return changes
 
 
+def _apply_changes(conn, changes: dict[str, str]) -> dict[str, int]:
+    """Apply every (old_label, new_label) pair as one UPDATE against a
+    staged changes table, so each row's new value is computed from its
+    original new_label -- not from whatever an earlier pair in this same
+    run may have already changed it to (see the module docstring for the
+    swap-corruption bug this fixes). Returns {old_label: affected_count}.
+    """
+    conn.execute("CREATE OR REPLACE TEMP TABLE _remap_changes (old_label TEXT, new_label TEXT)")
+    db.fast_executemany(
+        conn, "INSERT INTO _remap_changes VALUES (?, ?)", list(changes.items())
+    )
+
+    counts = dict(
+        conn.execute(
+            """
+            SELECT _remap_changes.old_label, COUNT(*)
+            FROM predictions
+            JOIN _remap_changes ON predictions.new_label = _remap_changes.old_label
+            GROUP BY _remap_changes.old_label
+            """
+        ).fetchall()
+    )
+    conn.execute(
+        """
+        UPDATE predictions
+        SET new_label = _remap_changes.new_label
+        FROM _remap_changes
+        WHERE predictions.new_label = _remap_changes.old_label
+        """
+    )
+    conn.execute("DROP TABLE _remap_changes")
+    return counts
+
+
 @app.command()
 def remap_labels(
     db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
@@ -39,17 +90,11 @@ def remap_labels(
         return
 
     with db.connect(db_path) as conn:
-        total_updated = 0
-        for old_label, new_label in changes.items():
-            affected = conn.execute(
-                "SELECT COUNT(*) FROM predictions WHERE new_label = ?", (old_label,)
-            ).fetchone()[0]
-            if affected:
-                conn.execute("UPDATE predictions SET new_label = ? WHERE new_label = ?", (new_label, old_label))
-            total_updated += affected
-            logger.info("'%s' -> '%s': %d row(s)", old_label, new_label, affected)
+        counts = _apply_changes(conn, changes)
 
-    logger.info("Done: %d row(s) updated across %d label(s).", total_updated, len(changes))
+    for old_label, new_label in changes.items():
+        logger.info("'%s' -> '%s': %d row(s)", old_label, new_label, counts.get(old_label, 0))
+    logger.info("Done: %d row(s) updated across %d label(s).", sum(counts.values()), len(changes))
 
 
 if __name__ == "__main__":

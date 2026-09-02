@@ -9,4 +9,4 @@ See ``mbariml.cli`` for the unified command line entry point (``mbariml``),
 or ``mbariml.steps`` for the individual step implementations.
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

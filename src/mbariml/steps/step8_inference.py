@@ -140,8 +140,15 @@ def _export_csv(conn, csv_path: Path) -> None:
         logger.warning("No predictions in the database; skipping CSV export (nothing to write to %s).", csv_path)
         return
 
+    # Bug fixed here: image_name is interpolated straight into SQL (DuckDB
+    # can't parameterize a dynamic column list), so both the string literal
+    # AND the quoted-identifier alias need their own escaping -- only the
+    # alias was escaped before, so any image filename containing a single
+    # quote (confirmed directly: a plain SELECT ... GROUP BY against a row
+    # with one) broke this query with a syntax error.
     sanitized_columns = [
-        f"MAX(CASE WHEN image_name = '{name}' THEN count ELSE 0 END) AS \"{name.replace(chr(34), chr(34)*2)}\""
+        f"MAX(CASE WHEN image_name = '{name.replace(chr(39), chr(39) * 2)}' THEN count ELSE 0 END) "
+        f"AS \"{name.replace(chr(34), chr(34) * 2)}\""
         for name in distinct_images
     ]
     conn.execute(

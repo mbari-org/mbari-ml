@@ -64,7 +64,6 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -106,6 +105,30 @@ def _load_embedding_model():
     # hand-picked constants that only happen to be right for one model.
     preprocess = create_transform(**resolve_data_config({}, model=model), is_training=False)
     return model, preprocess, device
+
+
+def embed_roi_bgr(roi_bgr: np.ndarray) -> list[float]:
+    """Compute one embedding for an already-decoded BGR ROI crop.
+
+    The single-item counterpart to the batched pipeline below -- used by the
+    review GUI's "Add New ROI" tool (see ``MainWindow._embed_new_roi_worker``)
+    to embed a hand-drawn box immediately instead of leaving it NULL until
+    the next ``mbariml embed`` run. Loads (and caches, via
+    ``_load_embedding_model``) the exact same model/preprocessing the batch
+    path uses, so an embedding computed this way is directly comparable to
+    every other embedding already in the database -- the one thing that
+    absolutely must hold (see the module docstring's "IMPORTANT" note) for
+    clustering/similarity search to mean anything.
+    """
+    from PIL import Image
+    import torch
+
+    model, preprocess, device = _load_embedding_model()
+    rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+    tensor = preprocess(Image.fromarray(rgb)).unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = model(tensor).cpu().numpy()[0]
+    return embedding.tolist()
 
 
 def _decode_roi(roi_blob: bytes) -> np.ndarray:

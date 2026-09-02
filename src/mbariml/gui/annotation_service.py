@@ -69,6 +69,68 @@ def delete_rois(conn: duckdb.DuckDBPyConnection, roi_indices: list[int]) -> None
     )
 
 
+def insert_roi(
+    conn: duckdb.DuckDBPyConnection,
+    image_name: str,
+    image_path: str,
+    x_min: float,
+    y_min: float,
+    x_max: float,
+    y_max: float,
+    label: str,
+    roi_blob: bytes | None,
+    sharpness: float,
+) -> int:
+    """Insert a brand-new, manually-drawn ROI (the review GUI's "Add New
+    ROI" tool -- see ``MainWindow._on_new_box_drawn``) and return its
+    ``roi_index``.
+
+    ``id``/``roi_index`` are the same running counter every other writer
+    (``step1_detect``, ``step8_inference``) uses -- see ``mbariml.db``'s
+    schema docstring -- so the next free value is one past the current max
+    ``id`` in this database; safe here since the review GUI is single-writer
+    (no concurrent process is also inserting into this database). ``class_id``
+    is left NULL (no YOLO class applies to a hand-drawn box) and
+    ``confidence`` fixed at ``1.0`` (a human drew and named it -- there's no
+    detector score to record). ``embedding`` is left NULL here -- the caller
+    (``MainWindow._on_new_box_drawn``) fills it in moments later via a
+    background worker and :func:`set_embedding`, so it doesn't sit NULL
+    until someone remembers to run ``mbariml embed`` (though that remains a
+    safe fallback if the background computation ever fails). Both ``label``
+    (the raw-detection column) and ``new_label`` are set to the typed label
+    immediately (there's no separate "raw" class to preserve), and
+    ``verified`` is set to ``1`` -- a box a human just drew and labeled is
+    definitionally reviewed, the same reasoning :func:`apply_label` already
+    uses for an ordinary relabel.
+    """
+    next_id = conn.execute("SELECT COALESCE(MAX(id), -1) + 1 FROM predictions").fetchone()[0]
+    conn.execute(
+        """
+        INSERT INTO predictions
+        (id, image_name, image_path, roi_index, x_min, y_min, x_max, y_max,
+         class_id, confidence, label, embedding, new_label, roi, sharpness, verified)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1.0, ?, NULL, ?, ?, ?, 1)
+        """,
+        (next_id, image_name, image_path, next_id, x_min, y_min, x_max, y_max, label, label, roi_blob, sharpness),
+    )
+    return next_id
+
+
+def set_embedding(conn: duckdb.DuckDBPyConnection, roi_index: int, embedding: list[float]) -> None:
+    """Store a freshly-computed embedding for one ROI.
+
+    Used by the "Add New ROI" tool once its background embedding worker
+    finishes (see ``MainWindow._on_new_roi_embedded``) -- a hand-drawn box
+    would otherwise sit with ``embedding IS NULL`` (invisible to similarity
+    search/clustering) until someone remembers to run ``mbariml embed``.
+    A plain single-row UPDATE, same reasoning as :func:`update_bbox`: this
+    happens one ROI at a time as each box is drawn, not in a batch worth
+    ``mbariml.db.bulk_update``'s staged-bulk-UPDATE treatment (what
+    ``mbariml embed`` itself uses for exactly that batched case).
+    """
+    conn.execute("UPDATE predictions SET embedding = ? WHERE roi_index = ?", (embedding, roi_index))
+
+
 def update_bbox(
     conn: duckdb.DuckDBPyConnection,
     roi_index: int,
@@ -95,4 +157,4 @@ def update_bbox(
     )
 
 
-__all__ = ["apply_label", "set_verified", "delete_rois", "update_bbox"]
+__all__ = ["apply_label", "set_verified", "delete_rois", "insert_roi", "set_embedding", "update_bbox"]
