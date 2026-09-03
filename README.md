@@ -18,6 +18,11 @@ detection overlaid as a draggable box (the selected one in red), over the
 controls panel. "Open Video" is live here because this ROI came from
 `infer video`, so it jumps straight to that moment in the source footage.*
 
+**Also in this repo:** [`cheat_sheet.txt`](cheat_sheet.txt) (one worked
+example per command, plus verbatim `--help` for all of them) ·
+[`docs/SCHEMA.md`](docs/SCHEMA.md) (what's in the database, column by
+column) · [`CHANGELOG.md`](CHANGELOG.md) (what changed, and why).
+
 ## Setup
 
 ```bash
@@ -448,6 +453,20 @@ The export stage runs both `export voc` and `export html`; if you only want
 one, run it directly rather than through `run`. `review`, `query`,
 `remap-labels`, `stats`, `export yolo`, and `export id` aren't in the chain —
 they're interactive, or they don't belong in the middle of a batch run.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Ingest finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
+| `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Copy the tracker YAML, lower `track_high_thresh` / `new_track_thresh`, and pass it with `--tracker`. Lowering `--conf` alone will not help. |
+| An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded at ingest (absolute since v0.11.0); re-ingest if the imagery has been relocated. |
+| `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
+| Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
+| Clustering or similarity results look **nonsensical** | Check you haven't mixed embeddings from two models in one database. If you changed `EMBEDDING_MODEL_NAME`, re-embed everything with `mbariml embed --force`. |
+| `embed` is **slow, and getting slower** | Confirm the device (it logs MPS/CUDA/CPU at startup), then check nothing else is competing for the GPU. The historical cause was a DuckDB write pattern, long since fixed — see [CHANGELOG.md](CHANGELOG.md). |
+| **"Open Video" does nothing useful** | Install IINA, mpv, or VLC — all honor a start position. Without one it falls back to your browser, which only seeks for codecs the browser can play. |
+| Opening an **older database** errors on a missing column | Only `review` and the two `infer` commands open through `init_curation_db`, which runs the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations; the rest open the file as-is. Open it once with `mbariml review` to migrate it in place, then re-run whatever failed. |
 
 ## What changed
 
