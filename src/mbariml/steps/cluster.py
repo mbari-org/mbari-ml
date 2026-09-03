@@ -55,6 +55,49 @@ GRID_WIDTH, GRID_HEIGHT, GRID_PADDING = 2550, 3300, 5
 MIN_ROWS_TO_CLUSTER = 10
 
 
+CLUSTER_NAMING_MODES = ("auto", "dominant", "indexed")
+
+
+def _cluster_label_names(cluster_to_dominant: dict[int, str], naming: str) -> dict[int, str]:
+    """Decide the ``new_label`` each cluster gets.
+
+    Naming a cluster after its dominant original label works only when the
+    detector has enough classes for that label to distinguish one cluster from
+    another. It fails badly for a single-class detector -- MBARI's Megalodon,
+    say, which only reports "object" -- because then *every* cluster's dominant
+    label is the same string, and writing it back collapses the clustering that
+    was just computed into one undifferentiated label. The grouping survives
+    only in ``evoc_clust``, and the review GUI (which filters and sorts on
+    ``new_label``) can no longer tell the groups apart.
+
+    So in "auto" mode a label that wins more than one cluster is suffixed with
+    an index -- object_1, object_2, ... -- keeping the groups separable, which
+    is the same thing ``refine`` already does for sub-clusters. A label that
+    wins exactly one cluster is left alone, so a well-separated multi-class run
+    still reads as Muusoctopus, Actiniaria, and so on rather than
+    Muusoctopus_1. "dominant" keeps the bare label always (the pre-v0.13.0
+    behaviour), "indexed" always suffixes.
+
+    Numbering follows cluster id order, so it's stable across re-runs with the
+    same seed.
+    """
+    if naming == "dominant":
+        return dict(cluster_to_dominant)
+
+    by_label: dict[str, list[int]] = {}
+    for cluster_id, label in sorted(cluster_to_dominant.items()):
+        by_label.setdefault(label, []).append(cluster_id)
+
+    names: dict[int, str] = {}
+    for label, cluster_ids in by_label.items():
+        if naming == "auto" and len(cluster_ids) == 1:
+            names[cluster_ids[0]] = label
+        else:
+            for index, cluster_id in enumerate(cluster_ids, start=1):
+                names[cluster_id] = f"{label}_{index}"
+    return names
+
+
 def _cluster_embeddings(
     conn,
     limit: Optional[int],
@@ -65,6 +108,7 @@ def _cluster_embeddings(
     n_neighbors: int,
     min_samples: int,
     seed: Optional[int],
+    naming: str = "auto",
 ) -> int:
     """Cluster embeddings using EVoC and write evoc_clust/new_label back. Returns cluster count."""
     import evoc
@@ -116,18 +160,27 @@ def _cluster_embeddings(
             continue
         cluster_to_labels.setdefault(cluster_label, []).append(label)
     cluster_to_dominant_label = {c: max(set(ls), key=ls.count) for c, ls in cluster_to_labels.items()}
+    cluster_names = _cluster_label_names(cluster_to_dominant_label, naming)
+
+    distinct_dominant = len(set(cluster_to_dominant_label.values()))
+    if distinct_dominant < len(cluster_to_dominant_label):
+        logger.info(
+            "%d cluster(s) share only %d distinct original label(s); naming mode '%s' -> e.g. %s",
+            len(cluster_to_dominant_label), distinct_dominant, naming,
+            ", ".join(sorted(set(cluster_names.values()))[:4]),
+        )
 
     logger.info("Writing cluster assignments back to the database...")
     db.bulk_update(
         conn, "predictions", "id", "INTEGER",
         {"evoc_clust": "INTEGER", "new_label": "TEXT"},
         [
-            (row_id, c, cluster_to_dominant_label[c] if c != -1 else "noise")
+            (row_id, c, cluster_names[c] if c != -1 else "noise")
             for row_id, c in zip(ids, cluster_labels)
         ],
     )
-    logger.info("Clustered %d embedding(s) into %d cluster(s).", len(rows), len(cluster_to_dominant_label))
-    return len(cluster_to_dominant_label)
+    logger.info("Clustered %d embedding(s) into %d cluster(s).", len(rows), len(cluster_names))
+    return len(cluster_names)
 
 
 def _generate_roi_grids(conn, output_dir: Path, group_by_dominant_label: bool) -> None:
@@ -223,8 +276,18 @@ def cluster(
     seed: Optional[int] = typer.Option(
         None, help="Random seed for EVoC (its random_state). Unset means a different, non-reproducible result every run -- set this while iterating on the other options above so changes are comparable."
     ),
+    naming: str = typer.Option(
+        "auto",
+        help="How clusters are named in new_label. 'auto' (default) uses each cluster's "
+        "dominant original label, adding an index when one label wins several clusters -- so a "
+        "single-class detector yields object_1, object_2, ... instead of relabelling everything "
+        "'object' and discarding the grouping. 'dominant' always uses the bare label; 'indexed' "
+        "always adds the index.",
+    ),
 ) -> None:
     """Cluster ROI embeddings with EVoC and export review grids."""
+    if naming not in CLUSTER_NAMING_MODES:
+        raise typer.BadParameter(f"--naming must be one of {list(CLUSTER_NAMING_MODES)}")
     output_dir = Path(db_path).parent
 
     with db.connect(db_path) as conn:
@@ -237,6 +300,7 @@ def cluster(
             n_neighbors=n_neighbors,
             min_samples=min_samples,
             seed=seed,
+            naming=naming,
         )
         if n_clusters:
             _generate_roi_grids(conn, output_dir, group_by_dominant_label=not off)

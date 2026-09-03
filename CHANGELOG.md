@@ -11,6 +11,31 @@ recognizable.
 
 ---
 
+## 0.13.0 — cluster naming for single-class detectors
+
+`cluster` labelled each cluster with the dominant original label of its
+members. With a single-class detector that is the same string for every
+cluster, so the clustering was immediately thrown away: every row came back
+labelled `object`, and since the review GUI filters and sorts on `new_label`,
+the groups became indistinguishable. Only `evoc_clust` still held the
+structure.
+
+The new `--naming` option defaults to `auto`, which keeps the dominant label
+but appends an index whenever one label wins more than one cluster. A
+single-class run now produces `object_1`, `object_2`, … Verified on a 147-ROI
+run: six clusters that previously collapsed to a single `object` label come
+back as `object_1`–`object_6` with 34/35/12/16/12/26 ROIs.
+
+This helps multi-class runs too. On the same ROIs with the detector's real
+labels, `Actiniaria` and `Ceriantharia` each won one cluster and keep their
+bare names, while four distinct sponge clusters become `Hexactinellida_1`–`_4`
+instead of being flattened together. `dominant` restores the old behaviour and
+`indexed` always suffixes. The suffixing matches what `refine` already did for
+sub-clusters, and numbering follows cluster id so re-runs with the same seed are
+stable.
+
+---
+
 ## 0.12.0 — brightness/contrast for the review grid
 
 Two sliders below the tile-size slider adjust the ROI thumbnails across the

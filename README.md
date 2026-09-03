@@ -66,7 +66,7 @@ All commands:
 | `mbariml infer images` | Ingest | Detect on a directory of images; crop ROIs into a database (see below) |
 | `mbariml infer video`  | Ingest | Detect on video, by tracking or frame striding (see below) |
 | `mbariml embed`        | Enrich | Compute a DINOv3 embedding for every ROI |
-| `mbariml cluster`      | Enrich | Cluster embeddings with EVoC, tag dominant labels, export review grids |
+| `mbariml cluster`      | Enrich | Cluster embeddings with EVoC, name clusters, export review grids (see below) |
 | `mbariml refine`       | Enrich | Re-cluster one label's ROIs into finer sub-clusters |
 | `mbariml review`       | Curate | Interactive GUI for labeling/deleting/adding ROIs |
 | `mbariml remap-labels` | Curate | Bulk-rename `new_label` values from a CSV |
@@ -169,6 +169,32 @@ database's own counter, so a second run *appends* rather than colliding —
 several videos, or images and video together, can share one database and be
 clustered/reviewed as one set. Verified: 5 image rows + 4 video rows in one
 database (ids 0–4 and 5–8), with `stats` aggregating across both.
+
+### Clustering with a single-class detector
+
+`cluster` names each cluster after the dominant original label of its members.
+That works when the detector has enough classes to tell clusters apart, and
+fails badly when it doesn't. Run a single-class detector — MBARI's Megalodon,
+say, which reports only `object` — and every cluster's dominant label is the
+same string, so writing it back collapses the clustering you just computed into
+one undifferentiated label. The grouping survives only in `evoc_clust`, and the
+review GUI (which filters and sorts on `new_label`) can no longer tell the
+groups apart.
+
+`--naming` controls this, and defaults to `auto`:
+
+- **`auto`** (default) — use the dominant label, but when one label wins several
+  clusters, suffix each with an index. A single-class run yields `object_1`,
+  `object_2`, … Measured on a real 147-ROI run: 6 clusters that previously all
+  became `object` now come back as `object_1`–`object_6`.
+- **`dominant`** — always use the bare label (the behaviour before v0.13.0).
+- **`indexed`** — always add the index.
+
+`auto` also helps multi-class runs. On the same ROIs with real labels, one
+cluster each of `Actiniaria` and `Ceriantharia` keep their bare names while four
+separate sponge clusters become `Hexactinellida_1`–`_4`, rather than being
+flattened into a single `Hexactinellida`. Merge them later with `remap-labels`
+if that's what you want.
 
 ### Using the review GUI well
 

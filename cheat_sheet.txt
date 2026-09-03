@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.12.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.13.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -197,6 +197,16 @@ cluster
     --noise-level F         0.0-1.0 outlier sensitivity [default: 0.2]; lower
                             calls fewer points noise
     --base-min-cluster-size, --n-neighbors, --min-samples, --seed
+    --naming auto|dominant|indexed
+                            how clusters are named in new_label [default: auto].
+                            Clusters are named after the dominant original label
+                            of their members -- which breaks for a single-class
+                            detector (e.g. Megalodon, which only reports
+                            "object"), since then every cluster gets the same
+                            name and the grouping is lost. 'auto' appends an
+                            index whenever one label wins several clusters, so
+                            you get object_1, object_2, ... 'dominant' always
+                            uses the bare label; 'indexed' always suffixes.
 
 refine (optional)
   Re-cluster ONE label's ROIs into finer sub-clusters -- for when clustering
@@ -353,7 +363,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.12.0. Run `mbariml <command> --help` yourself any
+Captured verbatim against v0.13.0. Run `mbariml <command> --help` yourself any
 time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -551,10 +561,8 @@ mbariml embed --help
 mbariml cluster --help
 
 
- Usage: mbariml cluster [OPTIONS] {db_path}                                                         
-
- Cluster ROI embeddings with EVoC and export review grids.                                          
-
+ Usage: mbariml cluster [OPTIONS] {db_path}
+ Cluster ROI embeddings with EVoC and export review grids.
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │ *    db_path      <str>  Path to the DuckDB database. [required]                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -597,6 +605,15 @@ mbariml cluster --help
 │                                                 means a different, non-reproducible result every │
 │                                                 run -- set this while iterating on the other     │
 │                                                 options above so changes are comparable.         │
+│ --naming                               <str>    How clusters are named in new_label. 'auto'      │
+│                                                 (default) uses each cluster's dominant original  │
+│                                                 label, adding an index when one label wins       │
+│                                                 several clusters -- so a single-class detector   │
+│                                                 yields object_1, object_2, ... instead of        │
+│                                                 relabelling everything 'object' and discarding   │
+│                                                 the grouping. 'dominant' always uses the bare    │
+│                                                 label; 'indexed' always adds the index.          │
+│                                                 [default: auto]                                  │
 │ --help                                          Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
