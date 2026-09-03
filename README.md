@@ -22,7 +22,9 @@ controls panel. "Open Video" is live because this ROI came from
 **Also in this repo:** [`cheat_sheet.txt`](cheat_sheet.txt) (one worked
 example per command, plus verbatim `--help` for all of them) ·
 [`docs/SCHEMA.md`](docs/SCHEMA.md) (what's in the database, column by
-column) · [`CHANGELOG.md`](CHANGELOG.md) (what changed, and why).
+column) · [`CHANGELOG.md`](CHANGELOG.md) (what changed, and why) ·
+[`docs/paper/`](docs/paper/) (a short write-up of the design and what
+has and hasn't been measured).
 
 ## Setup
 
