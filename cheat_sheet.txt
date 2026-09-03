@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.11.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.12.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -221,7 +221,11 @@ review (interactive GUI)
   or click Label, to apply it to the selection. Right-click an ROI to sort
   every page by embedding similarity to it (needs `embed` to have run).
   Delete removes the selection (asks first -- permanent); Escape clears it. A
-  tile-size slider and a "Hide verified" checkbox control what's shown.
+  tile-size slider and a "Hide verified" checkbox control what's shown, and
+  Brightness/Contrast sliders below the tile-size slider stretch the
+  thumbnails across the whole grid -- faint animals against sediment are much
+  easier to pick out that way. Both are view-only (stored ROIs are never
+  modified); "Reset" puts them back to neutral.
 
   The right panel shows the full source image with mouse-wheel zoom and
   click-drag pan, overlaying EVERY detection on that image -- not just the
@@ -349,7 +353,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.11.0. Run `mbariml <command> --help` yourself any
+Captured verbatim against v0.12.0. Run `mbariml <command> --help` yourself any
 time to get the current, authoritative version of any of this.
 
 mbariml --help

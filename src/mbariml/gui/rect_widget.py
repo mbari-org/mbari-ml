@@ -63,12 +63,19 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         parent=None,
         zoom: float = 1.0,
         preload_roi: bool = False,
+        brightness: int = 0,
+        contrast: float = 1.0,
     ) -> None:
         QtWidgets.QGraphicsWidget.__init__(self, parent)
 
         self.row = row
         self._roi_service = roi_service
         self._zoom = max(float(zoom), 0.01)
+        # Display-only brightness/contrast, applied when the thumbnail pixmap
+        # is built (see getpic). Never touches self.roi or anything stored --
+        # same "view constraint only" rule as the min-confidence filter.
+        self._brightness = int(brightness)
+        self._contrast = float(contrast)
 
         # Tall enough for two stacked label lines (new_label on top, bold;
         # original_label below, plain -- see paint()) -- both are always
@@ -233,6 +240,37 @@ class RectWidget(QtWidgets.QGraphicsWidget):
 
     # -- Geometry -------------------------------------------------------------
 
+    def _adjusted(self, roi: np.ndarray) -> np.ndarray:
+        """Apply the current display brightness/contrast to a thumbnail.
+
+        Contrast pivots around mid-grey (128) rather than around black:
+        ``cv2.convertScaleAbs``'s plain ``alpha * pixel + beta`` scales about
+        zero, so raising contrast would also wash the whole tile brighter and
+        the two sliders would fight each other. Folding ``128 * (1 - alpha)``
+        into beta keeps mid-grey fixed, so contrast stretches the range about
+        the middle and brightness alone shifts it -- which is what makes them
+        usable as two independent controls.
+        """
+        if self._brightness == 0 and self._contrast == 1.0:
+            return roi  # neutral: don't pay for a no-op conversion
+        beta = 128.0 * (1.0 - self._contrast) + self._brightness
+        return cv2.convertScaleAbs(roi, alpha=self._contrast, beta=beta)
+
+    def set_display_adjustment(self, brightness: int, contrast: float) -> None:
+        """Re-render this tile's thumbnail at a new brightness/contrast.
+
+        Rebuilds the pixmap from ``self.roi``, the already-decoded crop, so
+        this costs no database read and no JPEG decode -- and leaves the
+        stored ROI untouched.
+        """
+        brightness, contrast = int(brightness), float(contrast)
+        if (brightness, contrast) == (self._brightness, self._contrast):
+            return
+        self._brightness, self._contrast = brightness, contrast
+        if self.roi is not None:
+            self.pic = self.getpic(self.roi)
+            self.update()
+
     def update_zoom(self, zoom: float) -> None:
         self._zoom = max(float(zoom), 0.01)
         self.boundingRect()
@@ -369,6 +407,11 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         roi_height, roi_width = roi.shape[:2]
         scale = min(max_width / roi_width, max_height / roi_height)
         roi = cv2.resize(roi, (0, 0), fx=scale, fy=scale)
+
+        # Deliberately after the resize: this runs on a ~120x120 thumbnail
+        # rather than the full-resolution crop, which is what keeps dragging
+        # the sliders across a 500-tile page affordable.
+        roi = self._adjusted(roi)
 
         pad_x = (max_width - roi.shape[1]) // 2
         pad_y = (max_height - roi.shape[0]) // 2

@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QEvent, QThreadPool, Qt, Slot
+from PySide6.QtCore import QEvent, QThreadPool, Qt, QTimer, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -70,6 +70,18 @@ from mbariml import video
 logger = get_logger(__name__)
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT = 50, 200, 100  # percent
+
+# Display-only brightness/contrast for the mosaic thumbnails. Brightness is an
+# additive offset in 0-255 pixel units; contrast is a multiplier x100 (so 100
+# is neutral, 250 is 2.5x). Applied per tile in RectWidget.getpic -- nothing
+# stored is ever modified.
+BRIGHTNESS_MIN, BRIGHTNESS_MAX, BRIGHTNESS_DEFAULT = -100, 100, 0
+CONTRAST_MIN, CONTRAST_MAX, CONTRAST_DEFAULT = 25, 300, 100
+# Re-rendering every loaded tile costs a small cv2 op plus a QPixmap
+# conversion each, so a slider drag firing 30+ times a second would stutter
+# on a full page. Coalesce to the last value after a short pause instead --
+# short enough to still feel live.
+DISPLAY_ADJUST_DEBOUNCE_MS = 70
 ROI_LOAD_CONCURRENCY = 8
 
 # Each pyqtgraph RectROI overlay (handles, region-changed wiring, a TextItem
@@ -224,6 +236,8 @@ class MainWindow(QMainWindow):
         # query_service._build_where.
         self.min_confidence: float = 0.0
         self._zoom_percent = ZOOM_DEFAULT
+        self._brightness = BRIGHTNESS_DEFAULT
+        self._contrast_percent = CONTRAST_DEFAULT
 
         self._rect_widgets: list[RectWidget] = []
         self._n_columns = 0
@@ -257,6 +271,10 @@ class MainWindow(QMainWindow):
 
         # "Add New ROI" tool state -- see _on_add_new_toggled/_on_new_box_drawn.
         self._add_new_active = False
+
+        self._display_adjust_timer = QTimer(self)
+        self._display_adjust_timer.setSingleShot(True)
+        self._display_adjust_timer.timeout.connect(self._apply_display_adjustment)
 
         self.graphics_view = QGraphicsView()
         self.graphics_view.installEventFilter(self)
@@ -415,6 +433,39 @@ class MainWindow(QMainWindow):
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
         zoom_layout.addWidget(self.zoom_slider)
         controls_layout.addLayout(zoom_layout)
+
+        # Brightness/contrast for the ROI grid -- faint or low-contrast
+        # animals against sediment are much easier to pick out with these
+        # than at native exposure. View-only, like the tile-size slider.
+        brightness_layout = QHBoxLayout()
+        self.brightness_label = QLabel("Brightness:   0")
+        brightness_layout.addWidget(self.brightness_label)
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setMinimum(BRIGHTNESS_MIN)
+        self.brightness_slider.setMaximum(BRIGHTNESS_MAX)
+        self.brightness_slider.setValue(BRIGHTNESS_DEFAULT)
+        self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
+        brightness_layout.addWidget(self.brightness_slider)
+        controls_layout.addLayout(brightness_layout)
+
+        contrast_layout = QHBoxLayout()
+        self.contrast_label = QLabel("Contrast: 1.00x")
+        contrast_layout.addWidget(self.contrast_label)
+        self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
+        self.contrast_slider.setMinimum(CONTRAST_MIN)
+        self.contrast_slider.setMaximum(CONTRAST_MAX)
+        self.contrast_slider.setValue(CONTRAST_DEFAULT)
+        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
+        contrast_layout.addWidget(self.contrast_slider)
+        reset_display_button = QPushButton("Reset")
+        reset_display_button.setToolTip("Return brightness and contrast to neutral.")
+        reset_display_button.clicked.connect(self._reset_display_adjustment)
+        contrast_layout.addWidget(reset_display_button)
+        controls_layout.addLayout(contrast_layout)
+        controls_layout.addWidget(
+            QLabel("View-only: brightens/stretches the ROI thumbnails to help spot faint "
+                   "animals. Never changes stored data.")
+        )
 
         confidence_layout = QHBoxLayout()
         self.confidence_label = QLabel("Min confidence: 0.00")
@@ -714,6 +765,8 @@ class MainWindow(QMainWindow):
                 clicked_slot=self._on_rect_clicked,
                 similarity_sort_slot=self._on_similarity_sort_requested,
                 zoom=zoom,
+                brightness=self._brightness,
+                contrast=self._contrast_percent / 100.0,
             )
             for row in rows
         ]
@@ -800,6 +853,34 @@ class MainWindow(QMainWindow):
         for rect_widget in self._rect_widgets:
             rect_widget.update_zoom(zoom)
         self.render_mosaic()
+
+    def _on_brightness_changed(self, value: int) -> None:
+        self._brightness = value
+        self.brightness_label.setText(f"Brightness: {value:+4d}" if value else "Brightness:   0")
+        self._schedule_display_adjustment()
+
+    def _on_contrast_changed(self, value: int) -> None:
+        self._contrast_percent = value
+        self.contrast_label.setText(f"Contrast: {value / 100:.2f}x")
+        self._schedule_display_adjustment()
+
+    def _reset_display_adjustment(self) -> None:
+        """Back to neutral. Dragging both sliders back to exactly 0/1.00x by
+        hand is fiddly, and 'what did this actually look like?' is a question
+        you ask constantly while reviewing."""
+        self.brightness_slider.setValue(BRIGHTNESS_DEFAULT)
+        self.contrast_slider.setValue(CONTRAST_DEFAULT)
+
+    def _schedule_display_adjustment(self) -> None:
+        """Coalesce slider movement into one re-render (see
+        DISPLAY_ADJUST_DEBOUNCE_MS) -- the label updates immediately, so the
+        control still feels responsive while dragging."""
+        self._display_adjust_timer.start(DISPLAY_ADJUST_DEBOUNCE_MS)
+
+    def _apply_display_adjustment(self) -> None:
+        contrast = self._contrast_percent / 100.0
+        for rect_widget in self._rect_widgets:
+            rect_widget.set_display_adjustment(self._brightness, contrast)
 
     def _on_confidence_slider_moved(self, value: int) -> None:
         """Live-update the label only -- actually narrowing the view is an

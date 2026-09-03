@@ -13,9 +13,10 @@ then out again as training data. Four phases:
 ![The mbariml review GUI](docs/review_gui.png)
 
 *`mbariml review` — the curation GUI. Left: the ROI mosaic, tinted by label
-with a green check on verified ROIs. Right: the full source frame with every
+with a green check on verified ROIs, here brightened a little with the
+Brightness/Contrast sliders. Right: the full source frame with every
 detection overlaid as a draggable box (the selected one in red), over the
-controls panel. "Open Video" is live here because this ROI came from
+controls panel. "Open Video" is live because this ROI came from
 `infer video`, so it jumps straight to that moment in the source footage.*
 
 **Also in this repo:** [`cheat_sheet.txt`](cheat_sheet.txt) (one worked
@@ -188,6 +189,13 @@ database (ids 0–4 and 5–8), with `stats` aggregating across both.
   normal sorting.
 - The status line under the buttons always shows the current page, how many
   ROIs are shown, and how many are selected, so a keypress never surprises you.
+- **Brightness / Contrast sliders** (below the tile-size slider) adjust the
+  ROI thumbnails across the whole grid — faint animals against sediment, or
+  low-contrast crops from deep footage, are often far easier to identify
+  stretched than at native exposure. Contrast pivots around mid-grey, so the
+  two sliders act independently rather than fighting each other, and
+  **Reset** returns both to neutral. View-only: the stored ROI is never
+  modified, so this changes nothing you export.
 - **Open Video** (next to Delete): for ROIs that came from `infer video`,
   opens the *source footage* at the exact moment that detection was made,
   from the row's `video_path` + `frame_time_s`. Tries IINA, then mpv, then
@@ -388,7 +396,7 @@ to be filled in later by a separate navigation-merge process:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.11.0
+# generator: mbariml v0.12.0
 # generated_by: lonny
 # generated_at: 2026-08-19T17:36:28Z
 # model: /path/to/best.pt

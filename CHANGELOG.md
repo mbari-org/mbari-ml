@@ -11,6 +11,29 @@ recognizable.
 
 ---
 
+## 0.12.0 — brightness/contrast for the review grid
+
+Two sliders below the tile-size slider adjust the ROI thumbnails across the
+whole mosaic. Faint animals against sediment, and low-contrast crops from
+deep footage, are considerably easier to identify stretched than at native
+exposure — and previously the only way to get a better look was to open the
+source image outside the tool.
+
+Contrast pivots around mid-grey rather than around black: `convertScaleAbs`'s
+plain `alpha * pixel + beta` scales about zero, so raising contrast would
+also wash the tile brighter and the two controls would fight each other.
+Folding `128 * (1 - alpha)` into beta keeps mid-grey fixed, so contrast
+stretches the range about the middle while brightness alone shifts it.
+
+Applied per tile in `RectWidget.getpic`, *after* the thumbnail resize, so the
+work happens on a ~120×120 image rather than the full-resolution crop; slider
+movement is debounced (70 ms) so dragging across a 500-tile page coalesces
+into one re-render rather than 30. Strictly view-only — the stored `roi` blob
+is never touched, so nothing exported changes. A **Reset** button returns
+both to neutral, and the setting carries across paging and sorting.
+
+---
+
 ## 0.11.0 — video ingest, `infer` merge, phases instead of step numbers
 
 ### Added
