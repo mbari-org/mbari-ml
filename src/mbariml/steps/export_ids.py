@@ -14,7 +14,7 @@ lon/lat/depth left as ``0.0`` placeholders -- per-vertex geolocation is
 expected to be appended later by a separate process once navigation data is
 available, by re-parsing/updating these same files.
 
-Grouped under step 6 (``export``) alongside ``export voc``/``export yolo``/
+One of the Emit-phase exports, alongside ``export voc``/``export yolo``/
 ``export html``, but not part of ``mbariml run``'s scriptable chain -- run
 it directly whenever you want fresh sidecar files for a curated database.
 """

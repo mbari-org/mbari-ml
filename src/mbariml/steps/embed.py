@@ -1,4 +1,4 @@
-"""Step 2: generate embeddings for the ROI blobs stored by step 1.
+"""Enrich: generate embeddings for the ROI blobs stored at ingest.
 
 Uses DINOv3 (ViT-Large/16, general-purpose ``lvd1689m`` weights) -- swapped
 in from DINOv2 since it was found to be substantially more accurate in
@@ -195,7 +195,7 @@ def _flush_pending(conn, pending: list[tuple]) -> None:
 
 @app.command()
 def embed(
-    db_path: str = typer.Argument(..., help="Path to the DuckDB database (from step 1)."),
+    db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
     limit: Optional[int] = typer.Option(None, help="Limit the number of ROIs processed, for testing."),
     batch_size: int = typer.Option(
         32, help="Number of ROIs embedded per forward pass. Bigger is faster on a GPU/MPS "

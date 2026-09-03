@@ -1,4 +1,4 @@
-"""Step 4: re-cluster a single label's ROIs into finer-grained sub-clusters.
+"""Enrich: re-cluster a single label's ROIs into finer-grained sub-clusters.
 
 Bug fixed here: the original script needed the *original* full-frame images
 to build its review grids (it re-read and re-cropped each ROI from disk via
@@ -6,12 +6,12 @@ to build its review grids (it re-read and re-cropped each ROI from disk via
 ``image_dir`` argument -- it hardcoded ``Path(".")``, so it only produced
 correct grids if you happened to run the command from inside the image
 directory, and otherwise silently skipped every ROI (each ``image_path``
-lookup missed and was quietly skipped). Since step 1 already stores every
+lookup missed and was quietly skipped). Since ingest already stores every
 ROI as a JPEG blob in the database, this version decodes that stored blob
-directly -- matching what step 3 does -- instead of re-reading source
+directly -- matching what `cluster` does -- instead of re-reading source
 images at all, which removes the missing-argument bug entirely.
 
-Also fixed here, same root cause as step 3's slow-clustering bug: writing
+Also fixed here, same root cause as `cluster`'s slow-clustering bug: writing
 each sub-cluster's new_label with its own executemany UPDATE, against the
 indexed new_label column, which DuckDB is dramatically slower at than one
 bulk UPDATE. Now written with a single ``mbariml.db.bulk_update`` call
@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 from mbariml import db
 from mbariml.logging_utils import get_logger
-from mbariml.steps import step3_cluster_evoc as s3
+from mbariml.steps import cluster as cluster_step
 
 app = typer.Typer(help="Re-cluster a single label's ROIs into finer-grained sub-clusters.")
 logger = get_logger(__name__)
@@ -82,7 +82,7 @@ def _label_for_cluster(cluster_id: int, new_label: str) -> str:
     """The new_label value for one sub-cluster.
 
     cluster_id == -1 is EVoC's "still not clustered" bucket, mapped to the
-    literal string "noise" -- matching step 3's convention. Every export
+    literal string "noise" -- matching `cluster`'s convention. Every export
     step (export voc, export yolo, export id, ...) filters on ``new_label != 'noise'``,
     so a still-noise point must keep exactly that label; an earlier revision
     of this function instead produced e.g. "noise_1" for it, which silently
@@ -110,7 +110,7 @@ def _generate_roi_grids(clusters: dict[int, list[tuple]], output_dir: Path, new_
 
     for cluster_id, rows in tqdm(clusters.items(), desc="Generating ROI grids"):
         if cluster_id == -1:
-            continue  # matches step 3: no review grid for the noise bucket
+            continue  # matches `cluster`: no review grid for the noise bucket
         cluster_label = _label_for_cluster(cluster_id, new_label)
         num_rois = len(rows)
         n_rows = int(np.ceil(np.sqrt(num_rois)))
@@ -183,11 +183,11 @@ def refine(
         if not rows:
             logger.warning("No embeddings found for the specified label; nothing to do.")
             return
-        min_required = max(s3.MIN_ROWS_TO_CLUSTER, n_neighbors + 1)
+        min_required = max(cluster_step.MIN_ROWS_TO_CLUSTER, n_neighbors + 1)
         if len(rows) < min_required:
             # A small residual bucket (e.g. refining an already-mostly-resolved
             # "noise" label) is a realistic way to hit this -- see
-            # MIN_ROWS_TO_CLUSTER's docstring in step3_cluster_evoc.
+            # MIN_ROWS_TO_CLUSTER's docstring in cluster.py.
             logger.warning(
                 "Only %d row(s) for label %r -- too few to cluster (need at least %d with "
                 "--n-neighbors %d). Lower --n-neighbors, pick a larger label, or skip refining this one.",

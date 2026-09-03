@@ -1,10 +1,8 @@
 """`export html`: generate a paginated HTML gallery of images and their
 labeled crops -- a quick visual QA pass in a browser.
 
-Grouped under step 6 (`export`) alongside `export voc`/`export yolo`/
-`export id` (v0.9.0) -- it wasn't its own numbered step (7) before that;
-merging it in freed up the numbers after it for query/infer-images/
-remap-labels/stats to shift down by one.
+One of the Emit-phase exports, alongside `export voc`/`export yolo`/
+`export id`.
 """
 
 from __future__ import annotations
@@ -30,8 +28,8 @@ CROP_THUMB_SIZE = 60
 def _label_expr(conn) -> str:
     """Prefer the curated new_label, falling back to the raw YOLO label --
     per row, not per database. Every database has a new_label column now
-    (step 8, infer-images, writes the same curation schema as step 1), so a database
-    fresh out of `mbariml infer-images`/`detect` -- not yet reviewed -- has
+    (every ingest command writes the same curation schema), so a database
+    fresh out of `mbariml infer images`/`infer video` -- not yet reviewed -- has
     new_label NULL on every row; without this fallback, an HTML gallery
     generated before curation would show "None" instead of the model's
     actual prediction for every single crop."""

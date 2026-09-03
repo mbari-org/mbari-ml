@@ -1,0 +1,321 @@
+# Changelog
+
+What changed, newest first. The deep-dive explanations of *how* things work
+(embeddings, clustering, the export formats, the review GUI) live in
+[README.md](README.md); this file records what changed and why.
+
+Most entries below carry measurements rather than adjectives — several of
+these were performance or correctness bugs that were only found by timing
+each stage separately, and the numbers are kept so a future regression is
+recognizable.
+
+---
+
+## 0.11.0 — video ingest, `infer` merge, phases instead of step numbers
+
+### Added
+
+**`mbariml infer video`** — video ingest, in two modes.
+
+`--mode track` (default) keeps **one ROI per tracked object**, which is what
+you want for building curation/training data from video: an animal in view
+for 300 frames is one observation, not 300 training examples. Measured on a
+real 8-second benthic clip: 633 detections collapsed to 4 tracks → 4 ROIs.
+Tracking is necessarily two passes, because a track's representative frame
+can't be chosen until the track has ended — pass 1 tracks the whole video
+recording *metadata only* (memory is O(open tracks), not O(video)); pass 2
+sweeps forward once, extracting just the chosen frames. Pass 2 sweeps rather
+than seeks deliberately: `CAP_PROP_POS_FRAMES` is unreliable on long-GOP
+encodings and lands on the nearest keyframe, which would silently pair a
+detection's box with the wrong pixels.
+
+`--track-roi` chooses which frame represents a track, defaulting to
+`best-conf-central` — the most confident frame of the track's *middle third*.
+A track's first and last frames are when the animal is entering or leaving
+view (clipped at the frame edge, occluded, motion-blurred), and plain
+max-confidence picks exactly those. `sharpest-central`, `best-conf`, and
+`center` are also available; short tracks fall back automatically.
+
+`--tracker` takes any Ultralytics tracker config — default `tracktrack.yaml`,
+or a path to your own YAML. Note that **track count is governed by the
+tracker's own thresholds** (`track_high_thresh`, `new_track_thresh`), not by
+`--conf`: the same clip gave 1 track with stock settings and 4 with lowered
+ones.
+
+`--mode stride` skips all of that and samples every Nth frame as an
+independent image.
+
+Chosen frames are extracted to real JPEGs under `OUTPUT_DIR/frames/`, with
+`image_path` pointing at those files, so **video rows are indistinguishable
+from image rows to every downstream command** — review, embed, cluster, all
+four exports, html, and stats work unchanged, with no video-aware code
+anywhere else in the pipeline. The alternative (store the video path plus a
+frame number, resolve lazily) would have meant teaching five separate
+consumers to decode video, and the exports would have had to materialize
+frames anyway. Provenance is kept in new nullable columns — `video_path`,
+`frame_number`, `frame_time_s`, `track_id`, `track_length`. Frames with no
+detections are never written.
+
+**"Open Video" button in the review GUI** — for video-derived ROIs, opens the
+source footage at the exact moment of that detection, from the row's
+`video_path` + `frame_time_s`. Tries IINA, then mpv, then VLC (all of which
+honor a start position), falling back to the default browser with a `#t=`
+media fragment. Disabled for image-derived ROIs, so the button state itself
+answers "did this come from video?".
+
+### Changed
+
+**`detect` and `infer-images` merged into `mbariml infer images`.** They were
+~90% redundant: same schema, same ROI cropping, same provenance record,
+differing only in batching, annotated-image saving, and a 16× gap in default
+confidence — flags and defaults, not architecture. Keeping two copies meant
+every fix had to be made twice. The intent distinction survives as
+`--preset curate` (conf 0.005, imgsz 1952, no annotated images — mine
+everything, then cluster/review and discard the noise) and `--preset predict`
+(conf 0.08, imgsz 992, saves annotated images). `curate` is the default
+deliberately: an over-permissive threshold is recoverable by filtering later,
+while a too-strict one silently drops detections you can't get back without a
+full re-run. Any individual option overrides its preset.
+
+**Numbered steps replaced by four phases** — Ingest, Enrich, Curate, Emit.
+The numbering had been reshuffled three times as commands merged and moved,
+each pass rippling through every docstring and both documents, for a sequence
+that was never actually linear. Step modules lost their numeric filename
+prefixes to match (`step8_inference.py` → `infer_images.py`, and so on), and
+`mbariml run` now takes named stages (`--from export`) instead of
+`--from-step 6`. `mbariml run` also gained `--media images|video`.
+
+### Fixed
+
+**Ingest recorded `image_path` verbatim**, so a relative input directory
+produced relative paths that stopped resolving the moment `review` or an
+export ran from a different working directory — the whole "images are located
+via the path recorded at ingest" contract depends on those paths being
+resolvable later. Both ingest commands now store absolute paths.
+
+**Ingest always numbered rows from 0**, so a second run into an existing
+database collided on the UNIQUE `id` index instead of appending. Ids now
+continue from the database's own counter (`db.next_free_id`), which is what
+makes one database holding several videos — or images and video together —
+actually work. Verified: 5 image rows + 4 video rows in one database, ids 0–4
+and 5–8, with `stats` aggregating across both.
+
+---
+
+## 0.10.0 — "Add New ROI" in the review GUI
+
+Previously the only way to fix a missed detection was to re-run ingest with a
+lower `--conf`, or add it out-of-band and re-import — there was no way to just
+draw the box the model should have found.
+
+The review GUI now has a green "Add New ROI" button that arms drawing mode on
+the full-image panel: drag a box, type its label, and repeat for as many as
+needed before clicking the button again or pressing Escape. Implemented as
+`_DrawableViewBox` in `detail_view.py` (a `pyqtgraph.ViewBox` subclass that
+reuses pyqtgraph's own built-in `RectMode` scale-box mechanics for the
+rubber-band visual and coordinate math, but reports the finished rectangle
+instead of zooming to it), plus `annotation_service.insert_roi` (new row:
+`confidence` fixed at `1.0`, `class_id` left `NULL`, `new_label` and `label`
+both set to the typed value, `verified` set immediately — a human drew and
+named it, so there's nothing left to review).
+
+The embedding is computed right after, off the GUI thread
+(`MainWindow._embed_new_roi_worker`, applied via
+`annotation_service.set_embedding`), using `embed.embed_roi_bgr` — a
+single-item entry point into the exact same model and preprocessing the
+batched `mbariml embed` pipeline uses. Verified byte-for-byte identical to
+running the same crop through the batched path, so a hand-drawn box's
+embedding is guaranteed comparable to every other embedding in the database
+rather than a second, potentially drifting implementation.
+
+Not adapted from vars-gridview; new here.
+
+---
+
+## 0.9.0 — `html` folded into `export`, `backfill-sharpness` removed
+
+`mbariml html` became `mbariml export html`, joining `export voc`/`yolo`/`id`
+— one step for "produce some downstream output from curated data" instead of
+two.
+
+`backfill-sharpness` was removed. It existed to compute sharpness scores for
+databases created before ingest did so automatically; every write path has
+computed a real Laplacian-variance blur score since 0.7.0, so it no longer
+had a database to migrate.
+
+---
+
+## 0.8.0 — `export` group, YOLO export, `stats`
+
+The flat `export-voc` and `export-ids` commands became `mbariml export voc`
+and `mbariml export id`, alongside a new `mbariml export yolo` (YOLO-format
+label files + `names.txt`) — one downstream annotation format per subcommand,
+now that there were three.
+
+`export voc`/`export yolo` also each write `image_manifest.csv` plus a
+standalone, stdlib-only `copy_images.py`, so the matching source images can
+be pulled down later (e.g. to a laptop's Desktop) without walking the
+mission's nested directory structure by hand.
+
+New `mbariml stats`: label counts, boxes-per-image summary statistics, and an
+optional image × label count matrix CSV for ecological analysis.
+
+---
+
+## 0.7.0 — clustering could take hours; DuckDB fsyncs per statement
+
+Clustering could run for *hours* on a large database with no visible
+progress. The clustering math was never the problem: `evoc.fit_predict()`
+has its own JIT-compiled approximate nearest-neighbor search and clusters
+50,000 embeddings in ~2.6 seconds, scaling roughly linearly — so DuckDB's
+VSS/HNSW extension would not have helped, as there's no repeated
+similarity-search query for an index to accelerate. The real cost was writing
+results back with one `UPDATE ... WHERE id = ?` per row against the *indexed*
+`new_label` column. Measured at 100,000 rows: 38.6 seconds via the per-row
+pattern (still trending worse) versus ~6 seconds via a staged bulk
+`UPDATE ... FROM` (`mbariml.db.bulk_update`).
+
+Chasing that down surfaced something more fundamental: **DuckDB's Python
+driver commits (and fsyncs to disk) after every individual statement** by
+default when writing to a file-backed database, even inside a single
+`executemany()` call. Measured: an identical 2000-row INSERT took 11.46s
+without an explicit transaction and 0.82s wrapped in one — a ~14× difference
+from transaction-wrapping alone. `mbariml.db.fast_executemany` now wraps
+every bulk write in the pipeline.
+
+---
+
+## 0.5.0 / 0.6.0 — embedding was slow, and got slower the longer it ran
+
+On a real run against 327,045 ROIs on a Mac Studio M3 Ultra with a confirmed
+MPS device, throughput was still crawling after an hour. Three compounding
+causes, found by isolating and timing each stage rather than guessing:
+
+1. ROIs were embedded one at a time (decode, preprocess, transfer to GPU,
+   forward pass, transfer back, single-row DB write, repeat) — fixed by
+   batching (`--batch-size`, default 32).
+2. Decode/preprocess (JPEG decode, resize, normalize) is CPU-bound work that
+   ran in a single-threaded Python loop, pinning one core while dozens sat
+   idle — fixed by parallelizing across a thread pool (`--decode-workers`,
+   default up to 16 cores).
+3. **The dominant bottleneck**: each batch's embeddings were written with
+   their own `UPDATE ... WHERE id = ?` executemany call. Model throughput was
+   a rock-stable ~80 items/sec, but per-batch DB write time grew from ~1s to
+   ~15s over just 45 batches and kept climbing. Fixed by staging embeddings
+   into a temp table and applying them with a single `UPDATE ... FROM` every
+   `--flush-size` rows (default 2000). Verified: a run that degraded from 45
+   it/s to 6.5 it/s (still falling) over 3000 ROIs became a flat ~70–75 it/s
+   for the same 3000 ROIs, with no degradation at all.
+
+An earlier attempt to fix the degradation with periodic
+`torch.mps.empty_cache()` calls was tested and found to have no effect — the
+cause was never GPU memory — and was removed once the real cause was
+isolated. See the README's "Embeddings (DINOv3)" section for the full
+numbers, including why an MLX port was investigated and not adopted.
+
+The embedding backbone also switched from DINOv2 to DINOv3 for accuracy.
+Preprocessing switched from hand-picked constants (a fixed 518×518 resize
+plus CLIP's mean/std, regardless of which backbone was loaded) to
+`timm.data.resolve_data_config`, which builds the exact pipeline for whatever
+model is actually loaded.
+
+---
+
+## Earlier — replacing the original numbered scripts
+
+**Image inference wrote a different schema than every other step**, missing
+`roi_index`, `roi` (the crop blob), `embedding`, and `new_label`. That meant
+`review`, `cluster`, `refine`, `export voc`, and `remap-labels` all failed
+outright against its output — only the HTML gallery and `query` happened to
+work. Fixed by having it write the same curation schema as everything else,
+cropping each ROI directly from Ultralytics' already-loaded image rather than
+re-reading files. While fixing it, a related gap surfaced: the HTML gallery
+picked its label column (`new_label` vs raw `label`) once per *database*
+based on whether the column existed — but every database has a `new_label`
+column now, so a freshly-ingested, not-yet-curated database showed "None" as
+every caption instead of the model's actual prediction. Fixed to fall back
+per *row* (`COALESCE(new_label, label)`).
+
+**"Code seemed to run, but no results saved, no db generated."** The original
+`9_inference.py` buffered every detection row from every batch in memory and
+wrote them in a single `executemany()` call *after the entire run finished*,
+outside any try/except. YOLO would visibly process every image and even save
+annotated copies, but if anything went wrong in that one final insert — or
+the process was interrupted before reaching it — nothing ever reached the
+database. Rows are now written after every batch, so progress is durable as
+the run proceeds. Alongside that:
+
+- bad model paths and input directories raise immediately with a clear
+  message instead of failing silently or deep inside Ultralytics;
+- `--device` defaults to `auto` (it was hardcoded to `mps`, which errors or
+  silently produces nothing on a machine without Apple Silicon);
+- the database connection is always closed via a context manager, which
+  DuckDB requires to guarantee writes are flushed;
+- every run ends with an explicit summary — images processed, rows written,
+  and where — so "nothing happened" is impossible to miss.
+
+**Cross-dive image collision (VOC export, HTML gallery).** Both grouped
+detections by *bare filename* and reconstructed each path as
+`image_dir / image_name`. For a mission with nested per-dive subdirectories,
+two images sharing a filename (`dive01/img_0001.jpg` and
+`dive02/img_0001.jpg`) collided into one key, and both were silently mapped
+onto whichever flat path happened to exist — merging detections from
+different dives onto the wrong image. Fixed by grouping on the full
+`image_path` recorded at ingest (which is also why these commands no longer
+need a separate `image_dir` argument) and disambiguating output filenames
+with their parent directory name.
+
+**Other real bugs fixed along the way:**
+
+- `requirements.txt` contained a dump of raw `import` statements copied from
+  the GUI script (e.g. `from PySide6.QtCore import Qt`), not package names —
+  `pip install -r requirements.txt` would have failed outright, silently
+  leaving `duckdb`/`evoc` uninstalled.
+- Clustering's `--limit` ran `DELETE FROM predictions WHERE rowid NOT IN
+  (...)` — passing `--limit` for a quick test **permanently deleted** every
+  row beyond N. It now only limits what's read.
+- Refine needed the original full-frame images to build review grids, but its
+  CLI never exposed an `--image-dir` option — it hardcoded `Path(".")`, so
+  every ROI silently failed to render unless you happened to run it from
+  inside the image directory. It now reads the ROI crop already stored in the
+  database, removing the need for that argument entirely.
+- The GUI's label filter was interpolated directly into SQL and broke on
+  labels containing a quote; it's now parameterized. Its database connection
+  is closed on exit too.
+- Hardcoded `device="mps"` is now resolved against actual hardware
+  (`mbariml.yolo_utils.resolve_device`), with a clear error if you explicitly
+  request a device that isn't available.
+- Exceptions were caught and printed as a single line, discarding the
+  traceback (`print(f"Error ...: {e}")`). Everything goes through `logging`
+  now, with `logger.exception(...)` for unexpected failures.
+- The review GUI's "Sort by Sharpness" sorted by a column hardcoded to `0.0`
+  for every row — a no-op. Ingest now computes a real per-ROI blur score.
+  While reworking that screen, labeling and deleting were changed to update
+  only the affected thumbnails instead of rebuilding the entire
+  ~500-thumbnail page on every action.
+- `mbariml run`'s internal calls to each command's function bypass Click,
+  which normally resolves `typer.Option(...)` defaults to real values, so
+  every non-required parameter must be passed explicitly or the raw sentinel
+  object leaks through and is treated as truthy. Adding `--force` to
+  `mbariml embed` without updating `run`'s call site would have made every
+  `mbariml run` silently re-embed the entire database on every invocation;
+  caught before it shipped.
+- A taxa-by-image CSV export interpolated image filenames into SQL while
+  escaping only the column alias, not the string literal — any filename
+  containing a single quote broke the query with a syntax error.
+- `remap-labels` applied each rename as its own sequential UPDATE, so a
+  changes file that swapped two labels (`A,B` then `B,A`) renamed every A to
+  B and then every B — including the just-renamed As — back to A, silently
+  collapsing both into one label. Every pair is now applied in one pass
+  against the original state.
+
+**Structure**: shared logic (DB schema/connection handling, image directory
+scanning, YOLO model loading and device selection) lives in `src/mbariml/`
+instead of being copy-pasted across each numbered script; each command's
+implementation is in `src/mbariml/steps/`. `8_query.py` was a notebook-style
+script with a hardcoded absolute database path and an uncommented query that
+nulled out every label — it's now a small, safe, reusable
+`mbariml query DB_PATH "SELECT ..."`.
+
+The original numbered scripts (`1_generate_detections.py`, etc.) have been
+removed in favor of the `mbariml` CLI.

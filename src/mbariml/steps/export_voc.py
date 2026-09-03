@@ -1,4 +1,4 @@
-"""Step 6: export curated labels to Pascal VOC XML annotation files."""
+"""Emit: export curated labels to Pascal VOC XML annotation files."""
 
 from __future__ import annotations
 

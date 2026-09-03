@@ -1,8 +1,8 @@
 """Shared DuckDB helpers.
 
 One schema (``CURATION_SCHEMA_SQL``) is used across the whole pipeline,
-including step 8 (inference): it stores the ROI image itself (as a JPEG
-blob), its embedding, and the human-curated ``new_label``. Step 8 used to
+including video ingest: it stores the ROI image itself (as a JPEG
+blob), its embedding, and the human-curated ``new_label``. Image inference used to
 write a separate, lighter schema (no ROI blob, no embedding) -- but that
 meant its output couldn't be fed into `mbariml review`, `cluster`, `refine`,
 `export voc`, or `remap-labels` at all, none of which is what you want from
@@ -14,7 +14,7 @@ any other step that needs what it has.
 (and therefore flushed) even if the caller raises. The original
 ``9_inference.py`` opened a DuckDB connection and never closed it, relying on
 the interpreter to clean it up on exit; combined with buffering all insert
-rows in memory until the very end of the run (see ``mbariml.steps.step8_inference``),
+rows in memory until the very end of the run (see ``mbariml.steps.infer_images``),
 that meant a run that hit any error, or was interrupted, could finish having
 written nothing at all despite YOLO visibly having processed every image.
 """
@@ -55,7 +55,7 @@ CURATION_SCHEMA_SQL = """
     CREATE INDEX IF NOT EXISTS idx_predictions_roi_index ON predictions(roi_index);
 
     -- Added after the fact rather than in the CREATE TABLE column list
-    -- above: several steps (step1_detect, step8_inference) INSERT into
+    -- above: several commands (infer_images, infer_video) INSERT into
     -- this table positionally ("VALUES (?, ?, ..., ?)", no column names),
     -- so a column added to the CREATE TABLE list would silently require
     -- updating every one of those in lockstep or break them. ALTER TABLE
@@ -64,10 +64,28 @@ CURATION_SCHEMA_SQL = """
     -- not just newly created ones.
     ALTER TABLE predictions ADD COLUMN IF NOT EXISTS verified INTEGER DEFAULT 0;
 
+    -- Video provenance, NULL for every image-derived row (added the same
+    -- ALTER TABLE way, and for the same reason, as `verified` above).
+    -- `mbariml infer video` extracts the frame it detected on to a real JPEG
+    -- on disk and points image_path at THAT file, so every downstream step
+    -- (review, embed, cluster, all four exports, stats) treats a video row
+    -- exactly like an image row with no special-casing anywhere. These
+    -- columns exist so the trail back to the source footage isn't lost:
+    -- which video, which frame, when in the video, and -- in tracking mode
+    -- -- which track this ROI was chosen to represent and how many
+    -- observations backed it (a 3-frame track is much weaker evidence than
+    -- a 200-frame one). The review GUI's "Open Video" button uses
+    -- video_path + frame_time_s.
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS video_path TEXT;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS frame_number INTEGER;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS frame_time_s DOUBLE;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS track_id INTEGER;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS track_length INTEGER;
+
     -- Records which model produced this database's detections, so later
     -- steps (e.g. the *.id export) can report accurate provenance without
     -- the caller having to remember/retype it. One row per `mbariml detect`
-    -- run against this database; step 1 replaces it each time it runs.
+    -- run against this database; each ingest run replaces it.
     CREATE TABLE IF NOT EXISTS run_info (
         model_path TEXT,
         detected_at TIMESTAMP
@@ -97,7 +115,7 @@ def connect(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
 @contextlib.contextmanager
 def init_curation_db(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open (creating if needed) the curation-schema database used by every
-    step, including step 8 (inference)."""
+    command, images and video alike."""
     with connect(db_path) as conn:
         conn.execute(CURATION_SCHEMA_SQL)
         logger.info("Curation schema ready in %s", db_path)
@@ -107,6 +125,20 @@ def init_curation_db(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]
 def ensure_column(conn: duckdb.DuckDBPyConnection, table: str, column: str, sql_type: str) -> None:
     """Add ``column`` to ``table`` if it isn't already there."""
     conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+
+
+def next_free_id(conn: duckdb.DuckDBPyConnection) -> int:
+    """One past the highest ``id`` already in ``predictions``.
+
+    Every writer allocates ids from this counter (``id`` and ``roi_index`` are
+    kept equal, and ``id`` is UNIQUE -- see ``predictions_id_idx`` above), so
+    starting from the current max is what lets a second ingest run append to a
+    database that already holds rows instead of colliding on the very first
+    insert. That's what makes "one database for a whole deployment -- several
+    videos, or images and video together" work, and it's why re-running an
+    ingest command into an existing output directory no longer fails.
+    """
+    return conn.execute("SELECT COALESCE(MAX(id), -1) + 1 FROM predictions").fetchone()[0]
 
 
 def row_count(conn: duckdb.DuckDBPyConnection, table: str = "predictions") -> int:

@@ -19,7 +19,7 @@ self-contained, trainable ``images/`` + ``labels/`` dataset directory: run
 Images are located via the path recorded at detection time, the same as
 ``export voc``/``export html`` -- no separate image_dir argument needed.
 
-Grouped under step 6 (``export``) alongside ``export voc``/``export id``/
+One of the Emit-phase exports, alongside ``export voc``/``export id``/
 ``export html``.
 """
 

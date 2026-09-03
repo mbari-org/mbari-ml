@@ -1,4 +1,4 @@
-"""Step 9: bulk-rename `new_label` values from a two-column changes file.
+"""Curate: bulk-rename `new_label` values from a two-column changes file.
 
 Bug fixed here: this used to apply each (old_label, new_label) pair as its
 own sequential UPDATE. That's fine for independent renames, but a changes

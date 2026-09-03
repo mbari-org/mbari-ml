@@ -8,7 +8,7 @@ association hierarchy to parse; a "row" here is just one record from the
 flat ``predictions`` table (schema: ``mbariml.db.CURATION_SCHEMA_SQL``).
 
 These queries are the same ones the original monolithic GUI ran inline
-(see git history / the previous revision of ``step5_roi_editor_gui.py``);
+(see git history / the previous revision of ``review.py``);
 they're centralized here, typed, and meant to be called off the GUI thread
 via ``mbariml.gui.runnables.Worker``.
 """
@@ -47,7 +47,8 @@ DEFAULT_SORT_OPTION = "New Label"
 
 _ROW_COLUMNS = (
     "id, image_path, roi_index, new_label, roi, "
-    "x_min, y_min, x_max, y_max, embedding, label, verified"
+    "x_min, y_min, x_max, y_max, embedding, label, verified, "
+    "video_path, frame_time_s"
 )
 
 
@@ -77,6 +78,13 @@ class RoiRow:
     embedding: list[float] | None
     original_label: str | None
     verified: bool = False
+    # NULL for image-derived rows. Set by `mbariml infer video`, which points
+    # image_path at an extracted frame on disk (so everything downstream needs
+    # no video awareness) while keeping the trail back to the footage here --
+    # what the review GUI's "Open Video" button uses to jump to the moment
+    # this ROI was detected. See mbariml.db's schema.
+    video_path: str | None = None
+    frame_time_s: float | None = None
 
     @classmethod
     def _from_tuple(cls, row: tuple) -> "RoiRow":
@@ -93,6 +101,8 @@ class RoiRow:
             embedding=row[9],
             original_label=row[10],
             verified=bool(row[11]),
+            video_path=row[12],
+            frame_time_s=row[13],
         )
 
 

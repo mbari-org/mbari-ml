@@ -1,4 +1,4 @@
-"""Step 3: cluster embeddings with EVoC and generate ROI review grids.
+"""Enrich: cluster embeddings with EVoC and generate ROI review grids.
 
 Bug fixed here: the original ``--limit`` option ran
 ``DELETE FROM predictions WHERE rowid NOT IN (SELECT rowid FROM predictions LIMIT N)``
@@ -17,7 +17,7 @@ repeated similarity-search query happening here for an ANN index to help
 with, just a one-shot batch clustering call that's already fast. The real
 cost was writing results back with one ``UPDATE ... WHERE id = ?`` per row:
 DuckDB's MVCC row-versioning overhead makes many small UPDATEs dramatically
-slower than one bulk UPDATE, and it's worse here than in step 2 because this
+slower than one bulk UPDATE, and it's worse here than in `embed` because this
 UPDATE touches the *indexed* ``new_label`` column -- measured at 100,000
 rows: 38.6 seconds via the old per-row pattern (still trending worse) vs.
 ~6 seconds via a staged bulk UPDATE (``mbariml.db.bulk_update``). Progress is
@@ -189,7 +189,7 @@ def _generate_roi_grids(conn, output_dir: Path, group_by_dominant_label: bool) -
 
 @app.command()
 def cluster(
-    db_path: str = typer.Argument(..., help="Path to the DuckDB database (from step 1/2)."),
+    db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
     limit: Optional[int] = typer.Option(None, help="Only read this many embedded rows for clustering (does not delete data)."),
     off: bool = typer.Option(False, help="Disable grouping ROI grids by dominant cluster label (use raw evoc_clust instead)."),
     approx_n_clusters: Optional[int] = typer.Option(

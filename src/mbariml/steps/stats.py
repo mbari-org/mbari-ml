@@ -1,4 +1,4 @@
-"""Step 11: label counts, boxes-per-image summary stats, and an optional
+"""Emit: label counts, boxes-per-image summary stats, and an optional
 image x label count matrix CSV -- the raw numbers behind an ecological read
 of a curation database (e.g. "how many Muusoctopus per image, and across how
 many images").

@@ -5,7 +5,7 @@ directory.
 Two images with the same filename in different survey/dive subdirectories
 (e.g. ``dive01/img_0001.jpg`` and ``dive02/img_0001.jpg``) collide once
 flattened into a single output directory -- this is the same bug class
-``step6_export_voc`` was fixed for (grouping by full ``image_path`` instead
+``export_voc`` was fixed for (grouping by full ``image_path`` instead
 of bare filename; see its docstring and the README's "What changed"
 section). Every place that writes/names one output file per source image
 should go through this so the fix lives in one place.

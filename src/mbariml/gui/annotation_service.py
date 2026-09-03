@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import duckdb
 
+from mbariml import db
+
 
 def apply_label(
     conn: duckdb.DuckDBPyConnection, roi_indices: list[int], new_label: str
@@ -86,7 +88,7 @@ def insert_roi(
     ``roi_index``.
 
     ``id``/``roi_index`` are the same running counter every other writer
-    (``step1_detect``, ``step8_inference``) uses -- see ``mbariml.db``'s
+    (``infer_images``, ``infer_video``) uses -- see ``mbariml.db``'s
     schema docstring -- so the next free value is one past the current max
     ``id`` in this database; safe here since the review GUI is single-writer
     (no concurrent process is also inserting into this database). ``class_id``
@@ -103,7 +105,7 @@ def insert_roi(
     definitionally reviewed, the same reasoning :func:`apply_label` already
     uses for an ordinary relabel.
     """
-    next_id = conn.execute("SELECT COALESCE(MAX(id), -1) + 1 FROM predictions").fetchone()[0]
+    next_id = db.next_free_id(conn)
     conn.execute(
         """
         INSERT INTO predictions

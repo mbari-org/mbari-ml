@@ -64,7 +64,8 @@ from mbariml.gui.runnables import Worker
 from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, SelectionModel
 from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
-from mbariml.steps.step2_embed import embed_roi_bgr
+from mbariml.steps.embed import embed_roi_bgr
+from mbariml import video
 
 logger = get_logger(__name__)
 
@@ -469,6 +470,17 @@ class MainWindow(QMainWindow):
         unselect_button = QPushButton("Unselect All (Esc)")
         unselect_button.clicked.connect(self.unselect_all)
         action_layout.addWidget(unselect_button)
+        # Only meaningful for video-derived ROIs; enabled/disabled per
+        # selection in _refresh_open_video_button so a greyed-out button is
+        # itself the answer to "did this come from video?".
+        self.open_video_button = QPushButton("Open Video")
+        self.open_video_button.setEnabled(False)
+        self.open_video_button.setToolTip(
+            "Open the source video at this detection's timestamp. "
+            "Only available for ROIs that came from `mbariml infer video`."
+        )
+        self.open_video_button.clicked.connect(self.open_source_video)
+        action_layout.addWidget(self.open_video_button)
         controls_layout.addLayout(action_layout)
 
         nav_layout = QHBoxLayout()
@@ -869,6 +881,7 @@ class MainWindow(QMainWindow):
     @Slot(list)
     def _on_selection_changed(self, selected: list[RectWidget]) -> None:
         self._selection.update_widget_selection_flags(selected)
+        self._refresh_open_video_button()
         self.update_status_bar()
         # Recolor only -- see the comment in _on_rect_clicked's "same image"
         # branch for why this must not rebuild the box overlays.
@@ -1043,6 +1056,52 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Deleted ROI #{roi_index}.")
         self._refresh_verified_count_label()
 
+    # -- Source video ----------------------------------------------------------
+
+    def _selected_row(self) -> object | None:
+        """The row the source-video actions apply to: the first selected tile,
+        or -- when the selection is empty but a box in the detail view is
+        highlighted -- that ROI's tile, if its page happens to be loaded."""
+        selected = self.selection_model.selected
+        if selected:
+            return selected[0].row
+        if self._detail_only_active_roi_index is not None:
+            rect_widget = self._find_rect_widget(self._detail_only_active_roi_index)
+            if rect_widget is not None:
+                return rect_widget.row
+        return None
+
+    def _refresh_open_video_button(self) -> None:
+        row = self._selected_row()
+        self.open_video_button.setEnabled(bool(row is not None and getattr(row, "video_path", None)))
+
+    def open_source_video(self) -> None:
+        """Open the selected ROI's source video, seeked to the moment it was
+        detected (see mbariml.video.open_video_at for which player is used).
+
+        Video-derived ROIs point image_path at an extracted frame on disk --
+        that's what makes them work everywhere else in the pipeline with no
+        video-aware code -- so the trail back to the footage lives in the
+        video_path/frame_time_s provenance columns, which is what this uses.
+        """
+        row = self._selected_row()
+        if row is None:
+            self.status_label.setText("Select an ROI first.")
+            return
+        video_path = getattr(row, "video_path", None)
+        if not video_path:
+            self.status_label.setText("That ROI came from a still image, not video -- nothing to open.")
+            return
+
+        seconds = getattr(row, "frame_time_s", None) or 0.0
+        try:
+            opened_in = video.open_video_at(video_path, seconds)
+        except Exception as exc:
+            logger.exception("Could not open source video %s", video_path)
+            QMessageBox.warning(self, "Could Not Open Video", str(exc))
+            return
+        self.status_label.setText(f"Opened {Path(video_path).name} in {opened_in}.")
+
     # -- Add New ROI -----------------------------------------------------------
 
     def _on_add_new_toggled(self, checked: bool) -> None:
@@ -1157,7 +1216,7 @@ class MainWindow(QMainWindow):
         session loads (and caches) the DINOv3 model, which can take a while
         (weight download on a fresh machine, then loading it onto the
         GPU/MPS device); every call after that is fast. See
-        mbariml.steps.step2_embed.embed_roi_bgr for the model/preprocessing
+        mbariml.steps.embed.embed_roi_bgr for the model/preprocessing
         itself, shared with `mbariml embed` so embeddings computed here are
         directly comparable to every other embedding in the database."""
         return roi_index, embed_roi_bgr(roi_bgr)
