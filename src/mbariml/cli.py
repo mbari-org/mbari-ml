@@ -175,7 +175,7 @@ def run(
                 str(db_path), limit=limit, off=False,
                 approx_n_clusters=approx_n_clusters, noise_level=noise_level,
                 base_min_cluster_size=2, n_neighbors=40, min_samples=5, seed=seed,
-                naming="auto",
+                naming="auto", label_source="original",
             )
         elif stage == "export":
             export_voc.export_voc(str(db_path), str(output_dir_path))

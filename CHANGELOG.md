@@ -11,6 +11,57 @@ recognizable.
 
 ---
 
+## 0.15.0 — choose which label names a cluster
+
+`cluster` names each cluster after the most common label among its members, and
+it read the raw detector class (`label`) to do it, unconditionally. On a
+database that has already been through review that is precisely the wrong
+column: a single-class detector puts `object` in it for every row, and the
+human decisions live in `new_label`, invisible to the naming step. So
+re-clustering a curated database discarded the curation twice over — the bulk
+UPDATE overwrites `new_label`, and the replacement names were voted on from a
+column the reviewer never touched.
+
+The new `--label-source` says which label to use:
+
+- `original` (default, unchanged behaviour) — the raw detector class.
+- `new` — the curated `new_label`, falling back to the raw class for
+  un-reviewed rows, the same convention `stats` and `export html` already use.
+
+Measured on a 300-ROI database curated into three taxa and clustered into three
+groups: the default returns `object_1`/`object_2`/`object_3`, while
+`--label-source new` returns `Muusoctopus`/`Sponge_sp_A`/`Coral_bamboo`. With a
+third of the rows' reviews removed, that third's cluster falls back to the raw
+`object` while the two reviewed clusters keep their curated names.
+
+Both sources are wrapped in `COALESCE(..., 'unlabeled')` so the vote can never
+elect NULL and name a cluster `None_1` — reachable in `original` mode too, for
+a row whose detector class was never recorded.
+
+Two things worth stating plainly, since neither is obvious from the command and
+both cost real work to discover:
+
+- **Clustering overwrites `new_label` for every embedded row, verified rows
+  included, whichever source is chosen.** It does not merge and there is no
+  undo, and `verified` is not cleared either, so afterwards those rows still
+  look human-reviewed while carrying a machine-generated label. Work on a copy
+  of the database. Copy it into its own directory — `cluster` writes
+  `roi_grids/` next to the database, so a same-directory copy lands grids on
+  top of the originals. The copy carries the embeddings, so `embed` never
+  re-runs and each clustering iteration takes seconds.
+- `--label-source new` reads the very column clustering writes back to, so
+  running it twice in a row feeds the first run's generated names back in as if
+  they were human decisions. It is for the first pass over a reviewed database,
+  not for repeated re-runs.
+
+Also fixed: `mbariml run` calls `cluster()` directly as a Python function
+rather than through Typer, so every parameter must be passed explicitly — an
+omitted one arrives as a `typer.OptionInfo` object instead of its default. The
+new parameter is passed explicitly there, which the chain's cluster stage was
+re-run end to end to confirm.
+
+---
+
 ## 0.14.0 — YOLO train/val/test splits, and a visible similarity-search scope
 
 ### `export yolo` now writes a dataset, not just labels

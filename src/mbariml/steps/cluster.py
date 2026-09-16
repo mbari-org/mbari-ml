@@ -57,6 +57,39 @@ MIN_ROWS_TO_CLUSTER = 10
 
 CLUSTER_NAMING_MODES = ("auto", "dominant", "indexed")
 
+# Which column the dominant-label vote that NAMES each cluster reads from.
+# Same vocabulary as the GUI's SIMILARITY_LABEL_COLUMNS ("original" = the raw
+# detector class, "new" = the curated label), so the two places that let you
+# pick a label column agree on what to call them.
+#
+# Why this is an option at all: clustering names each cluster after the most
+# common label among its members, and it read `label` -- the raw detector
+# class -- unconditionally. On a database that has already been through
+# review that is precisely the wrong column. A single-class detector puts
+# "object" in it for every row (the case --naming exists to paper over), and
+# the human decisions live in new_label, invisible to the naming step. So
+# re-clustering a curated database threw away the curation twice over: the
+# bulk UPDATE overwrites new_label, and the replacement names were derived
+# from a column the reviewer never touched.
+#
+# "new" uses COALESCE(new_label, label), matching the convention `stats` and
+# `export html` already use -- curated where curated, raw where not -- so a
+# partially-reviewed database names clusters from real labels where they
+# exist instead of falling off a cliff to NULL.
+# COALESCE(..., 'unlabeled') on both so the vote can never elect NULL as a
+# cluster's dominant label and name it "None_1" -- possible in "original" mode
+# too, for a row whose detector class was never recorded.
+#
+# NOTE for "new": this reads the very column clustering writes back to, so
+# running it twice in a row feeds the first run's generated names (object_1,
+# object_2, ...) back in as if they were human decisions. It is meant for the
+# first clustering pass over a reviewed database, not for repeated re-runs --
+# hence the warning logged when it is used on rows that look machine-named.
+CLUSTER_LABEL_SOURCES = {
+    "original": "COALESCE(label, 'unlabeled')",
+    "new": "COALESCE(new_label, label, 'unlabeled')",
+}
+
 
 def _cluster_label_names(cluster_to_dominant: dict[int, str], naming: str) -> dict[int, str]:
     """Decide the ``new_label`` each cluster gets.
@@ -109,14 +142,20 @@ def _cluster_embeddings(
     min_samples: int,
     seed: Optional[int],
     naming: str = "auto",
+    label_source: str = "original",
 ) -> int:
     """Cluster embeddings using EVoC and write evoc_clust/new_label back. Returns cluster count."""
     import evoc
 
     db.ensure_column(conn, "predictions", "evoc_clust", "INTEGER")
 
+    # Interpolated, not parameterized: DuckDB can't parameterize an
+    # expression, so this is looked up in an allowlist -- same reasoning as
+    # SORT_COLUMNS/SIMILARITY_LABEL_COLUMNS in the GUI's query service.
+    label_expr = CLUSTER_LABEL_SOURCES[label_source]
+
     logger.info("Fetching embedded rows...")
-    query = "SELECT id, embedding, label FROM predictions WHERE embedding IS NOT NULL"
+    query = f"SELECT id, embedding, {label_expr} FROM predictions WHERE embedding IS NOT NULL"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query).fetchall()
@@ -161,6 +200,11 @@ def _cluster_embeddings(
         cluster_to_labels.setdefault(cluster_label, []).append(label)
     cluster_to_dominant_label = {c: max(set(ls), key=ls.count) for c, ls in cluster_to_labels.items()}
     cluster_names = _cluster_label_names(cluster_to_dominant_label, naming)
+    logger.info(
+        "Naming clusters from the %s label (%s), naming mode '%s'.",
+        "curated" if label_source == "new" else "original detector",
+        label_expr, naming,
+    )
 
     distinct_dominant = len(set(cluster_to_dominant_label.values()))
     if distinct_dominant < len(cluster_to_dominant_label):
@@ -279,15 +323,27 @@ def cluster(
     naming: str = typer.Option(
         "auto",
         help="How clusters are named in new_label. 'auto' (default) uses each cluster's "
-        "dominant original label, adding an index when one label wins several clusters -- so a "
+        "dominant label, adding an index when one label wins several clusters -- so a "
         "single-class detector yields object_1, object_2, ... instead of relabelling everything "
         "'object' and discarding the grouping. 'dominant' always uses the bare label; 'indexed' "
-        "always adds the index.",
+        "always adds the index. Which label it votes on is --label-source.",
+    ),
+    label_source: str = typer.Option(
+        "original",
+        help="Which label each cluster is NAMED after: 'original' (default) votes on the raw "
+        "detector class, 'new' votes on the curated new_label, falling back to the raw class "
+        "where a row hasn't been reviewed. Use 'new' when re-clustering a database you have "
+        "already reviewed -- the raw class there is often a single useless 'object' on every "
+        "row, while your curated names are the ones worth carrying onto the new clusters. "
+        "NOTE: clustering OVERWRITES new_label for every embedded row either way, verified "
+        "rows included, so work on a copy if the current labels matter.",
     ),
 ) -> None:
     """Cluster ROI embeddings with EVoC and export review grids."""
     if naming not in CLUSTER_NAMING_MODES:
         raise typer.BadParameter(f"--naming must be one of {list(CLUSTER_NAMING_MODES)}")
+    if label_source not in CLUSTER_LABEL_SOURCES:
+        raise typer.BadParameter(f"--label-source must be one of {list(CLUSTER_LABEL_SOURCES)}")
     output_dir = Path(db_path).parent
 
     with db.connect(db_path) as conn:
@@ -301,6 +357,7 @@ def cluster(
             min_samples=min_samples,
             seed=seed,
             naming=naming,
+            label_source=label_source,
         )
         if n_clusters:
             _generate_roi_grids(conn, output_dir, group_by_dominant_label=not off)

@@ -198,6 +198,89 @@ separate sponge clusters become `Hexactinellida_1`–`_4`, rather than being
 flattened into a single `Hexactinellida`. Merge them later with `remap-labels`
 if that's what you want.
 
+### Re-clustering a database you've already reviewed
+
+`--label-source` picks **which** label the naming vote reads:
+
+- **`original`** (default) — the raw detector class, i.e. the `label` column.
+- **`new`** — your curated `new_label`, falling back to the raw class for rows
+  you haven't reviewed yet (the same "curated where curated, raw where not"
+  convention `stats` and `export html` use).
+
+This matters once a database has been through review, because that's exactly
+when the raw class is the useless column. Clustering a reviewed single-class
+database with the default names every cluster from `object` and hands back
+`object_1`, `object_2`, … — throwing away the taxon names you typed. Measured
+on a 300-ROI database curated into three taxa:
+
+| | resulting `new_label` |
+|---|---|
+| `--label-source original` (default) | `object_1`, `object_2`, `object_3` |
+| `--label-source new` | `Muusoctopus`, `Sponge_sp_A`, `Coral_bamboo` |
+
+With a third of the rows left unreviewed, those rows' cluster falls back to the
+raw `object` while the two reviewed clusters keep their curated names.
+
+> **Clustering overwrites `new_label` for every embedded row — verified rows
+> included — whichever source you pick.** It does not merge, and there is no
+> undo. `verified` is *not* cleared either, so afterwards those rows still look
+> human-reviewed while carrying a machine-generated label. Never run it against
+> a curated database you care about — work on a copy.
+
+#### Worked example: test clustering without touching your curated database
+
+```bash
+# 1. Close the review GUI first, then confirm nothing is mid-write.
+#    A .wal sidecar means an open connection hasn't flushed — the copy
+#    would be incomplete.
+ls /data/results/yolo_predictions.duckdb*
+du -h /data/results/yolo_predictions.duckdb      # ROI blobs make these big
+
+# 2. Copy into its OWN directory. `cluster` writes roi_grids/ next to the
+#    database, so a same-directory copy drops grids on the originals.
+mkdir -p ~/Desktop/cluster_experiment
+cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
+
+# 3. Record what your curated labels look like now, to compare against.
+mbariml stats ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+
+# 4. Cluster the copy, naming the clusters from your curated labels.
+mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
+    --label-source new --approx-n-clusters 24 --seed 42
+
+# 5. Compare, then look at the actual groupings.
+mbariml stats  ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+mbariml review ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+```
+
+Your real database at `/data/results/` is never opened by any of this.
+
+**To try different settings, start each attempt from a fresh copy** — not by
+re-running `cluster` on the same file:
+
+```bash
+rm -rf ~/Desktop/cluster_experiment
+mkdir -p ~/Desktop/cluster_experiment
+cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
+mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
+    --label-source new --approx-n-clusters 40 --noise-level 0.1 --seed 42
+```
+
+That matters because `--label-source new` reads the very column clustering
+writes back to: a second run on the same file votes on the first run's
+generated names as if they were human decisions. It's for the first pass over
+a reviewed database, not for repeated re-runs.
+
+Always pass `--seed` while tuning, or EVoC returns a different result every run
+and you can't tell whether changing `--approx-n-clusters` did anything. The copy
+carries the embeddings, so `embed` never re-runs and each iteration takes
+seconds — the expensive stage is already done.
+
+If an experiment turns out better, there's no merge path back: re-review in the
+copy and adopt it as your working database, or carry specific renames across
+with `remap-labels`. Nothing will splice new clusters into your curated database
+while preserving the human labels.
+
 ### Using the review GUI well
 
 `mbariml review DB_PATH` labels/deletes ROIs one page at a time:

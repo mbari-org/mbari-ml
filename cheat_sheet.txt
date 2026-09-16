@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.14.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.15.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -199,14 +199,91 @@ cluster
     --base-min-cluster-size, --n-neighbors, --min-samples, --seed
     --naming auto|dominant|indexed
                             how clusters are named in new_label [default: auto].
-                            Clusters are named after the dominant original label
-                            of their members -- which breaks for a single-class
-                            detector (e.g. Megalodon, which only reports
-                            "object"), since then every cluster gets the same
-                            name and the grouping is lost. 'auto' appends an
-                            index whenever one label wins several clusters, so
-                            you get object_1, object_2, ... 'dominant' always
-                            uses the bare label; 'indexed' always suffixes.
+                            Clusters are named after the dominant label of their
+                            members -- which breaks for a single-class detector
+                            (e.g. Megalodon, which only reports "object"), since
+                            then every cluster gets the same name and the
+                            grouping is lost. 'auto' appends an index whenever
+                            one label wins several clusters, so you get
+                            object_1, object_2, ... 'dominant' always uses the
+                            bare label; 'indexed' always suffixes.
+    --label-source original|new
+                            WHICH label the naming vote reads [default:
+                            original]. 'original' is the raw detector class;
+                            'new' is your curated new_label, falling back to the
+                            raw class for rows you haven't reviewed.
+                            Use 'new' when re-clustering a database that has
+                            already been through review -- with the default, a
+                            reviewed single-class database comes back as
+                            object_1, object_2, ... and the taxon names you
+                            typed are gone. Measured on 300 curated ROIs:
+
+                              --label-source original -> object_1/2/3
+                              --label-source new      -> Muusoctopus,
+                                                         Sponge_sp_A,
+                                                         Coral_bamboo
+
+                            Caveat: 'new' reads the column clustering writes
+                            back to, so running it twice feeds the first run's
+                            generated names back in. It's for the first pass
+                            over a reviewed database, not repeated re-runs.
+
+  !! CLUSTERING OVERWRITES new_label FOR EVERY EMBEDDED ROW, verified rows
+     included, whichever --label-source you pick. It doesn't merge, there's no
+     undo, and `verified` is NOT cleared -- so afterwards those rows still look
+     human-reviewed while carrying a machine-generated label. To experiment
+     without risking a curated database, copy it and cluster the copy:
+
+       mkdir -p ~/Desktop/cluster_experiment
+       cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
+       mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
+           --label-source new --seed 42
+
+     Copy it into its OWN directory -- cluster writes roi_grids/ next to the
+     database, so a same-directory copy drops grids on top of the originals.
+     The copy carries the embeddings, so `embed` never re-runs and each
+     clustering iteration is seconds. Always pass --seed while tuning, or you
+     can't tell whether a change to the other knobs did anything.
+
+  RECIPE: test clustering on a curated database, safely
+  -----------------------------------------------------
+    # 1. Close the review GUI, then check nothing is mid-write. A .wal
+    #    sidecar means an open connection hasn't flushed and the copy
+    #    would be incomplete.
+    ls /data/results/yolo_predictions.duckdb*
+    du -h /data/results/yolo_predictions.duckdb
+
+    # 2. Copy into its own directory.
+    mkdir -p ~/Desktop/cluster_experiment
+    cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
+
+    # 3. Baseline: what do the curated labels look like now?
+    mbariml stats ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+
+    # 4. Cluster the COPY, naming clusters from your curated labels.
+    mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
+        --label-source new --approx-n-clusters 24 --seed 42
+
+    # 5. Compare, then look at the groupings.
+    mbariml stats  ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+    mbariml review ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+
+  The real database at /data/results/ is never opened by any of this.
+
+  To try different settings, start each attempt from a FRESH copy rather than
+  re-running cluster on the same file -- '--label-source new' reads the column
+  clustering writes back to, so a second run on the same file votes on the
+  first run's generated names as if a human had chosen them:
+
+    rm -rf ~/Desktop/cluster_experiment && mkdir -p ~/Desktop/cluster_experiment
+    cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
+    mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
+        --label-source new --approx-n-clusters 40 --noise-level 0.1 --seed 42
+
+  No merge path back: if an experiment is better, re-review in the copy and
+  adopt it as your working database, or carry specific renames across with
+  remap-labels. Nothing splices new clusters into a curated database while
+  preserving the human labels.
 
 refine (optional)
   Re-cluster ONE label's ROIs into finer sub-clusters -- for when clustering
@@ -393,7 +470,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.14.0. Run `mbariml <command> --help` yourself any
+Captured verbatim against v0.15.0. Run `mbariml <command> --help` yourself any
 time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -591,6 +668,7 @@ mbariml embed --help
 mbariml cluster --help
 
 
+
  Usage: mbariml cluster [OPTIONS] {db_path}
 
  Cluster ROI embeddings with EVoC and export review grids.
@@ -638,14 +716,28 @@ mbariml cluster --help
 │                                                 run -- set this while iterating on the other     │
 │                                                 options above so changes are comparable.         │
 │ --naming                               <str>    How clusters are named in new_label. 'auto'      │
-│                                                 (default) uses each cluster's dominant original  │
-│                                                 label, adding an index when one label wins       │
-│                                                 several clusters -- so a single-class detector   │
-│                                                 yields object_1, object_2, ... instead of        │
-│                                                 relabelling everything 'object' and discarding   │
-│                                                 the grouping. 'dominant' always uses the bare    │
-│                                                 label; 'indexed' always adds the index.          │
+│                                                 (default) uses each cluster's dominant label,    │
+│                                                 adding an index when one label wins several      │
+│                                                 clusters -- so a single-class detector yields    │
+│                                                 object_1, object_2, ... instead of relabelling   │
+│                                                 everything 'object' and discarding the grouping. │
+│                                                 'dominant' always uses the bare label; 'indexed' │
+│                                                 always adds the index. Which label it votes on   │
+│                                                 is --label-source.                               │
 │                                                 [default: auto]                                  │
+│ --label-source                         <str>    Which label each cluster is NAMED after:         │
+│                                                 'original' (default) votes on the raw detector   │
+│                                                 class, 'new' votes on the curated new_label,     │
+│                                                 falling back to the raw class where a row hasn't │
+│                                                 been reviewed. Use 'new' when re-clustering a    │
+│                                                 database you have already reviewed -- the raw    │
+│                                                 class there is often a single useless 'object'   │
+│                                                 on every row, while your curated names are the   │
+│                                                 ones worth carrying onto the new clusters. NOTE: │
+│                                                 clustering OVERWRITES new_label for every        │
+│                                                 embedded row either way, verified rows included, │
+│                                                 so work on a copy if the current labels matter.  │
+│                                                 [default: original]                              │
 │ --help                                          Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 

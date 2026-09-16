@@ -237,6 +237,25 @@ distinct sponge clusters become \code{Hexactinellida\_1} through
 \code{\_4}. Merging them afterwards is one bulk relabelling command, whereas
 recovering a distinction that was thrown away is not.
 
+Which label the naming vote reads is itself a choice, and defaulting it to the
+detector's raw class is wrong as soon as a database has been reviewed. The
+human decisions live in the curated label, and on a single-class model the raw
+class is the same useless string for every region, so re-clustering a reviewed
+database discarded the review twice over: the write-back replaces the curated
+label, and the replacement was voted on from a column the reviewer never
+touched. The naming vote can now be pointed at the curated label instead,
+falling back to the raw class for regions not yet reviewed. On a 300-region
+database curated into three taxa, the default returns three indexed
+\code{object} names while the curated source returns the three taxon names.
+
+This is worth stating alongside a caveat the command cannot enforce: the
+write-back replaces the curated label for every embedded region, including ones
+already marked verified, and does not clear the verified flag---so those rows
+afterwards appear reviewed while carrying a machine-generated name. Clustering
+experiments therefore belong on a copy of the database. The copy carries the
+embeddings, so the expensive stage is not repeated and each iteration costs
+seconds.
+
 When the first clustering pass lumps things too coarsely, a refine step
 re-clusters a single label into finer groups, which is the usual remedy for a
 large catch-all bucket.
