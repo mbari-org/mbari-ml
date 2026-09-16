@@ -206,6 +206,15 @@ mean-centred on the ranking pool before normalisation; without that step the
 component common to nearly all deep-sea imagery dominates the dot product and
 compresses similarity into a narrow, weakly separated band.
 
+The search reports the size of the pool it ranked, which is less pedantic than
+it sounds. Only regions that already carry an embedding can be ranked, so an
+embedding pass that was interrupted or deliberately limited silently reduces
+the search to whatever happened to be embedded. The ranked count and the
+matching count are displayed together---``all 8,412 matching regions'' against
+``3,001 of 8,412''---because the two situations are otherwise indistinguishable
+from inside the interface, and the second is easily misread as the search
+having covered only the page in view.
+
 Naming the clusters turns out to need care. The obvious approach, and the one
 we started with, is to label a cluster after the dominant original class among
 its members. That assumes the detector has enough classes for the label to
@@ -347,6 +356,22 @@ images for MBARI's own tooling, and a paginated HTML gallery for quick visual
 checks. The VOC and YOLO exports also emit a manifest of the source images and a
 small standalone script that copies them, since annotation files are of no use
 to a trainer without the imagery beside them.
+
+The YOLO export additionally writes the train, validation and test image lists,
+which completes the dataset rather than leaving the last step to be done by
+hand. Two decisions in how they are written are worth recording. The listed
+paths are relative to the dataset directory, so the directory refers only to
+itself and can be archived or moved to a training machine without any path
+being rewritten---absolute paths recorded on the exporting machine could not
+survive that move. And the split is taken over images, never over individual
+detections. Two crops of the same frame placed on opposite sides of the
+train/validation boundary share their background, their illumination and often
+the same individual animal, which inflates validation scores on transect
+imagery where consecutive frames already overlap heavily. The split is seeded
+by default for the same reason the rest of the pipeline is reproducible: a
+re-export after correcting a handful of labels should not quietly reshuffle
+which images were held out, since that would make models trained either side
+of the re-export incomparable.
 
 Two commands support analysis rather than training. A statistics command reports
 label counts and per-image detection counts, and writes a label-by-image matrix

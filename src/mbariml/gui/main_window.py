@@ -230,6 +230,10 @@ class MainWindow(QMainWindow):
         self.sort_option = query_service.DEFAULT_SORT_OPTION
         self.similarity_order: list[int] | None = None
         self.similarity_reference: int | None = None
+        # Denominator for the status bar's "ranked M of T": how many ROIs
+        # matched the search's filters at all, including any that had to be
+        # skipped for want of an embedding. See count_similarity_pool.
+        self.similarity_pool_total: int | None = None
         self.hide_verified = False
         # 0.0 = no floor (every confidence value passes). Applied at the
         # query level everywhere label_filter/exclude_verified are -- see
@@ -393,7 +397,7 @@ class MainWindow(QMainWindow):
         self.clear_similarity_button.clicked.connect(self._on_clear_similarity_sort)
         sort_layout.addWidget(self.clear_similarity_button)
         controls_layout.addLayout(sort_layout)
-        controls_layout.addWidget(QLabel("Right-click an ROI to sort all pages by similarity to it."))
+        controls_layout.addWidget(QLabel("Right-click an ROI to rank every ROI in the database by similarity to it (all pages, not just this one)."))
 
         controls_layout.addWidget(
             QLabel("Tile/box captions show both labels: bold = curated, plain = original YOLO class.")
@@ -593,9 +597,22 @@ class MainWindow(QMainWindow):
         filter_text = f" | filter: {self.label_filter}" if self.label_filter else ""
         confidence_text = f" | min confidence: {self.min_confidence:.2f}" if self.min_confidence > 0 else ""
         similarity_active = self.similarity_order is not None
-        mode_text = (
-            f" | sorted by similarity to ROI #{self.similarity_reference}" if similarity_active else ""
-        )
+        # Spelled out as "ranked M of T ROIs" rather than just naming the
+        # reference: a similarity search always re-ranks the whole matching
+        # ROI set across every page, and the only thing that can narrow it
+        # is rows with no embedding yet. M == T says so outright; M < T names
+        # the shortfall instead of leaving it looking like the sort only
+        # covered the page it was launched from.
+        if similarity_active:
+            ranked = len(self.similarity_order)
+            pool_total = self.similarity_pool_total
+            if pool_total is None or pool_total == ranked:
+                scope_text = f"all {ranked} matching ROIs"
+            else:
+                scope_text = f"{ranked} of {pool_total} matching ROIs -- {pool_total - ranked} not embedded yet"
+            mode_text = f" | sorted by similarity to ROI #{self.similarity_reference} ({scope_text})"
+        else:
+            mode_text = ""
         # Only actionable while a similarity sort is actually narrowing the
         # grid -- e.g. a same-label search that matches just one concept,
         # with nothing else in the controls panel telling you how to get
@@ -805,6 +822,7 @@ class MainWindow(QMainWindow):
         self.sort_option = text
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
 
@@ -818,6 +836,7 @@ class MainWindow(QMainWindow):
             return
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
 
@@ -833,6 +852,7 @@ class MainWindow(QMainWindow):
         self.label_filter = text or None
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.clear_search_button.setEnabled(bool(self.label_filter))
         self.load_page()
@@ -909,6 +929,7 @@ class MainWindow(QMainWindow):
         self.min_confidence = new_value
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
 
@@ -923,6 +944,7 @@ class MainWindow(QMainWindow):
         self.hide_verified = checked
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
 
@@ -1374,19 +1396,30 @@ class MainWindow(QMainWindow):
         min_confidence: float | None,
     ):
         # .cursor() called here, i.e. on the worker thread that will use it.
+        cursor = conn.cursor()
         order = query_service.compute_similarity_order(
-            conn.cursor(),
+            cursor,
             roi_index,
             label_filter,
             label_mode,
             exclude_verified=exclude_verified,
             min_confidence=min_confidence,
         )
-        return roi_index, order
+        # Same pool, minus the embedding requirement -- so the GUI can say
+        # "ranked M of T" and make it obvious whether the search really did
+        # span everything or was quietly limited by missing embeddings.
+        pool_total = query_service.count_similarity_pool(
+            cursor,
+            label_filter,
+            label_mode,
+            exclude_verified=exclude_verified,
+            min_confidence=min_confidence,
+        )
+        return roi_index, order, pool_total
 
     @Slot(object)
     def _on_similarity_computed(self, payload) -> None:
-        roi_index, order = payload
+        roi_index, order, pool_total = payload
         if order is None:
             QMessageBox.warning(
                 self, "No Embedding", f"ROI #{roi_index} has no embedding yet -- run `mbariml embed` first."
@@ -1395,8 +1428,21 @@ class MainWindow(QMainWindow):
             return
         self.similarity_order = order
         self.similarity_reference = roi_index
+        self.similarity_pool_total = pool_total
         self.current_page = 0
-        logger.info("Sorted %d ROI(s) by similarity to ROI #%s", len(order), roi_index)
+        logger.info(
+            "Sorted %d of %d matching ROI(s) by similarity to ROI #%s (every page, not just the one on screen)",
+            len(order), pool_total, roi_index,
+        )
+        # Not a modal: it's a "your data is incomplete" notice, not an error,
+        # and the ranking that did happen is still useful. The status bar
+        # keeps saying "ranked M of T" for as long as the sort is active.
+        if pool_total > len(order):
+            logger.warning(
+                "%d ROI(s) matching this search have no embedding and could not be ranked -- "
+                "run `mbariml embed` on this database to include them.",
+                pool_total - len(order),
+            )
         self.load_page()
 
     @Slot(tuple)

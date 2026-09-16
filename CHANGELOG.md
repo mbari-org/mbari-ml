@@ -11,6 +11,73 @@ recognizable.
 
 ---
 
+## 0.14.0 — YOLO train/val/test splits, and a visible similarity-search scope
+
+### `export yolo` now writes a dataset, not just labels
+
+`export yolo` wrote `labels/` and `names.txt`, which is most of a YOLO
+dataset but not a trainable one — the image lists a training config actually
+points at still had to be produced by hand. It now also writes `train.txt`,
+`val.txt` and `test.txt`, one `./images/<file>` path per line.
+
+Relative paths deliberately: the dataset directory only refers to itself, so
+it can be zipped and moved to a training box without rewriting anything,
+which absolute paths recorded on the exporting machine could not survive.
+The filenames are the same collision-safe `<parent_dir>_<stem>` names
+`copy_images.py` copies to and `labels/` is keyed by, so `images/X.jpg` ↔
+`labels/X.txt` pairs up by construction — the pairing YOLO resolves by
+swapping `/images/` for `/labels/`. Export plus copy script now leaves a
+directory that trains as-is:
+
+```bash
+mbariml export yolo predictions.duckdb dataset/
+python3 dataset/copy_images.py --dest dataset/images
+```
+
+`--split-ratios "85 10 5"` (default), `--split-seed 42` (default),
+`--test-images-file` to pin a fixed benchmark set into test across every
+export, `--no-splits` to skip. Ratios that don't sum to 100 are rejected
+rather than rescaled — a typo'd `"80 10 5"` is a miscount, not a request for
+a dataset missing 5% of its data.
+
+Seeded by default so re-exporting after relabelling a handful of ROIs
+reproduces the same split. An unseeded shuffle would silently reshuffle what
+was held out on every export, making any two models trained across one
+incomparable.
+
+Splitting is per **image**, never per box: two crops of one frame on opposite
+sides of the train/val boundary leak the same background, lighting and often
+the same individual animal across the split, which inflates validation scores
+on benthic transect imagery where consecutive frames already overlap heavily.
+
+Also fixed alongside: images recorded in the database but missing from disk
+were listed in `image_manifest.csv` despite no label file being written for
+them. They're now excluded from both the manifest and the splits — a split
+line pointing at an image that was never copied surfaces much later as a
+training-time error.
+
+### Similarity search now states its own scope
+
+The right-click similarity search always ranked the entire matching ROI set,
+every page of it — a full-table scan and a numpy matmul over every stored
+embedding, not a re-ordering of the visible page. But nothing in the GUI said
+so, and one situation makes it look otherwise: `compute_similarity_order` can
+only rank rows that *have* an embedding, and a partial, interrupted, or
+`--limit`ed `mbariml embed` leaves the rest out silently. A search ranking
+3,001 of 20,000 ROIs and one ranking all 3,001 there were displayed
+identically, as a page count — which reads exactly like "it only sorted what
+I was looking at".
+
+The status line now reports the pool outright: *"sorted by similarity to ROI
+#812 (all 8,412 matching ROIs)"*, or *"(3,001 of 8,412 matching ROIs — 5,411
+not embedded yet)"*, with a matching log warning naming the fix. The new
+`query_service.count_similarity_pool` counts the same pool the ranking uses
+minus its embedding requirement, sharing one WHERE-clause builder with
+`compute_similarity_order` so the two can't drift into describing different
+populations — the denominator is only worth showing if it's truthful.
+
+---
+
 ## 0.13.0 — cluster naming for single-class detectors
 
 `cluster` labelled each cluster with the dominant original label of its

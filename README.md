@@ -73,7 +73,7 @@ All commands:
 | `mbariml review`       | Curate | Interactive GUI for labeling/deleting/adding ROIs |
 | `mbariml remap-labels` | Curate | Bulk-rename `new_label` values from a CSV |
 | `mbariml export voc`   | Emit | Pascal VOC XML |
-| `mbariml export yolo`  | Emit | YOLO label files + names.txt (see below) |
+| `mbariml export yolo`  | Emit | YOLO label files + names.txt + train/val/test splits (see below) |
 | `mbariml export id`    | Emit | `*.id` sidecar next to each source image (see below) |
 | `mbariml export html`  | Emit | Paginated HTML gallery of images + crops |
 | `mbariml stats`        | Emit | Label counts, boxes-per-image stats, image × label matrix (see below) |
@@ -210,9 +210,17 @@ if that's what you want.
 - **Delete** removes the current selection (asks for confirmation first —
   it's permanent).
 - **Escape** clears the selection.
-- **Right-click** a thumbnail to sort *every page* by embedding similarity
-  to that ROI (most similar first), across the whole database (respecting
-  the current `--label` filter, if any). Requires `mbariml embed` to have run
+- **Right-click** a thumbnail to rank **every ROI in the database** by
+  embedding similarity to that one (most similar first), respecting the
+  current `--label` filter, "Hide verified" and the min-confidence floor if
+  set. This is a whole-dataset re-ranking, not a re-ordering of the page
+  you're on: the closest matches are pulled onto page 1 from wherever in the
+  database they were, and every following page continues down the same
+  ranking. The status line says so explicitly — *"sorted by similarity to
+  ROI #812 (all 8,412 matching ROIs)"*. If it instead reads *"3,001 of 8,412
+  matching ROIs — 5,411 not embedded yet"*, the search was narrowed by
+  missing embeddings, which is the one thing that can narrow it: run
+  `mbariml embed` to include the rest. Requires `mbariml embed` to have run
   first. Changing the Sort dropdown exits similarity mode and returns to
   normal sorting.
 - The status line under the buttons always shows the current page, how many
@@ -375,18 +383,56 @@ what happens *inside* each of those commits, not how often they happen.
 
 ### Exporting to YOLO format, and pulling the matching images
 
-`mbariml export yolo DB_PATH OUTPUT_DIR` writes curated labels (`new_label`,
-excluding `noise`) as YOLO-format label files — one `labels/<name>.txt` per
-image, each line `class_id x_center y_center width height` normalized
-against that image's actual pixel dimensions — plus `names.txt` (class index
-→ label, in the order the label files use):
+`mbariml export yolo DB_PATH OUTPUT_DIR` writes a complete, trainable
+dataset skeleton from curated labels (`new_label`, excluding `noise`):
+
+| Output | What it is |
+|---|---|
+| `labels/<name>.txt` | one per image, each line `class_id x_center y_center width height` normalized against that image's actual pixel dimensions |
+| `names.txt` | class index → label, in the order the label files use |
+| `train.txt` / `val.txt` / `test.txt` | the image lists training configs point at — one `./images/<file>` path per line |
+| `image_manifest.csv` + `copy_images.py` | fetch the matching images (see below) |
 
 ```bash
 mbariml export yolo /data/survey_results/yolo_predictions.duckdb /data/survey_results/yolo_out/
+python3 /data/survey_results/yolo_out/copy_images.py --dest /data/survey_results/yolo_out/images
 ```
 
+Those two commands leave a directory that trains as-is.
+
+**The split paths are relative on purpose.** `./images/<file>` means the
+dataset directory only ever refers to itself, so it can be zipped, copied to
+a training box, or moved between volumes without a single path needing to be
+rewritten — which absolute paths recorded on the machine that ran the export
+could not survive. Every filename in a split file is the same collision-safe
+`<parent_dir>_<stem>` name `copy_images.py` copies to and `labels/` is keyed
+by, so `images/X.jpg` ↔ `labels/X.txt` pairs up by construction — exactly the
+pairing YOLO resolves by swapping `/images/` for `/labels/` in these paths.
+
+| Option | Default | Notes |
+|---|---|---|
+| `--split-ratios` | `"85 10 5"` | train/val/test percentages; must sum to 100, and a set that doesn't is rejected rather than rescaled (a typo'd `"80 10 5"` means a miscount, not a request to drop 5% of the data on the floor) |
+| `--split-seed` | `42` | same database + ratios + seed always reproduces the same split |
+| `--test-images-file` | — | a file of image filenames (one per line) to pin into test every time — a fixed benchmark set held out across every export. Matched leniently: exported name, original filename, full path, with or without extension |
+| `--no-splits` | — | skip the split files entirely |
+
+Seeded by default deliberately: re-exporting after relabelling a handful of
+ROIs should not silently reshuffle which images were held out, or every model
+trained before and after the re-export becomes incomparable.
+
+Splitting happens per **image**, never per box. Two crops of the same frame
+landing on opposite sides of the train/val boundary leak the identical
+background, lighting, and often the same individual animal across the split
+— which quietly inflates validation scores on benthic transect imagery,
+where consecutive frames already overlap heavily.
+
+Images recorded in the database but no longer on disk are left out of the
+splits (and the manifest) rather than listed: a split line pointing at an
+image that was never copied surfaces much later as a training-time error.
+
 It deliberately doesn't copy the source images into an `images/` folder
-itself (they already exist on the survey volume this ran against). Instead,
+itself (they already exist on the survey volume this ran against, and
+copying every JPEG would duplicate the lot). Instead,
 `export yolo` and `export voc` both also write `image_manifest.csv` (every
 distinct source image referenced, mapped to a collision-safe destination
 filename) and a standalone `copy_images.py` next to it. Run that script
@@ -499,6 +545,7 @@ they're interactive, or they don't belong in the middle of a batch run.
 | An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded at ingest (absolute since v0.11.0); re-ingest if the imagery has been relocated. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
 | Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
+| Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a min-confidence floor also narrow the pool by design. |
 | Clustering or similarity results look **nonsensical** | Check you haven't mixed embeddings from two models in one database. If you changed `EMBEDDING_MODEL_NAME`, re-embed everything with `mbariml embed --force`. |
 | `embed` is **slow, and getting slower** | Confirm the device (it logs MPS/CUDA/CPU at startup), then check nothing else is competing for the GPU. The historical cause was a DuckDB write pattern, long since fixed — see [CHANGELOG.md](CHANGELOG.md). |
 | **"Open Video" does nothing useful** | Install IINA, mpv, or VLC — all honor a start position. Without one it falls back to your browser, which only seeks for codecs the browser can play. |

@@ -332,6 +332,73 @@ def fetch_known_labels(conn: duckdb.DuckDBPyConnection) -> list[str]:
 SIMILARITY_LABEL_COLUMNS = {"new": "new_label", "original": "label"}
 
 
+def _build_similarity_pool_where(
+    label_filter: str | None,
+    label_mode: str,
+    *,
+    exclude_verified: bool = False,
+    min_confidence: float | None = None,
+    require_embedding: bool,
+) -> tuple[str, list]:
+    """WHERE clause defining a similarity search's ranking pool.
+
+    Shared by :func:`compute_similarity_order` (which ranks the pool) and
+    :func:`count_similarity_pool` (which counts it *without* the embedding
+    requirement), so the two can never drift into describing different
+    populations -- the whole point of the count is to be a truthful
+    denominator for the ranking.
+    """
+    label_column = SIMILARITY_LABEL_COLUMNS.get(label_mode, "new_label")
+    conditions = []
+    params: list = []
+    if require_embedding:
+        conditions.append("embedding IS NOT NULL")
+    if label_filter:
+        conditions.append(f"{label_column} = ?")
+        params.append(label_filter)
+    if exclude_verified:
+        conditions.append("(verified IS NULL OR verified != 1)")
+    if min_confidence is not None and min_confidence > 0:
+        conditions.append("confidence >= ?")
+        params.append(min_confidence)
+    if not conditions:
+        return "", params
+    return " WHERE " + " AND ".join(conditions), params
+
+
+def count_similarity_pool(
+    conn: duckdb.DuckDBPyConnection,
+    label_filter: str | None = None,
+    label_mode: str = "new",
+    *,
+    exclude_verified: bool = False,
+    min_confidence: float | None = None,
+) -> int:
+    """How many ROIs a similarity search *could* rank -- the same pool
+    :func:`compute_similarity_order` ranks, minus its ``embedding IS NOT
+    NULL`` requirement.
+
+    Exists purely as a denominator the GUI can show. A similarity search
+    always ranks the entire matching ROI set, every page of it -- but it can
+    only rank rows that actually have an embedding, and a partial or
+    interrupted `mbariml embed` (or one run with --limit) silently leaves
+    some without. There was previously no way to tell those two situations
+    apart from inside the GUI: a search that ranked 400 of 20,000 ROIs and
+    one that ranked all 400 ROIs there were both just displayed as a page
+    count, which reads exactly like "it only sorted what I was looking at".
+    Reporting ranked-of-total makes the distinction visible, and points at
+    the actual fix (run `mbariml embed`) when it is one.
+    """
+    where_sql, params = _build_similarity_pool_where(
+        label_filter,
+        label_mode,
+        exclude_verified=exclude_verified,
+        min_confidence=min_confidence,
+        require_embedding=False,
+    )
+    return conn.execute("SELECT COUNT(*) FROM predictions" + where_sql, params).fetchone()[0]
+
+
 def compute_similarity_order(
     conn: duckdb.DuckDBPyConnection,
     roi_index: int,
@@ -374,18 +441,14 @@ def compute_similarity_order(
         logger.warning("ROI #%s has no embedding yet -- run `mbariml embed` first.", roi_index)
         return None
 
-    label_column = SIMILARITY_LABEL_COLUMNS.get(label_mode, "new_label")
-    conditions = ["embedding IS NOT NULL"]
-    params: list = []
-    if label_filter:
-        conditions.append(f"{label_column} = ?")
-        params.append(label_filter)
-    if exclude_verified:
-        conditions.append("(verified IS NULL OR verified != 1)")
-    if min_confidence is not None and min_confidence > 0:
-        conditions.append("confidence >= ?")
-        params.append(min_confidence)
-    query = "SELECT roi_index, embedding FROM predictions WHERE " + " AND ".join(conditions)
+    where_sql, params = _build_similarity_pool_where(
+        label_filter,
+        label_mode,
+        exclude_verified=exclude_verified,
+        min_confidence=min_confidence,
+        require_embedding=True,
+    )
+    query = "SELECT roi_index, embedding FROM predictions" + where_sql
     rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
@@ -432,5 +495,6 @@ __all__ = [
     "fetch_rois_for_image",
     "fetch_known_labels",
     "compute_similarity_order",
+    "count_similarity_pool",
     "SIMILARITY_LABEL_COLUMNS",
 ]
