@@ -145,7 +145,7 @@ def stats(
     same numbers, as `export yolo`/`voc`/`id`. Pass --include-unverified to
     count raw detections as well, e.g. before any review has happened.
     """
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         total_rows = db.row_count(conn)
         if total_rows == 0:
             logger.warning("No predictions in %s; nothing to summarize.", db_path)

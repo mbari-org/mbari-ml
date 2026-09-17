@@ -83,7 +83,7 @@ def export_ids(
     ),
 ) -> None:
     """Write a *.id sidecar file next to each source image with at least one curated identification."""
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         model_desc = _resolve_model_description(conn, model)
 
         db.require_verified_column(conn, db_path)

@@ -11,6 +11,46 @@ recognizable.
 
 ---
 
+## 0.16.1 — a mistyped database path created an empty database
+
+`db.connect()` passes its path straight to `duckdb.connect()`, which
+**creates** a database at whatever path it is handed. Every read-only
+command used it, so one mistyped character was enough to make a new, empty
+database and then fail four frames deep with:
+
+```
+CatalogException: Catalog Error: Table with name predictions does not exist!
+```
+
+That message points at the schema, which is not the problem. Reproduced from
+a real invocation: `yolo_predictions.duckdbb` (a doubled `b`) left a 12 KB
+phantom database sitting next to the real 1 GB one, where it would have been
+easy to later mistake for a failed export rather than a typo.
+
+`connect(must_exist=True)` now checks first and is used by all ten commands
+that read an existing database (`export {yolo,voc,id,html}`, `stats`,
+`query`, `embed`, `cluster`, `refine`, `remap-labels`). The two ingest
+commands still create, which is their job. The error names the typo and
+looks in the same directory for what was probably meant:
+
+```
+Error: Invalid value: No such database: .../yolo_predictions.duckdbb.
+Did you mean yolo_predictions.duckdb?
+```
+
+It is raised as `typer.BadParameter` specifically — checked against click
+8.5.0, a bare `click.UsageError`, a bare `ClickException` and even a
+`BadParameter` *subclass* all print a full rich traceback instead, and a
+stack dump for a typo buries the one line that says what is wrong. Exits 2,
+touches nothing on disk, and needs no reinstall (it rides the existing
+console-script entry point rather than changing it).
+
+`require_verified_column` also reports a database with no `predictions`
+table as not being an mbariml database, rather than letting the raw
+CatalogException through.
+
+---
+
 ## 0.16.0 — exports dropped the localizations you verified but didn't rename
 
 `export yolo`, `export voc` and `export id` selected rows with

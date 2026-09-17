@@ -143,7 +143,7 @@ def export_voc(
     """
     output_dir_path = Path(output_dir)
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         db.require_verified_column(conn, db_path)
         written, image_paths = _export_to_pascal_voc(conn, output_dir_path)
         names_file = _export_new_names(conn, output_dir_path)

@@ -405,7 +405,7 @@ def export_yolo(
     if splits:
         _parse_split_ratios(split_ratios)
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         db.require_verified_column(conn, db_path)
         written, names, image_paths = _export_labels(conn, output_dir_path)
 

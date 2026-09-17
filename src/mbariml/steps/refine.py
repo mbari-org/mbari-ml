@@ -177,7 +177,7 @@ def refine(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         logger.info("Fetching embeddings for label: %s", new_label or "all labels")
         rows = _fetch_rows(conn, new_label, limit)
         if not rows:

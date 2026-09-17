@@ -346,7 +346,7 @@ def cluster(
         raise typer.BadParameter(f"--label-source must be one of {list(CLUSTER_LABEL_SOURCES)}")
     output_dir = Path(db_path).parent
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         n_clusters = _cluster_embeddings(
             conn,
             limit,

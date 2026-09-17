@@ -220,7 +220,7 @@ def embed(
         decode_workers = min(16, os.cpu_count() or 4)
 
     rows: list[tuple]
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         query = "SELECT id, roi FROM predictions" if force else "SELECT id, roi FROM predictions WHERE embedding IS NULL"
         query += " ORDER BY id"  # sorted writes are much faster on DuckDB than unsorted ones
         rows = conn.execute(query).fetchall()

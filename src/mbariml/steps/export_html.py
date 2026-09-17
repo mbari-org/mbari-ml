@@ -203,7 +203,7 @@ def generate_html(
     output_dir_path.mkdir(parents=True, exist_ok=True)
     folder_name = output_dir_path.name
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         data = _process_images_and_crops(conn, output_dir_path, include_unverified=include_unverified)
 
     if not data:

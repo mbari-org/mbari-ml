@@ -89,7 +89,7 @@ def remap_labels(
         logger.warning("No changes found in %s; nothing to do.", changes_file)
         return
 
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         counts = _apply_changes(conn, changes)
 
     for old_label, new_label in changes.items():

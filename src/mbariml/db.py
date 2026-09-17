@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Iterator
 
 import duckdb
+import typer
 
 from mbariml.logging_utils import get_logger
 
@@ -92,16 +93,54 @@ CURATION_SCHEMA_SQL = """
     );
 """
 
+def _suggest_nearby_databases(db_path: Path) -> str:
+    """'did you mean' text listing real databases sitting next to db_path.
+
+    A mistyped extension (``yolo_predictions.duckdbb``) is the overwhelmingly
+    likely reason a database is missing, and the right one is almost always
+    in the same directory -- so name it rather than making the caller go
+    look.
+    """
+    if not db_path.parent.is_dir():
+        return ""
+    nearby = sorted(c.name for c in db_path.parent.glob("*.duckdb") if c.is_file())
+    if not nearby:
+        return ""
+    if len(nearby) == 1:
+        return f" Did you mean {nearby[0]}?"
+    return f" Databases in that directory: {', '.join(nearby)}."
+
+
 @contextlib.contextmanager
-def connect(db_path: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
+def connect(db_path: str | Path, *, must_exist: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open a DuckDB connection that is always closed on the way out.
 
     Always use this (or ``init_curation_db``) instead of calling
     ``duckdb.connect`` directly -- an unclosed connection is the easiest way
     to end up with a database file that looks empty even though the run
     "seemed to work".
+
+    ``must_exist=True`` for every command that READS an existing database.
+    ``duckdb.connect`` silently CREATES a database at whatever path it is
+    given, so without this a single mistyped character
+    (``yolo_predictions.duckdbb``) leaves a new, empty database on disk and
+    then fails several frames later with "Table with name predictions does
+    not exist" -- which points at the schema, not at the typo that actually
+    caused it. Confirmed directly: that typo created a 12 KB phantom
+    database next to a real 1 GB one.
     """
     db_path = Path(db_path)
+    if must_exist and not db_path.exists():
+        # typer.BadParameter specifically, not a subclass and not a plain
+        # exception: Typer renders exactly this class as a one-line "Error"
+        # panel and nothing else as anything but a full rich traceback
+        # (checked directly against click 8.5.0 -- a bare click.UsageError,
+        # a bare ClickException and even a BadParameter *subclass* all print
+        # a traceback). A mistyped path is a usage error, not a crash, and a
+        # stack dump for one buries the single line that says what is wrong.
+        raise typer.BadParameter(
+            f"No such database: {db_path}.{_suggest_nearby_databases(db_path)}"
+        )
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(db_path))
     logger.debug("Opened DuckDB connection: %s", db_path)
@@ -182,6 +221,12 @@ def require_verified_column(conn: duckdb.DuckDBPyConnection, db_path: str | Path
     ``mbariml review`` opens databases with init_curation_db() and runs the
     ALTER TABLE migration, so pointing it at the database once repairs it.
     """
+    if not conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'predictions'"
+    ).fetchone()[0]:
+        raise RuntimeError(
+            f"{db_path} has no 'predictions' table, so it is not an mbariml curation database."
+        )
     if not has_column(conn, "verified"):
         raise RuntimeError(
             f"{db_path} predates the 'verified' column, so it records no review state and "

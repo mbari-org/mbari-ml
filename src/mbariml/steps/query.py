@@ -27,7 +27,7 @@ def query(
     limit: int = typer.Option(50, help="Cap on rows printed to the console (the full result is still returned)."),
 ) -> None:
     """Run SQL against DB_PATH and print the result as a table."""
-    with db.connect(db_path) as conn:
+    with db.connect(db_path, must_exist=True) as conn:
         result = conn.execute(sql)
         df = result.df()
 
