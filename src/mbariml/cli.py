@@ -65,17 +65,24 @@ app.command("cluster")(cluster_step.cluster)
 app.command("refine")(refine_step.refine)
 app.command("remap-labels")(remap_labels_step.remap_labels)
 app.command("query")(query_step.query)
-app.command("stats")(stats_step.stats)
+app.command("stats")(stats_step.stats)  # also `mbariml export stats`, see below
 
-# `mbariml export {voc,yolo,id,html}` -- one downstream annotation
-# format/gallery per subcommand. voc/yolo also each write their own
+# `mbariml export {voc,yolo,id,html,stats}` -- one downstream annotation
+# format/gallery/summary per subcommand. voc/yolo also each write their own
 # image_manifest.csv/copy_images.py so the matching source images can be
 # pulled later (see mbariml.export_common).
-export_app = typer.Typer(help="Export curated labels to a downstream annotation format, or an HTML gallery.")
+export_app = typer.Typer(help="Export curated labels to a downstream annotation format, an HTML gallery, or summary stats.")
 export_app.command("voc")(export_voc.export_voc)
 export_app.command("yolo")(export_yolo.export_yolo)
 export_app.command("id")(export_ids.export_ids)
 export_app.command("html")(export_html.generate_html)
+# `stats` belongs with the other Emit-phase outputs: it answers "what is in
+# this database" using the very same selection rule the annotation exports
+# use (mbariml.db.curated_where), so its numbers are a preview of what they
+# will write. Registered in both places rather than moved -- `mbariml stats`
+# is what the docs, the cheat sheet and muscle memory all say, and breaking
+# that to relocate a command earns nothing.
+export_app.command("stats")(stats_step.stats)
 app.add_typer(export_app, name="export")
 
 

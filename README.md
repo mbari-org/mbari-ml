@@ -627,6 +627,18 @@ naturally follows a nested mission directory structure:
 mbariml export id /data/survey_results/yolo_predictions.duckdb
 ```
 
+`--output-dir` collects them into one directory instead, for a read-only
+survey volume or a handoff that doesn't include the imagery:
+
+```bash
+mbariml export id /data/survey_results/yolo_predictions.duckdb --output-dir ~/Desktop/ids
+```
+
+Filenames there are disambiguated by parent directory (`<parent>_<stem>.id`),
+since flattening a nested mission tree is precisely when two dives' same-named
+images would otherwise overwrite each other. Each file's header still records
+the original image name.
+
 Each file has a header (generator + version, the user who ran the export,
 the model that produced the detections — recorded automatically from
 the ingest command, or override with `--model`, the source image, and the

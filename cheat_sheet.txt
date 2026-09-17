@@ -30,8 +30,8 @@ pipeline really is:
     INGEST   infer images | infer video       pixels + detections -> database
     ENRICH   embed | cluster | refine         embeddings and grouping
     CURATE   review | remap-labels            human review and relabeling
-    EMIT     export {voc,yolo,id,html}        annotations, galleries, numbers
-             stats | query
+    EMIT     export {voc,yolo,id,html,stats}  annotations, galleries, numbers
+             query
 
 Every command reads and writes the SAME database schema (see mbariml.db), so
 any command's output is usable by any other that needs what it has. That's
@@ -359,9 +359,12 @@ remap-labels
 EMIT -- annotations, galleries, numbers
 ==============================================================================
 
-export voc | yolo | id | html
-  Export curated labels to whichever downstream format you need, or generate
-  an HTML gallery for visual QA. `export yolo` also writes the Ultralytics
+export voc | yolo | id | html | stats
+  Export curated labels to whichever downstream format you need, generate an
+  HTML gallery for visual QA, or print the summary numbers. `stats` is an
+  export subcommand because it reports the same population the annotation
+  exports write -- it's a preview of what a training set will hold. It also
+  stays available as top-level `mbariml stats`; both run the same code. `export yolo` also writes the Ultralytics
   dataset YAML (<output_dir name>.yaml) -- split paths, nc, names -- whose
   nc/names come from the same list that numbered the classes in labels/, so
   they cannot drift apart. Its split paths are relative and it has no `path:`
@@ -419,11 +422,20 @@ export voc | yolo | id | html
         Splitting is per IMAGE, never per box: two crops of one frame on
         opposite sides of the train/val line leak the same background and
         often the same animal across the split.
-  id    A *.id sidecar next to each source image with a curated
-        identification -- header records the model, who ran it, and when;
-        each identification is a 4-vertex pixel polygon with lon/lat/depth
-        left as 0.0 placeholders for a later navigation merge. Writes next to
-        the originals, so it takes no output_dir.
+  id    A *.id sidecar per source image with a curated identification --
+        header records the model, who ran it, and when; each identification
+        is a 4-vertex pixel polygon with lon/lat/depth left as 0.0
+        placeholders for a later navigation merge. Writes next to the
+        originals by default, so it takes no positional output_dir:
+
+            mbariml export id /data/results/yolo_predictions.duckdb
+            mbariml export id /data/results/yolo_predictions.duckdb --output-dir ~/Desktop/ids
+
+        --output-dir collects them in one directory instead -- for a
+        read-only survey volume, or a handoff without the imagery. Names
+        there are disambiguated by parent directory, since flattening a
+        nested mission tree is exactly when two dives' same-named images
+        would otherwise overwrite each other.
   html  Paginated gallery of images and their labeled crops (writes its own
         images/ and crops/, so it needs no manifest).
 
@@ -435,9 +447,12 @@ stats
   where you confirmed it unchanged -- so these numbers preview what a
   training set will hold. --include-unverified counts raw detections too.
 
-    mbariml stats /data/results/yolo_predictions.duckdb --output-dir /data/results/stats/
+    mbariml export stats /data/results/yolo_predictions.duckdb --output-dir /data/results/stats/
     mbariml stats /data/results/yolo_predictions.duckdb --exclude-noise --top 20
     mbariml stats /data/results/yolo_predictions.duckdb --include-unverified
+
+  Available both as `mbariml export stats` and `mbariml stats` -- same code,
+  same options.
 
   Produces (with --output-dir): stats/label_by_image_matrix.csv -- rows are
   images, columns are labels, values are counts. Read it straight into

@@ -1,12 +1,19 @@
 """Export *.id identification sidecar files into the mission directory structure.
 
-For every source image that has at least one curated identification
-(``new_label`` set, excluding ``noise`` -- the same convention as
-``export voc``/``export yolo``), writes a ``<image_stem>.id`` file *next to
-that image* (wherever it actually lives on disk -- this walks whatever path
-was recorded in ``image_path`` at detection time, so it naturally follows
-the mission's own directory structure without needing a separate
-``image_dir`` argument).
+For every source image that has at least one curated identification (every
+verified localization, named ``new_label`` where the reviewer retyped it and
+the original detector ``label`` where they confirmed it unchanged, excluding
+``noise`` -- ``mbariml.db.curated_where``, the same rule as ``export
+voc``/``export yolo``), writes a ``<image_stem>.id`` file *next to that
+image* (wherever it actually lives on disk -- this walks whatever path was
+recorded in ``image_path`` at detection time, so it naturally follows the
+mission's own directory structure without needing a separate ``image_dir``
+argument).
+
+``--output-dir`` collects them into one directory instead, for a read-only
+survey volume or a handoff without the imagery. Names there are
+``disambiguated_stem``-based, since flattening a nested mission tree is
+precisely when two dives' same-named images would overwrite each other.
 
 Each bounding box is written as a 4-vertex polygon (top-left, top-right,
 bottom-right, bottom-left), with pixel coordinates filled in immediately and
@@ -31,6 +38,7 @@ from tqdm import tqdm
 
 from mbariml import __version__
 from mbariml import db
+from mbariml.image_naming import disambiguated_stem
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Export *.id identification sidecar files next to each source image.")
@@ -77,12 +85,24 @@ def _build_id_file_content(
 @app.command()
 def export_ids(
     db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        help="Write the .id files into this directory instead of next to each source image. "
+             "Filenames are disambiguated by parent directory, so two dives sharing an image "
+             "name don't collide. Default (unset) writes each sidecar beside its own image.",
+    ),
     model: Optional[str] = typer.Option(
         None, help="Model identifier to record in each file's header. Defaults to what "
         "`mbariml detect` recorded for this database, or 'unknown' if that's not available."
     ),
 ) -> None:
-    """Write a *.id sidecar file next to each source image with at least one curated identification."""
+    """Write a *.id sidecar file for each source image with at least one curated identification.
+
+    Writes each file next to its own source image by default. Pass
+    --output-dir to collect them all in one directory instead -- e.g. when
+    the survey volume is read-only, or when the sidecars are being handed
+    off somewhere without the imagery.
+    """
     with db.connect(db_path, must_exist=True) as conn:
         model_desc = _resolve_model_description(conn, model)
 
@@ -107,10 +127,22 @@ def export_ids(
     username = getpass.getuser()
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    output_dir_path = Path(output_dir) if output_dir else None
+    if output_dir_path:
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+
     written, failed = 0, 0
     for image_path, detections in tqdm(grouped.items(), desc="Writing .id files"):
         image_path_obj = Path(image_path)
-        id_path = image_path_obj.with_suffix(".id")
+        if output_dir_path:
+            # disambiguated_stem, not the bare stem: flattening a mission's
+            # nested per-dive directories into one output directory is
+            # exactly when two dives' identically-named images collide, and
+            # the second would silently overwrite the first's identifications.
+            # Same naming every other export uses for the same reason.
+            id_path = output_dir_path / f"{disambiguated_stem(image_path_obj)}.id"
+        else:
+            id_path = image_path_obj.with_suffix(".id")
         try:
             id_path.write_text(
                 _build_id_file_content(image_path_obj.name, model_desc, username, generated_at, detections)
@@ -120,7 +152,9 @@ def export_ids(
             failed += 1
             logger.exception("Failed to write %s", id_path)
 
-    logger.info("Wrote %d .id file(s) (model: %s, user: %s).", written, model_desc, username)
+    destination = str(output_dir_path) if output_dir_path else "next to each source image"
+    logger.info("Wrote %d .id file(s) to %s (model: %s, user: %s).",
+                written, destination, model_desc, username)
     if failed:
         logger.error("%d .id file(s) failed to write -- see tracebacks above.", failed)
         raise typer.Exit(code=1)

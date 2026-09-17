@@ -11,6 +11,39 @@ recognizable.
 
 ---
 
+## 0.17.0 — `export stats`, `export id --output-dir`, and a version that had drifted
+
+**`stats` is now also `mbariml export stats`.** It reports the same
+population the annotation exports write (`mbariml.db.curated_where`), so it
+belongs with them — its numbers are a preview of what a training set will
+hold, not a separate kind of thing. Registered in both places rather than
+moved: `mbariml stats` is what the docs, the cheat sheet and muscle memory
+all say, and breaking that to relocate a command earns nothing. Same
+callback, so the two cannot diverge.
+
+**`export id` takes `--output-dir`.** It wrote every sidecar next to its own
+source image, which is the right default but the only option — no good on a
+read-only survey volume, or when handing the identifications off without the
+imagery. Unset, behaviour is unchanged. Set, the files are collected in one
+directory and named by `disambiguated_stem` (`<parent>_<stem>.id`), because
+flattening a nested mission tree is exactly the case where two dives'
+identically-named images would silently overwrite each other's
+identifications. Each file's header still records the original image name,
+so provenance survives the flattening.
+
+**`__version__` was three releases stale.** It was a second, hand-maintained
+copy of the version in `src/mbariml/__init__.py`, reading `0.13.0` against a
+`pyproject.toml` that said `0.16.1`. Not decorative: `export id` stamps it
+into every sidecar as `# generator: mbariml vX.Y.Z`, so every .id file
+written since 0.13.0 named a version that had not produced it. It now comes
+from the installed package metadata (`importlib.metadata.version`), which
+cannot drift from `pyproject.toml`. Note this reads what was *installed*, so
+an editable checkout reports the version as of its last `pip install -e .` —
+re-run that after a version bump, as the cheat sheet already advises for any
+`pyproject.toml` change.
+
+---
+
 ## 0.16.1 — a mistyped database path created an empty database
 
 `db.connect()` passes its path straight to `duckdb.connect()`, which
