@@ -11,6 +11,26 @@ recognizable.
 
 ---
 
+## 0.18.0 — `stats` is an export subcommand only, and `export id` can emit raw detections
+
+**`mbariml stats` is gone; use `mbariml export stats`.** 0.17.0 registered it
+in both places to avoid breaking muscle memory, which left two names for one
+command and no clear answer about which was canonical. One name now. Every
+reference in the README, cheat sheet and SCHEMA.md was updated, and the
+cheat sheet's captured `--help` block was regenerated from the live CLI
+rather than hand-edited — it had drifted to v0.15.0 and was missing
+`--include-unverified`, `--yaml-name` and `--output-dir` entirely.
+
+**`export id` takes `--include-unverified`.** The sidecars are an
+identification product, not only a training input — sometimes what's wanted
+is everything the detector found, not only what a human confirmed. Default
+is unchanged (verified only, matching `export yolo`/`voc`), and the log line
+now says which population it wrote. `export yolo` and `export voc`
+deliberately still have no such flag: unverified boxes in a training set is
+the failure 0.16.0 exists to prevent.
+
+---
+
 ## 0.17.0 — `export stats`, `export id --output-dir`, and a version that had drifted
 
 **`stats` is now also `mbariml export stats`.** It reports the same

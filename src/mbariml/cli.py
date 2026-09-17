@@ -65,7 +65,6 @@ app.command("cluster")(cluster_step.cluster)
 app.command("refine")(refine_step.refine)
 app.command("remap-labels")(remap_labels_step.remap_labels)
 app.command("query")(query_step.query)
-app.command("stats")(stats_step.stats)  # also `mbariml export stats`, see below
 
 # `mbariml export {voc,yolo,id,html,stats}` -- one downstream annotation
 # format/gallery/summary per subcommand. voc/yolo also each write their own
@@ -76,12 +75,11 @@ export_app.command("voc")(export_voc.export_voc)
 export_app.command("yolo")(export_yolo.export_yolo)
 export_app.command("id")(export_ids.export_ids)
 export_app.command("html")(export_html.generate_html)
-# `stats` belongs with the other Emit-phase outputs: it answers "what is in
-# this database" using the very same selection rule the annotation exports
-# use (mbariml.db.curated_where), so its numbers are a preview of what they
-# will write. Registered in both places rather than moved -- `mbariml stats`
-# is what the docs, the cheat sheet and muscle memory all say, and breaking
-# that to relocate a command earns nothing.
+# `stats` lives here, not at the top level: it answers "what is in this
+# database" using the very same selection rule the annotation exports use
+# (mbariml.db.curated_where), so its numbers are a preview of what they will
+# write rather than a separate kind of output. It was briefly registered in
+# both places; one name only, so there is no question which is canonical.
 export_app.command("stats")(stats_step.stats)
 app.add_typer(export_app, name="export")
 

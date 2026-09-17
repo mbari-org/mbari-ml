@@ -10,6 +10,10 @@ recorded in ``image_path`` at detection time, so it naturally follows the
 mission's own directory structure without needing a separate ``image_dir``
 argument).
 
+``--include-unverified`` also writes the raw, un-reviewed detections,
+named with the detector's own label -- off by default so the sidecars agree
+with what ``export yolo``/``voc`` write.
+
 ``--output-dir`` collects them into one directory instead, for a read-only
 survey volume or a handoff without the imagery. Names there are
 ``disambiguated_stem``-based, since flattening a nested mission tree is
@@ -91,6 +95,12 @@ def export_ids(
              "Filenames are disambiguated by parent directory, so two dives sharing an image "
              "name don't collide. Default (unset) writes each sidecar beside its own image.",
     ),
+    include_unverified: bool = typer.Option(
+        False, "--include-unverified/--verified-only",
+        help="Also write identifications nobody has verified yet, named with the raw detector "
+             "label. Off by default, so the sidecars match what `export yolo`/`voc` write; turn "
+             "it on to emit everything the detector found. [default: verified-only]",
+    ),
     model: Optional[str] = typer.Option(
         None, help="Model identifier to record in each file's header. Defaults to what "
         "`mbariml detect` recorded for this database, or 'unknown' if that's not available."
@@ -106,18 +116,24 @@ def export_ids(
     with db.connect(db_path, must_exist=True) as conn:
         model_desc = _resolve_model_description(conn, model)
 
-        db.require_verified_column(conn, db_path)
+        if not include_unverified:
+            db.require_verified_column(conn, db_path)
         rows = conn.execute(
             f"""
             SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, confidence, x_min, y_min, x_max, y_max
             FROM predictions
-            {db.curated_where()}
+            {db.curated_where(require_verified=not include_unverified)}
             """
         ).fetchall()
 
     if not rows:
-        logger.warning("No curated identifications found (no verified, non-'noise' localizations); "
-                       "no .id files written. Verify some ROIs in `mbariml review` first.")
+        logger.warning(
+            "No identifications found (no %s, non-'noise' localizations); no .id files written.%s",
+            "verified" if not include_unverified else "usable",
+            "" if include_unverified else
+            " Verify some ROIs in `mbariml review` first, or pass --include-unverified to write "
+            "the raw detections.",
+        )
         return
 
     grouped: dict[str, list[tuple]] = {}
@@ -153,8 +169,10 @@ def export_ids(
             logger.exception("Failed to write %s", id_path)
 
     destination = str(output_dir_path) if output_dir_path else "next to each source image"
-    logger.info("Wrote %d .id file(s) to %s (model: %s, user: %s).",
-                written, destination, model_desc, username)
+    logger.info("Wrote %d .id file(s) to %s (%s; model: %s, user: %s).",
+                written, destination,
+                "verified + unverified" if include_unverified else "verified only",
+                model_desc, username)
     if failed:
         logger.error("%d .id file(s) failed to write -- see tracebacks above.", failed)
         raise typer.Exit(code=1)

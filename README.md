@@ -8,7 +8,7 @@ then out again as training data. Four phases:
 | **Ingest** | `infer images`, `infer video` | pixels + detections into a database |
 | **Enrich** | `embed`, `cluster`, `refine` | embeddings and grouping |
 | **Curate** | `review`, `remap-labels` | human review and relabeling |
-| **Emit** | `export {voc,yolo,id,html}`, `stats`, `query` | annotations, galleries, numbers |
+| **Emit** | `export {voc,yolo,id,html,stats}`, `query` | annotations, galleries, numbers |
 
 ![The mbariml review GUI](docs/review_gui.png)
 
@@ -76,7 +76,7 @@ All commands:
 | `mbariml export yolo`  | Emit | YOLO label files + names.txt + train/val/test splits (see below) |
 | `mbariml export id`    | Emit | `*.id` sidecar next to each source image (see below) |
 | `mbariml export html`  | Emit | Paginated HTML gallery of images + crops |
-| `mbariml stats`        | Emit | Label counts, boxes-per-image stats, image × label matrix (see below) |
+| `mbariml export stats` | Emit | Label counts, boxes-per-image stats, image × label matrix (see below) |
 | `mbariml query`        | Emit | Ad hoc SQL against a database |
 | `mbariml run`          | — | Chain ingest → embed → cluster → export |
 
@@ -242,14 +242,14 @@ mkdir -p ~/Desktop/cluster_experiment
 cp /data/results/yolo_predictions.duckdb ~/Desktop/cluster_experiment/
 
 # 3. Record what your curated labels look like now, to compare against.
-mbariml stats ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+mbariml export stats ~/Desktop/cluster_experiment/yolo_predictions.duckdb
 
 # 4. Cluster the copy, naming the clusters from your curated labels.
 mbariml cluster ~/Desktop/cluster_experiment/yolo_predictions.duckdb \
     --label-source new --approx-n-clusters 24 --seed 42
 
 # 5. Compare, then look at the actual groupings.
-mbariml stats  ~/Desktop/cluster_experiment/yolo_predictions.duckdb
+mbariml export stats  ~/Desktop/cluster_experiment/yolo_predictions.duckdb
 mbariml review ~/Desktop/cluster_experiment/yolo_predictions.duckdb
 ```
 
@@ -663,7 +663,7 @@ to be filled in later by a separate navigation-merge process:
 
 ### Label counts and per-image detection stats
 
-`mbariml stats DB_PATH` prints two tables to the console: label counts (with
+`mbariml export stats DB_PATH` prints two tables to the console: label counts (with
 percent of total) and boxes-per-image summary stats (avg/min/median/max,
 across every image with at least one detection). Both count the same
 population the exports write — **verified** localizations, named
@@ -676,8 +676,8 @@ noise/unlabeled); pass `--exclude-noise` once you want real-identification
 counts only:
 
 ```bash
-mbariml stats /data/survey_results/yolo_predictions.duckdb
-mbariml stats /data/survey_results/yolo_predictions.duckdb --exclude-noise --top 20
+mbariml export stats /data/survey_results/yolo_predictions.duckdb
+mbariml export stats /data/survey_results/yolo_predictions.duckdb --exclude-noise --top 20
 ```
 
 Pass `--output-dir` to also write `label_by_image_matrix.csv` — an image ×
@@ -687,7 +687,7 @@ into pandas/R for ecological statistics (per-image richness, per-label
 frequency-of-occurrence across images, etc.):
 
 ```bash
-mbariml stats /data/survey_results/yolo_predictions.duckdb --output-dir /data/survey_results/stats/
+mbariml export stats /data/survey_results/yolo_predictions.duckdb --output-dir /data/survey_results/stats/
 ```
 
 ## Running the whole chain
@@ -714,7 +714,7 @@ mbariml run best.pt /data/survey_images/ /data/results/ --from export
 
 The export stage runs both `export voc` and `export html`; if you only want
 one, run it directly rather than through `run`. `review`, `query`,
-`remap-labels`, `stats`, `export yolo`, and `export id` aren't in the chain —
+`remap-labels`, `export stats`, `export yolo`, and `export id` aren't in the chain —
 they're interactive, or they don't belong in the middle of a batch run.
 
 ## Troubleshooting
