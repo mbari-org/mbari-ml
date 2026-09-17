@@ -211,6 +211,10 @@ def _build_id_file_content(
         "# lon/lat/depth describe where the OBSERVATION is -- they belong to the",
         "# center point, not to each corner -- and are filled in later from",
         "# navigation data by re-parsing and rewriting these same files.",
+        "# Those three columns (0-based 5, 6, 7) are the ONLY ones that process is",
+        "# expected to change; every other value should be written back unchanged.",
+        "# Rewrite with a CSV-aware writer, so a label that needed quoting stays",
+        "# quoted rather than splitting into an extra column.",
         "#",
         "# " + ",".join(COLUMNS),
     ]

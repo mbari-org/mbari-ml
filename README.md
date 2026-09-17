@@ -671,9 +671,20 @@ did would come out as `"Nudibranchia, sp. A"` rather than silently adding a
 column and shifting every coordinate after it.
 
 **`lon,lat,depth` appear once, next to the center**, because they describe
-where the *observation* is and an observation has one position. They used to
-be repeated per vertex, so every row shipped five identical `0.0,0.0,0.0`
+where the *observation* is and an observation has one position — a separate
+navigation-merge process fills them in per center point. They used to be
+repeated per vertex, so every row shipped five identical `0.0,0.0,0.0`
 triples for a single unknown.
+
+Those three are the only columns that process should change (0-based 5, 6,
+7); everything else is written back unchanged, with a CSV-aware writer so a
+label that needed quoting stays quoted. Filling them in is then just:
+
+```python
+for row in csv.reader(data_rows):
+    row[5], row[6], row[7] = lon, lat, depth   # fix for (center_x, center_y)
+    writer.writerow(row)
+```
 
 **`center_x`/`center_y` are the observation's position** — one point to put
 on a map or match to a navigation fix — and the corners give the extent. The

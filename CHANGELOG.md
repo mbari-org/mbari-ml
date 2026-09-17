@@ -36,11 +36,17 @@ position; the old layout shipped five identical `0.0,0.0,0.0` triples per row
 for a single unknown. Rows are a third shorter (80 chars vs ~120 on this
 survey).
 
-Note this drops the *option* of per-vertex geolocation the original format
-anticipated. Nothing had ever filled those in, and a per-observation fix is
-what a navigation merge actually produces — but if the box footprint on the
-seafloor is ever wanted, that is now a format change rather than filling in
+This matches what actually happens downstream: a separate process populates
+lat/lon/depth per center point, so one triple per observation is the right
+shape. Per-vertex geolocation, which the original format reserved space for
+and nothing ever filled, would now be a format change rather than filling in
 existing columns.
+
+The header names those three as the only columns that process should change
+(0-based 5, 6, 7), and tells it to rewrite with a CSV-aware writer so a
+quoted label stays quoted. Checked by simulating the merge end to end:
+lon/lat/depth replaced on every row, re-read, 16 fields intact and all
+geometry byte-identical.
 
 Verified across all 35,492 rows of a real export: every row parses to exactly
 16 fields, `center` is the integer midpoint of its corners, the four corners
