@@ -86,16 +86,18 @@ def export_ids(
     with db.connect(db_path) as conn:
         model_desc = _resolve_model_description(conn, model)
 
+        db.require_verified_column(conn, db_path)
         rows = conn.execute(
-            """
-            SELECT image_path, new_label, confidence, x_min, y_min, x_max, y_max
+            f"""
+            SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, confidence, x_min, y_min, x_max, y_max
             FROM predictions
-            WHERE new_label IS NOT NULL AND new_label != 'noise'
+            {db.curated_where()}
             """
         ).fetchall()
 
     if not rows:
-        logger.warning("No curated identifications found (new_label set, not 'noise'); no .id files written.")
+        logger.warning("No curated identifications found (no verified, non-'noise' localizations); "
+                       "no .id files written. Verify some ROIs in `mbariml review` first.")
         return
 
     grouped: dict[str, list[tuple]] = {}

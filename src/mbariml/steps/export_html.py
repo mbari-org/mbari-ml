@@ -33,11 +33,10 @@ def _label_expr(conn) -> str:
     new_label NULL on every row; without this fallback, an HTML gallery
     generated before curation would show "None" instead of the model's
     actual prediction for every single crop."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info('predictions')").fetchall()}
-    return "COALESCE(new_label, label)" if "new_label" in columns else "label"
+    return db.EFFECTIVE_LABEL_SQL if db.has_column(conn, "new_label") else "label"
 
 
-def _process_images_and_crops(conn, output_dir: Path) -> list[dict]:
+def _process_images_and_crops(conn, output_dir: Path, *, include_unverified: bool) -> list[dict]:
     """Bug fixed here: this used to group by bare image_name and reconstruct
     the path as image_dir/image_name. For a mission with nested per-dive
     subdirectories, two images with the same filename in different dives
@@ -48,8 +47,17 @@ def _process_images_and_crops(conn, output_dir: Path) -> list[dict]:
     directory name so two dives' same-named images don't collide there too.
     """
     label_expr = _label_expr(conn)
+    # Shows only VERIFIED localizations by default, the same rule the
+    # dataset exports use -- a QA gallery whose crops don't match what
+    # `export yolo` just wrote is worse than no gallery. --include-unverified
+    # restores the pre-curation use (browsing raw detector output before
+    # anything has been reviewed), which is this command's other job.
+    where = db.curated_where(
+        exclude_noise=False, require_verified=not include_unverified
+    ) if db.has_column(conn, "verified") else ""
     rows = conn.execute(
-        f"SELECT image_path, x_min, y_min, x_max, y_max, {label_expr} AS label FROM predictions"
+        f"SELECT image_path, x_min, y_min, x_max, y_max, {label_expr} AS label "
+        f"FROM predictions {where}"
     ).fetchall()
 
     images_dir = output_dir / "images"
@@ -178,6 +186,12 @@ def generate_html(
     db_path: str = typer.Argument(..., help="Path to the DuckDB database."),
     output_dir: str = typer.Argument(..., help="Directory to save the generated HTML files."),
     items_per_page: int = typer.Option(250, help="Number of items per HTML page."),
+    include_unverified: bool = typer.Option(
+        False, "--include-unverified/--verified-only",
+        help="Also show localizations nobody has verified yet. Off by default, so the gallery "
+             "matches what `export yolo`/`voc`/`id` write; turn it on to browse raw detector "
+             "output before review. [default: verified-only]",
+    ),
 ) -> None:
     """Generate a paginated HTML gallery of images and their labeled crops.
 
@@ -190,7 +204,7 @@ def generate_html(
     folder_name = output_dir_path.name
 
     with db.connect(db_path) as conn:
-        data = _process_images_and_crops(conn, output_dir_path)
+        data = _process_images_and_crops(conn, output_dir_path, include_unverified=include_unverified)
 
     if not data:
         logger.warning("No images could be processed; no HTML pages were generated.")

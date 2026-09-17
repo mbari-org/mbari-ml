@@ -11,6 +11,106 @@ recognizable.
 
 ---
 
+## 0.16.0 — exports dropped the localizations you verified but didn't rename
+
+`export yolo`, `export voc` and `export id` selected rows with
+`new_label IS NOT NULL AND new_label != 'noise'`. That filter means "boxes
+whose name I retyped", not "boxes I confirmed": the review GUI's Verify
+button sets `verified = 1` and leaves `new_label` NULL, and only relabelling
+writes it (`gui/annotation_service.py`). Every ROI where the detector was
+already right and the reviewer simply confirmed it was invisible to all
+three exports.
+
+Measured on a real 35,492-row survey database, every row of it verified:
+
+| | boxes | images | classes |
+|---|---|---|---|
+| exported before | 2,805 | 896 | 50 |
+| exported after | **35,492** | 995 | 51 |
+
+92% of the reviewer's work was being discarded. The class count barely
+moved, which is what made this hard to spot from the outside: nearly every
+taxon was present in the export, just represented by a tiny and badly
+unrepresentative fraction of its boxes. Per class the loss was
+lopsided, because it fell hardest on the classes the detector got *right*
+most often: Ophiuroidea exported 86 of 11,251 verified boxes,
+Hexactinellida 35 of 3,601, Muusoctopus 11 of 2,063.
+
+Worse than the omission: 29,917 of the dropped boxes sat on images that
+*were* in the export. Those images got a label file listing only the
+handful of retyped boxes, so every other animal in the frame had no label
+line — and YOLO reads an unlabeled object as background. The export was
+actively teaching the model that 10,149 Ophiuroidea and 3,242
+Hexactinellida were empty seafloor, which is why training on it went
+backwards rather than merely plateauing.
+
+`export voc` had the same bug wearing a disguise: `WHERE new_label !=
+'noise'` looks permissive, but SQL three-valued logic makes
+`NULL != 'noise'` evaluate to NULL rather than TRUE, so it dropped the
+identical rows.
+
+The rule is now defined once, in `mbariml.db` (`EFFECTIVE_LABEL_SQL` and
+`curated_where()`), and used by every consumer:
+
+| In the database | Exported? | Name used |
+|---|---|---|
+| verified, name unchanged | yes | the original detector `label` |
+| verified, name updated | yes | `new_label` |
+| not verified | no | — |
+
+It lives in one place because it previously did not: `stats`, `cluster
+--label-source new` and `export html` already used `COALESCE(new_label,
+label)` — `stats` even documented it as "the effective label" — while the
+three dataset exports had drifted onto the bare `new_label` filter. Nothing
+connected them, so `stats` would report 35,492 localizations across 51
+classes while `export yolo` beside it wrote 2,805, with no indication the
+two numbers meant different things.
+
+Also changed:
+
+- `stats` and `export html` now default to the verified-only population, so
+  their output matches what the dataset exports write. Both gained
+  `--include-unverified` to restore summarizing/browsing raw detector
+  output on a database that has not been reviewed yet — their other
+  documented use, which a hard filter would have broken silently.
+- `stats` says which population it counted in its table headers
+  (`verified only` / `verified + unverified`), and warns rather than
+  printing an empty table when a database has no verified rows.
+- The dataset exports fail with an explanatory error on a database
+  predating the `verified` column, instead of writing a well-formed empty
+  dataset — the exact silent failure this release exists to end.
+- `export voc`'s `new_names.txt` now applies the same rule as the XML files
+  beside it (it was computing its label list from a different query) and is
+  sorted, so re-exporting is byte-stable.
+- `cluster` is deliberately unchanged: it still groups and relabels
+  unverified rows, since naming un-reviewed ROIs is the point of it.
+
+### `export yolo` now writes the dataset YAML
+
+Previously it wrote `names.txt` and left assembling the Ultralytics config
+to whoever ran the training, which meant hand-maintaining a `names:` list
+against a file that changes every time the database is re-reviewed — and
+this release changes the class list on every existing database, so that
+hand-maintenance was about to go wrong quietly.
+
+`<output_dir name>.yaml` is written alongside the splits, in the same format
+the existing MBARI training configs use (`train`/`val`/`test`, `nc`,
+`names`). `nc` and `names` come from the same in-memory list that assigned
+the class indices in `labels/` and was written to `names.txt`, not from a
+second query, so no reordering can get between them: resolving every label
+file's class index through the YAML's `names` reproduces the database's
+per-class counts exactly, which is checked directly.
+
+Its paths are absolute and rooted at `--yaml-root` (default: the output
+directory), since the training box generally mounts the dataset at a
+different path than the machine that exported it — e.g. exported to
+`/Volumes/M3_ML/...` on macOS, read from `/mnt/M3_ML/...` on the Linux
+trainer. The split files stay relative, as before, so the directory remains
+movable as a self-contained unit. `--yaml-name` overrides the filename,
+`--no-yaml` skips it.
+
+---
+
 ## 0.15.0 — choose which label names a cluster
 
 `cluster` names each cluster after the most common label among its members, and

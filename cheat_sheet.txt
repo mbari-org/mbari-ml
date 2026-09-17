@@ -1,9 +1,12 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.15.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.16.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
-generated straight from the code, not hand-maintained).
+generated straight from the code, not hand-maintained). NOTE: the captured
+--help block below predates 0.16.0 and does not yet show the
+--include-unverified flag on `stats`/`export html`; run `mbariml stats
+--help` for the current text.
 
 SETUP
 -----
@@ -357,8 +360,27 @@ EMIT -- annotations, galleries, numbers
 ==============================================================================
 
 export voc | yolo | id | html
-  Export curated labels (new_label, excluding "noise") to whichever
-  downstream format you need, or generate an HTML gallery for visual QA. All
+  Export curated labels to whichever downstream format you need, or generate
+  an HTML gallery for visual QA. `export yolo` also writes the Ultralytics
+  dataset YAML (<output_dir name>.yaml) -- split paths, nc, names -- whose
+  nc/names come from the same list that numbered the classes in labels/, so
+  they cannot drift apart. Its paths are absolute; point them at the
+  training box's own mount with --yaml-root:
+
+    mbariml export yolo predictions.duckdb /Volumes/M3_ML/training_data/2026/my_dataset/ \
+      --yaml-root /mnt/M3_ML/training_data/2026/my_dataset
+
+
+  What gets exported, for all of them (and for stats):
+    verified, name unchanged  -> exported, named with the original detector label
+    verified, name updated    -> exported, named with new_label
+    NOT verified              -> not exported at all
+  ("noise" is excluded either way.) The Verify button in `review` sets
+  verified WITHOUT writing new_label -- only relabelling writes it -- so
+  filtering on new_label alone silently drops every box you confirmed but
+  did not retype. html and stats take --include-unverified to fall back to
+  raw detector output on an unreviewed database; the dataset exports do not.
+  All
   four locate images via the path recorded at ingest -- no image_dir argument
   -- and disambiguate output filenames with the parent directory name, so two
   dives sharing a filename never collide.
@@ -403,11 +425,14 @@ export voc | yolo | id | html
 stats
   Label counts (with percent), boxes-per-image summary stats
   (avg/min/median/max), and optionally an image x label count matrix CSV for
-  ecological analysis. Uses new_label where curated, falling back to the raw
-  detected label where it isn't, so it works before and after review.
+  ecological analysis. Counts the same verified localizations the exports
+  write, named new_label where you retyped it and the raw detected label
+  where you confirmed it unchanged -- so these numbers preview what a
+  training set will hold. --include-unverified counts raw detections too.
 
     mbariml stats /data/results/yolo_predictions.duckdb --output-dir /data/results/stats/
     mbariml stats /data/results/yolo_predictions.duckdb --exclude-noise --top 20
+    mbariml stats /data/results/yolo_predictions.duckdb --include-unverified
 
   Produces (with --output-dir): stats/label_by_image_matrix.csv -- rows are
   images, columns are labels, values are counts. Read it straight into

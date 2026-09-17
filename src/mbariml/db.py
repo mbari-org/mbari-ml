@@ -127,6 +127,69 @@ def ensure_column(conn: duckdb.DuckDBPyConnection, table: str, column: str, sql_
     conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
 
 
+# The one definition of "what label does this localization carry", used by
+# every downstream consumer (all four exports, stats). Per row, not per
+# database: `new_label` where a reviewer retyped it, the raw detector
+# `label` where they looked at it and left it alone.
+#
+# This exists as one shared constant because it previously did not, and the
+# three dataset exports (yolo/voc/id) drifted onto a bare `new_label`
+# filter while stats/cluster/export-html used the COALESCE. Since the GUI's
+# Verify button sets `verified = 1` WITHOUT writing new_label (only
+# relabelling writes it -- see gui/annotation_service.py), that filter meant
+# "boxes whose name I retyped", not "boxes I confirmed". On a real 35,492-row
+# survey database it exported 2,805 boxes and dropped 32,687 confirmed ones
+# -- and because 29,917 of those sat on images that WERE in the export, YOLO
+# read them as unlabeled background and was actively trained against the
+# reviewer's own identifications.
+EFFECTIVE_LABEL_SQL = "COALESCE(new_label, label)"
+
+
+def curated_where(*, exclude_noise: bool = True, require_verified: bool = True) -> str:
+    """The shared WHERE clause selecting curated localizations.
+
+    ``require_verified`` is the important half: an unverified row is raw
+    detector output no human has confirmed, and it has no business in a
+    training set or an identification sidecar. It is only ever relaxed by
+    the two *diagnostic* consumers (`stats`, `export html`), which are
+    documented to be useful against a database that has not been reviewed
+    yet, and only behind an explicit --include-unverified flag.
+
+    Note `cluster` deliberately does NOT use this: clustering exists to
+    group and name data that has NOT been reviewed, so restricting it to
+    verified rows would defeat its purpose.
+    """
+    conditions = []
+    if require_verified:
+        conditions.append("verified = 1")
+    conditions.append(f"{EFFECTIVE_LABEL_SQL} IS NOT NULL")
+    if exclude_noise:
+        conditions.append(f"{EFFECTIVE_LABEL_SQL} != 'noise'")
+    return "WHERE " + " AND ".join(conditions)
+
+
+def has_column(conn: duckdb.DuckDBPyConnection, column: str, table: str = "predictions") -> bool:
+    return column in {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+
+
+def require_verified_column(conn: duckdb.DuckDBPyConnection, db_path: str | Path) -> None:
+    """Fail loudly if this database predates the ``verified`` column.
+
+    Such a database records no verification state at all, so a
+    ``verified = 1`` filter would match nothing and write a perfectly
+    well-formed EMPTY dataset -- silently, which is the exact failure mode
+    the effective-label fix exists to end. Better to stop and say so.
+    ``mbariml review`` opens databases with init_curation_db() and runs the
+    ALTER TABLE migration, so pointing it at the database once repairs it.
+    """
+    if not has_column(conn, "verified"):
+        raise RuntimeError(
+            f"{db_path} predates the 'verified' column, so it records no review state and "
+            "nothing can be selected as curated. Open it once with `mbariml review` (which "
+            "migrates the schema), verify some ROIs, then re-run this export."
+        )
+
+
 def next_free_id(conn: duckdb.DuckDBPyConnection) -> int:
     """One past the highest ``id`` already in ``predictions``.
 

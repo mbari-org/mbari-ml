@@ -1,4 +1,10 @@
-"""Emit: export curated labels to Pascal VOC XML annotation files."""
+"""Emit: export curated labels to Pascal VOC XML annotation files.
+
+Selects every VERIFIED localization and names it ``new_label`` where the
+reviewer retyped it, the original detector ``label`` where they confirmed
+it unchanged -- ``mbariml.db.curated_where``, the rule shared by every
+export.
+"""
 
 from __future__ import annotations
 
@@ -28,11 +34,16 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
     voc_dir = output_dir / "pascal_voc"
     voc_dir.mkdir(parents=True, exist_ok=True)
 
+    # `WHERE new_label != 'noise'` looked permissive but was not: SQL
+    # three-valued logic makes `NULL != 'noise'` evaluate to NULL, not TRUE,
+    # so every verified-but-unrelabelled row was silently dropped here too --
+    # the same defect as the yolo/id exports, just wearing a disguise. Now
+    # the one shared rule from mbariml.db.
     predictions = conn.execute(
-        """
-        SELECT image_path, new_label, confidence, x_min, y_min, x_max, y_max
+        f"""
+        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, confidence, x_min, y_min, x_max, y_max
         FROM predictions
-        WHERE new_label != 'noise'
+        {db.curated_where()}
         """
     ).fetchall()
 
@@ -96,7 +107,20 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
 
 
 def _export_new_names(conn, output_dir: Path) -> Path:
-    names = conn.execute("SELECT DISTINCT new_label FROM predictions WHERE new_label != 'noise'").fetchall()
+    """The distinct labels actually used by the XML files written above.
+
+    Must apply exactly the same rule as _export_to_pascal_voc, or this file
+    describes a different label set than the annotations beside it. Sorted
+    so re-exporting the same database produces a byte-identical list.
+    """
+    names = conn.execute(
+        f"""
+        SELECT DISTINCT {db.EFFECTIVE_LABEL_SQL} AS name
+        FROM predictions
+        {db.curated_where()}
+        ORDER BY name
+        """
+    ).fetchall()
     new_names_file = output_dir / "new_names.txt"
     new_names_file.write_text("\n".join(name for (name,) in names) + "\n")
     return new_names_file
@@ -120,6 +144,7 @@ def export_voc(
     output_dir_path = Path(output_dir)
 
     with db.connect(db_path) as conn:
+        db.require_verified_column(conn, db_path)
         written, image_paths = _export_to_pascal_voc(conn, output_dir_path)
         names_file = _export_new_names(conn, output_dir_path)
 

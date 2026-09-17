@@ -464,16 +464,49 @@ in an explicit transaction. Steps 1 and 8 already committed incrementally
 per image/batch for resumability -- that's unchanged; this fix is about
 what happens *inside* each of those commits, not how often they happen.
 
+### What counts as a curated label
+
+Every downstream consumer — `export yolo`, `export voc`, `export id`,
+`export html` and `stats` — selects and names localizations by one shared
+rule, defined once in `mbariml.db` (`EFFECTIVE_LABEL_SQL` / `curated_where()`):
+
+| In the database | Exported? | Name used |
+|---|---|---|
+| verified, name unchanged | yes | the original detector `label` |
+| verified, name updated | yes | `new_label` |
+| not verified | **no** | — |
+
+The reason this needs stating: the review GUI's **Verify** button sets
+`verified = 1` *without* writing `new_label` — only relabelling writes it.
+So `new_label IS NOT NULL` means "boxes whose name I retyped", not "boxes I
+confirmed", and the three dataset exports used to filter on exactly that.
+On a 35,492-row survey database that exported 2,805 boxes and silently
+dropped 32,687 confirmed ones; worse, 29,917 of the dropped boxes sat on
+images that *were* in the export, so YOLO read them as unlabeled background
+and trained against the reviewer's own identifications.
+
+`export html` and `stats` are diagnostics as well as previews, so they
+accept `--include-unverified` to fall back to summarizing raw detector
+output on a database that has not been reviewed yet. The dataset exports
+have no such flag by design.
+
+`cluster` is the deliberate exception: it groups and relabels **unverified**
+data too, since finding names for un-reviewed ROIs is the whole point of it.
+
 ### Exporting to YOLO format, and pulling the matching images
 
 `mbariml export yolo DB_PATH OUTPUT_DIR` writes a complete, trainable
-dataset skeleton from curated labels (`new_label`, excluding `noise`):
+dataset skeleton from curated labels — every **verified** localization,
+named `new_label` where you retyped it and the original detector `label`
+where you confirmed it unchanged, excluding `noise`. See
+[What counts as a curated label](#what-counts-as-a-curated-label):
 
 | Output | What it is |
 |---|---|
 | `labels/<name>.txt` | one per image, each line `class_id x_center y_center width height` normalized against that image's actual pixel dimensions |
 | `names.txt` | class index → label, in the order the label files use |
 | `train.txt` / `val.txt` / `test.txt` | the image lists training configs point at — one `./images/<file>` path per line |
+| `<dataset>.yaml` | the Ultralytics dataset config — split paths, `nc`, `names` (see below) |
 | `image_manifest.csv` + `copy_images.py` | fetch the matching images (see below) |
 
 ```bash
@@ -482,6 +515,45 @@ python3 /data/survey_results/yolo_out/copy_images.py --dest /data/survey_results
 ```
 
 Those two commands leave a directory that trains as-is.
+
+**The dataset YAML.** Named `<output_dir name>.yaml` by default
+(`--yaml-name` to change it), in the format Ultralytics expects:
+
+```yaml
+# train and val data
+train: /mnt/M3_ML/training_data/2026/my_dataset/train.txt
+val: /mnt/M3_ML/training_data/2026/my_dataset/val.txt
+test: /mnt/M3_ML/training_data/2026/my_dataset/test.txt
+
+# number of classes
+nc: 51
+
+# class names
+names: ['Actiniaria',
+'Actinopterygii',
+...
+'tube']
+```
+
+`nc` and `names` are written from the same in-memory list that assigned the
+class indices in `labels/` and produced `names.txt`, rather than being
+recomputed from the database — so the three cannot disagree about which
+index is which taxon. That matters more than it sounds: a YAML whose name
+order differs from the indices in the label files trains every class against
+the wrong name and looks completely normal while doing it.
+
+Unlike the split files, the YAML's paths are **absolute**, rooted at
+`--yaml-root` (default: the output directory). The machine that trains
+usually mounts the dataset somewhere other than the machine that exported
+it, so that root is worth setting rather than hand-editing later:
+
+```bash
+mbariml export yolo predictions.duckdb /Volumes/M3_ML/training_data/2026/my_dataset/ \
+  --yaml-root /mnt/M3_ML/training_data/2026/my_dataset
+```
+
+Pass `--no-yaml` to skip it. It needs `--splits` (which is the default),
+since it points at the split files.
 
 **The split paths are relative on purpose.** `./images/<file>` means the
 dataset directory only ever refers to itself, so it can be zipped, copied to
@@ -535,8 +607,10 @@ being installed wherever it eventually runs.
 ### Exporting `*.id` identification files
 
 `mbariml export id DB_PATH` writes a `<image_stem>.id` sidecar file next to
-every source image that has at least one curated identification (`new_label`
-set, excluding `noise`) — wherever that image actually lives on disk, so it
+every source image that has at least one curated identification (every
+**verified** localization, named `new_label` where you retyped it and the
+original `label` where you confirmed it unchanged, excluding `noise`) —
+wherever that image actually lives on disk, so it
 naturally follows a nested mission directory structure:
 
 ```bash
@@ -569,10 +643,12 @@ to be filled in later by a separate navigation-merge process:
 
 `mbariml stats DB_PATH` prints two tables to the console: label counts (with
 percent of total) and boxes-per-image summary stats (avg/min/median/max,
-across every image with at least one detection). Both use
-`COALESCE(new_label, label)` as the effective label — the same per-row
-fallback `export html` uses — so this is useful both before curation (nothing but
-the raw YOLO `label` yet) and after (`new_label` set). `noise` is included
+across every image with at least one detection). Both count the same
+population the exports write — **verified** localizations, named
+`COALESCE(new_label, label)` — so these numbers are a reliable preview of
+what a training set will contain. Pass `--include-unverified` to count raw
+un-reviewed detections too, which is what makes this useful on a database
+fresh out of `infer`, before any review. `noise` is included
 by default (useful while curating, to see how much of the database is still
 noise/unlabeled); pass `--exclude-noise` once you want real-identification
 counts only:

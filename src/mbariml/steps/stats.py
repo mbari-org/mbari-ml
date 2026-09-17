@@ -3,10 +3,12 @@ image x label count matrix CSV -- the raw numbers behind an ecological read
 of a curation database (e.g. "how many Muusoctopus per image, and across how
 many images").
 
-Every query here uses ``COALESCE(new_label, label)`` as the effective label
--- the same per-row fallback ``export html`` uses (see README's "What
-changed"), so this is useful both before curation (nothing but the raw YOLO
-``label`` set yet) and after (curated ``new_label`` set). Noise is included
+Every query here counts the same population the exports write: VERIFIED
+localizations, named ``COALESCE(new_label, label)`` -- the curated name
+where a reviewer retyped it, the raw YOLO ``label`` where they confirmed it
+unchanged (``mbariml.db.curated_where``). Pass --include-unverified to count
+raw un-reviewed detections too, which is what makes this useful on a
+database fresh out of `infer`, before anything has been reviewed. Noise is included
 by default (seeing how much of a database is still 'noise' is itself a
 useful number while curating) -- pass --exclude-noise once you actually want
 ecological counts of real identifications only.
@@ -33,19 +35,35 @@ from mbariml.logging_utils import get_logger
 app = typer.Typer(help="Print label counts and per-image detection stats for a curation database.")
 logger = get_logger(__name__)
 
-_EFFECTIVE_LABEL_SQL = "COALESCE(new_label, label)"
+# Kept as a module-level alias so this file still reads the same, but the
+# definition now lives in mbariml.db alongside the WHERE clause, so stats and
+# the exports cannot drift apart again.
+_EFFECTIVE_LABEL_SQL = db.EFFECTIVE_LABEL_SQL
 
 
-def _where_clause(exclude_noise: bool) -> str:
-    return f"WHERE {_EFFECTIVE_LABEL_SQL} != 'noise'" if exclude_noise else ""
+def _where_clause(exclude_noise: bool, include_unverified: bool = False) -> str:
+    """Counts VERIFIED localizations by default -- the same population the
+    exports write, so `stats` can be trusted as a preview of what a training
+    set will contain. That equivalence is the point: this command previously
+    counted every row while `export yolo` wrote only relabelled ones, so a
+    database could report 35,492 localizations across 24 classes and export
+    2,805, with nothing anywhere saying the two numbers meant different
+    things.
+
+    --include-unverified restores counting raw un-reviewed detections, which
+    is what makes this useful on a database fresh out of `infer`.
+    """
+    return db.curated_where(
+        exclude_noise=exclude_noise, require_verified=not include_unverified
+    )
 
 
-def _label_counts(conn, exclude_noise: bool) -> pd.DataFrame:
+def _label_counts(conn, exclude_noise: bool, include_unverified: bool) -> pd.DataFrame:
     df = conn.execute(
         f"""
         SELECT {_EFFECTIVE_LABEL_SQL} AS label, COUNT(*) AS count
         FROM predictions
-        {_where_clause(exclude_noise)}
+        {_where_clause(exclude_noise, include_unverified)}
         GROUP BY 1
         ORDER BY count DESC
         """
@@ -55,13 +73,13 @@ def _label_counts(conn, exclude_noise: bool) -> pd.DataFrame:
     return df
 
 
-def _boxes_per_image(conn, exclude_noise: bool) -> pd.DataFrame:
+def _boxes_per_image(conn, exclude_noise: bool, include_unverified: bool) -> pd.DataFrame:
     return conn.execute(
         f"""
         WITH per_image AS (
             SELECT image_path, COUNT(*) AS boxes
             FROM predictions
-            {_where_clause(exclude_noise)}
+            {_where_clause(exclude_noise, include_unverified)}
             GROUP BY image_path
         )
         SELECT
@@ -76,7 +94,7 @@ def _boxes_per_image(conn, exclude_noise: bool) -> pd.DataFrame:
     ).df()
 
 
-def _write_matrix(conn, output_dir: Path, exclude_noise: bool) -> tuple[Path, int, int]:
+def _write_matrix(conn, output_dir: Path, exclude_noise: bool, include_unverified: bool) -> tuple[Path, int, int]:
     """Writes label_by_image_matrix.csv: rows=image (disambiguated stem,
     collision-safe across dives -- see mbariml.image_naming), columns=label,
     value=box count. Returns (path, n_images, n_labels)."""
@@ -84,7 +102,7 @@ def _write_matrix(conn, output_dir: Path, exclude_noise: bool) -> tuple[Path, in
         f"""
         SELECT image_path, {_EFFECTIVE_LABEL_SQL} AS label, COUNT(*) AS count
         FROM predictions
-        {_where_clause(exclude_noise)}
+        {_where_clause(exclude_noise, include_unverified)}
         GROUP BY 1, 2
         """
     ).df()
@@ -109,6 +127,12 @@ def stats(
         False, "--exclude-noise/--no-exclude-noise",
         help="Exclude 'noise' from the label counts and the matrix. [default: no-exclude-noise]",
     ),
+    include_unverified: bool = typer.Option(
+        False, "--include-unverified/--verified-only",
+        help="Also count localizations nobody has verified yet. Off by default, so these counts "
+             "match what `export yolo`/`voc`/`id` write; turn it on to summarize raw detector "
+             "output before review. [default: verified-only]",
+    ),
     top: Optional[int] = typer.Option(
         None, help="Only print the top N labels by count to the console (a written matrix CSV always includes every label)."
     ),
@@ -116,9 +140,10 @@ def stats(
     """Print label counts and per-image detection stats; optionally write an
     image x label count matrix CSV for downstream ecological analysis.
 
-    Uses new_label where curated, falling back to the raw detected label
-    where it isn't (same convention `export html` uses) -- so this works
-    both before and after running through `review`/`cluster`.
+    Counts verified localizations, named new_label where curated and the raw
+    detected label where confirmed unchanged -- the same rule, and so the
+    same numbers, as `export yolo`/`voc`/`id`. Pass --include-unverified to
+    count raw detections as well, e.g. before any review has happened.
     """
     with db.connect(db_path) as conn:
         total_rows = db.row_count(conn)
@@ -126,20 +151,41 @@ def stats(
             logger.warning("No predictions in %s; nothing to summarize.", db_path)
             raise typer.Exit(code=0)
 
-        label_counts = _label_counts(conn, exclude_noise)
-        box_stats = _boxes_per_image(conn, exclude_noise)
+        if not include_unverified and not db.has_column(conn, "verified"):
+            logger.warning(
+                "%s predates the 'verified' column, so nothing counts as verified. Showing raw "
+                "detections instead -- pass --include-unverified to silence this.", db_path,
+            )
+            include_unverified = True
 
-        matrix_info = _write_matrix(conn, Path(output_dir), exclude_noise) if output_dir else None
+        label_counts = _label_counts(conn, exclude_noise, include_unverified)
+        box_stats = _boxes_per_image(conn, exclude_noise, include_unverified)
+
+        matrix_info = (
+            _write_matrix(conn, Path(output_dir), exclude_noise, include_unverified)
+            if output_dir else None
+        )
+
+        # An empty result here is nearly always an unreviewed database, not an
+        # empty one. Say which, rather than printing a table of zeroes.
+        if label_counts.empty and not include_unverified and total_rows:
+            logger.warning(
+                "None of the %d localization(s) in %s are verified, so there is nothing to count. "
+                "Verify some in `mbariml review`, or pass --include-unverified to summarize the "
+                "raw detections.", total_rows, db_path,
+            )
+            raise typer.Exit(code=0)
 
     noise_note = "excluding" if exclude_noise else "including"
+    verified_note = "verified + unverified" if include_unverified else "verified only"
     display = label_counts if top is None else label_counts.head(top)
 
-    typer.echo(f"Label counts ({noise_note} noise):")
+    typer.echo(f"Label counts ({verified_note}, {noise_note} noise):")
     typer.echo(display.to_string(index=False))
     if top is not None and len(label_counts) > top:
         typer.echo(f"... ({len(label_counts) - top} more label(s) not shown; increase --top to see more)")
 
-    typer.echo(f"\nBoxes per image ({noise_note} noise):")
+    typer.echo(f"\nBoxes per image ({verified_note}, {noise_note} noise):")
     typer.echo(box_stats.to_string(index=False))
 
     if matrix_info:

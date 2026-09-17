@@ -1,12 +1,23 @@
 """Export curated labels to YOLO-format label files, plus a names file.
 
 Writes one ``labels/<disambiguated_stem>.txt`` per source image with at
-least one curated identification (``new_label`` set, excluding ``noise`` --
-same convention as ``export voc``), each line
+least one curated identification -- every VERIFIED localization, named
+``new_label`` where the reviewer retyped it and the original detector
+``label`` where they confirmed it unchanged, excluding ``noise`` (see
+``mbariml.db.curated_where``, the same rule every export uses), each line
 ``class_id x_center y_center width height`` normalized to [0, 1] against
 that image's actual pixel dimensions (read from the image itself, same as
 ``export voc``), plus ``names.txt`` (one label per line, in class-id order --
 the file Ultralytics training configs expect for ``names:``).
+
+Also writes the Ultralytics dataset YAML (``<output_dir>.yaml`` by default):
+train/val/test paths, ``nc``, and the ``names`` list. Its ``nc``/``names``
+are taken from the same in-memory list that assigned the class indices in
+``labels/`` and was written to ``names.txt``, so the three can never
+disagree about which class index is which taxon. Its paths are absolute and
+rooted at ``--yaml-root`` (default: the output directory), since the box
+that trains usually mounts the dataset at a different path than the box that
+exported it.
 
 Also writes ``train.txt``/``val.txt``/``test.txt`` -- the image lists
 Ultralytics/darknet training configs point at -- holding ``./images/<file>``
@@ -57,11 +68,20 @@ logger = get_logger(__name__)
 
 
 def _fetch_curated(conn) -> list[tuple]:
+    """Every VERIFIED localization, carrying its effective label.
+
+    Selection and naming are both ``mbariml.db``'s shared rule: a row is in
+    the dataset because a human verified it, and it is named ``new_label``
+    if they retyped it or the original detector ``label`` if they confirmed
+    it as-is. This used to filter on ``new_label IS NOT NULL``, which is
+    only the retyped ones -- see EFFECTIVE_LABEL_SQL's comment for what that
+    cost a real survey database.
+    """
     return conn.execute(
-        """
-        SELECT image_path, new_label, x_min, y_min, x_max, y_max
+        f"""
+        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max
         FROM predictions
-        WHERE new_label IS NOT NULL AND new_label != 'noise'
+        {db.curated_where()}
         """
     ).fetchall()
 
@@ -263,6 +283,56 @@ def _write_splits(
     return counts
 
 
+def _quote_yaml(name: str) -> str:
+    """Single-quoted YAML scalar. A literal apostrophe is doubled, which is
+    how YAML escapes one inside single quotes -- without this a taxon like
+    ``Cuvier's beaked whale`` would close the quote early and produce a file
+    that silently fails to parse at training time."""
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _write_dataset_yaml(
+    names: list[str], output_dir: Path, *, yaml_root: str, yaml_name: str, split_names: tuple[str, ...]
+) -> Path:
+    """Write the Ultralytics dataset YAML (train/val/test paths, nc, names).
+
+    ``nc`` and ``names`` are derived from the very same ``names`` list that
+    assigned the class indices in the label files and was written to
+    names.txt -- not recomputed from the database -- so the three cannot
+    disagree about what class 17 is. That is the whole failure this guards
+    against: a YAML whose name order differs from the indices in labels/
+    trains every class against the wrong name and looks entirely normal
+    while doing it.
+
+    Paths are absolute and rooted at ``yaml_root`` because a training box
+    generally mounts the dataset somewhere other than the machine that
+    exported it (e.g. exported under /Volumes/M3_ML on macOS, read from
+    /mnt/M3_ML on the Linux trainer) -- so the root is worth overriding
+    without having to hand-edit the file. This is deliberately unlike the
+    split files themselves, which stay relative so the directory can be
+    moved or zipped as a self-contained unit.
+    """
+    root = yaml_root.rstrip("/")
+    lines = ["# train and val data"]
+    lines += [f"{split}: {root}/{split}.txt" for split in split_names]
+    lines += ["", "# number of classes", f"nc: {len(names)}", "", "# class names"]
+
+    if names:
+        quoted = [_quote_yaml(name) for name in names]
+        # Matches the reference layout: the list opens on the `names:` line
+        # and every subsequent entry sits on its own line, closing on the
+        # last one. Valid YAML flow sequence, and it keeps a 50-line class
+        # list reviewable as a diff.
+        body = ",\n".join(quoted)
+        lines.append(f"names: [{body}]")
+    else:
+        lines.append("names: []")
+
+    yaml_path = output_dir / yaml_name
+    yaml_path.write_text("\n".join(lines) + "\n")
+    return yaml_path
+
+
 def _write_names(names: list[str], output_dir: Path) -> Path:
     names_path = output_dir / "names.txt"
     names_path.write_text("\n".join(names) + ("\n" if names else ""))
@@ -293,6 +363,21 @@ def export_yolo(
         help="Optional file of image filenames (one per line) to force into the test split -- e.g. a "
              "fixed benchmark set you want held out of training across every export.",
     ),
+    dataset_yaml: bool = typer.Option(
+        True, "--yaml/--no-yaml",
+        help="Also write the Ultralytics dataset YAML (train/val/test paths, nc, names). "
+             "Requires --splits, since it points at the split files.",
+    ),
+    yaml_name: str = typer.Option(
+        None,
+        help="Filename for the dataset YAML. Defaults to '<output_dir name>.yaml'.",
+    ),
+    yaml_root: str = typer.Option(
+        None,
+        help="Directory the YAML's train/val/test paths are rooted at. Defaults to the absolute "
+             "path of OUTPUT_DIR. Override when the training box mounts the dataset elsewhere, "
+             "e.g. --yaml-root /mnt/M3_ML/training_data/2026/my_dataset.",
+    ),
 ) -> None:
     """Export curated labels to YOLO-format label files, plus a names file.
 
@@ -300,11 +385,16 @@ def export_yolo(
     separate image_dir argument needed (same convention as `export voc`).
 
     Writes a complete, trainable dataset skeleton: labels/, names.txt,
-    train/val/test.txt (relative `./images/...` paths), plus
-    image_manifest.csv and copy_images.py to fetch the matching images:
+    train/val/test.txt (relative `./images/...` paths), the Ultralytics
+    dataset YAML, plus image_manifest.csv and copy_images.py to fetch the
+    matching images:
 
         mbariml export yolo predictions.duckdb dataset/
         python3 dataset/copy_images.py --dest dataset/images
+
+    The YAML's `nc`/`names` come from the same list that assigned the class
+    indices in labels/, so they cannot disagree. Point its paths at the
+    training box's own mount with --yaml-root.
     """
     output_dir_path = Path(output_dir)
 
@@ -317,6 +407,7 @@ def export_yolo(
         _parse_split_ratios(split_ratios)
 
     with db.connect(db_path) as conn:
+        db.require_verified_column(conn, db_path)
         written, names, image_paths = _export_labels(conn, output_dir_path)
 
     names_path = _write_names(names, output_dir_path)
@@ -332,6 +423,21 @@ def export_yolo(
             split_ratios=split_ratios,
             seed=split_seed,
             pinned_test_file=pinned_test_file,
+        )
+
+    if dataset_yaml and splits:
+        yaml_path = _write_dataset_yaml(
+            names,
+            output_dir_path,
+            yaml_root=yaml_root or str(output_dir_path.resolve()),
+            yaml_name=yaml_name or f"{output_dir_path.resolve().name}.yaml",
+            split_names=SPLIT_NAMES,
+        )
+        logger.info("Wrote dataset YAML (nc: %d) to %s", len(names), yaml_path)
+    elif dataset_yaml:
+        logger.warning(
+            "Skipped the dataset YAML: it points at train/val/test.txt, which --no-splits did "
+            "not write. Re-run with --splits, or pass --no-yaml to silence this."
         )
 
 
