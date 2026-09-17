@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.18.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.19.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -423,9 +423,19 @@ export voc | yolo | id | html | stats
         often the same animal across the split.
   id    A *.id sidecar per source image with a curated identification --
         header records the model, who ran it, and when; each identification
-        is a 4-vertex pixel polygon with lon/lat/depth left as 0.0
-        placeholders for a later navigation merge. Writes next to the
-        originals by default, so it takes no positional output_dir:
+        is a center pixel plus the same box as a 4-vertex polygon, with
+        lon/lat/depth left as 0.0 placeholders for a later navigation merge.
+        `center` is the observation's position in one point (the exact
+        integer midpoint of the TL/BR corners beside it, so the file never
+        disagrees with itself); the corners give the extent.
+        Rows are TAB-delimited
+        and the header carries a legend for every field -- taxon names
+        contain spaces ("marine organism", "LRJ Complex"), so a
+        space-delimited row would parse as label="marine". Parse with
+        row.split('\t'). source_image is the full recorded path, so a
+        sidecar still names its dive after --output-dir flattens the tree.
+        Writes next to the originals by default, so it takes no positional
+        output_dir:
 
             mbariml export id /data/results/yolo_predictions.duckdb
             mbariml export id /data/results/yolo_predictions.duckdb --output-dir ~/Desktop/ids
@@ -513,7 +523,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.18.0. Run `mbariml <command> --help`
+Captured verbatim against v0.19.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help

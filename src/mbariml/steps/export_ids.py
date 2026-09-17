@@ -56,33 +56,109 @@ def _resolve_model_description(conn, model_override: Optional[str]) -> str:
     return row[0] if row and row[0] else "unknown"
 
 
-def _format_vertex(x: float, y: float) -> str:
-    # Pixel coordinates now; lon/lat/depth are placeholders appended later.
-    return f"{int(round(x))},{int(round(y))},0.0,0.0,0.0"
+def _point(px_x: int, px_y: int) -> str:
+    """One point in the file's five-value encoding.
+
+    Takes integers, not floats: every pixel value in a row is rounded once,
+    up front, so the center and the corners are all derived from the same
+    numbers (see ``_row_points``). lon/lat/depth are placeholders the
+    navigation merge fills in later.
+    """
+    return f"{px_x},{px_y},0.0,0.0,0.0"
+
+
+def _row_points(x_min: float, y_min: float, x_max: float, y_max: float) -> list[str]:
+    """``[center, TL, TR, BR, BL]`` for one box, as encoded points.
+
+    The box's float coordinates are rounded to whole pixels ONCE here, and
+    the center is then the integer midpoint of those same rounded corners --
+    not a separately-rounded midpoint of the original floats. Those two
+    differ by a pixel surprisingly often: on a real 35,492-identification
+    export, 222 rows. Either answer is defensible on its own, but a file
+    whose stated center disagrees with the midpoint of the corners printed
+    beside it is the exact "two consumers compute different centers" problem
+    this field exists to remove -- so the file is made self-consistent, and
+    anyone who derives the center from the corners gets the value written
+    here.
+
+    Integer ``//`` rather than ``round()`` on the midpoint, so an odd span
+    resolves the same way every time. Python's ``round()`` is
+    round-half-to-even, which would make the tie-break depend on the
+    coordinate's parity.
+    """
+    left, top = int(round(x_min)), int(round(y_min))
+    right, bottom = int(round(x_max)), int(round(y_max))
+    return [
+        _point((left + right) // 2, (top + bottom) // 2),  # center
+        _point(left, top),       # top-left
+        _point(right, top),      # top-right
+        _point(right, bottom),   # bottom-right
+        _point(left, bottom),    # bottom-left
+    ]
 
 
 def _build_id_file_content(
-    image_name: str, model_desc: str, username: str, generated_at: str, detections: list[tuple]
+    image_path: str, model_desc: str, username: str, generated_at: str, detections: list[tuple]
 ) -> str:
+    """One .id file's full text: commented header, then one row per identification.
+
+    The header carries a field-by-field legend rather than the single
+    ``vertices(TL,TR,BR,BL as px_x,px_y,lon,lat,depth)`` line it used to.
+    That line was trying to describe a nested structure -- four corners, each
+    itself five values -- in one parenthesis, so it read as one flat list of
+    nine things and left the reader to guess where a corner ended. Whoever
+    writes the navigation merge reads this header to find out what the
+    columns are; spelling it out costs nine comment lines once per file.
+
+    ``source_image`` is the full recorded path, not just the basename. With
+    --output-dir the sidecars no longer sit beside their imagery, so the
+    basename alone would not say which dive an identification came from --
+    and a survey has many directories holding an image of the same name.
+    """
     lines = [
         "# mbariml identification file",
         f"# generator: mbariml v{__version__}",
         f"# generated_by: {username}",
         f"# generated_at: {generated_at}",
         f"# model: {model_desc}",
-        f"# source_image: {image_name}",
+        f"# source_image: {image_path}",
         f"# count: {len(detections)}",
         "#",
-        "# index label confidence  vertices(TL,TR,BR,BL as px_x,px_y,lon,lat,depth)",
+        "# One identification per row below, with these fields:",
+        "#   index        0-based position of this identification within this file",
+        "#   label        taxon name (may contain spaces)",
+        "#   confidence   detector confidence, 0.0-1.0; 1.0000 means a human drew the box",
+        "#   center       the observation's position: the box's center pixel, which is",
+        "#                exactly the integer midpoint of the TL/BR corners below",
+        "#   TL TR BR BL  the same box as four corners, in this order:",
+        "#                top-left, top-right, bottom-right, bottom-left",
+        "#",
+        "# Fields are separated by a single TAB, not spaces -- a label may itself",
+        "# contain spaces, so splitting a row on whitespace mis-reads those rows.",
+        "# Parse a row with:",
+        "#   index, label, confidence, center, tl, tr, br, bl = row.split('\\t')",
+        "#",
+        "# center and each corner are five comma-separated values:",
+        "#   px_x,px_y,lon,lat,depth",
+        "#   px_x,px_y    pixel coordinates in the source image, origin at top-left",
+        "#   lon,lat      decimal degrees; written as 0.0 placeholders here",
+        "#   depth        meters, positive down; written as a 0.0 placeholder here",
+        "# The lon/lat/depth placeholders are filled in later from navigation data,",
+        "# by re-parsing and rewriting these same files.",
+        "#",
+        "# " + "\t".join(["index", "label", "confidence", "center", "TL", "TR", "BR", "BL"]),
     ]
     for i, (label, confidence, x_min, y_min, x_max, y_max) in enumerate(detections):
-        vertices = "  ".join([
-            _format_vertex(x_min, y_min),  # top-left
-            _format_vertex(x_max, y_min),  # top-right
-            _format_vertex(x_max, y_max),  # bottom-right
-            _format_vertex(x_min, y_max),  # bottom-left
-        ])
-        lines.append(f"{i} {label} {confidence:.4f}  {vertices}")
+        # TAB-delimited, not space-delimited: 434 identifications in a single
+        # real survey carried labels with spaces in them ("marine organism",
+        # "Heteropolypus ritteri", "LRJ Complex", ...), and on those rows the
+        # obvious `index, label, confidence, *corners = row.split()` yields
+        # label="marine", confidence="organism" -- wrong, and wrong quietly.
+        # A tab cannot appear in a taxon name, so this is unambiguous for any
+        # label without needing quoting or escaping.
+        lines.append("\t".join(
+            [str(i), label, f"{confidence:.4f}", *_row_points(x_min, y_min, x_max, y_max)]
+        ))
     return "\n".join(lines) + "\n"
 
 
@@ -161,7 +237,7 @@ def export_ids(
             id_path = image_path_obj.with_suffix(".id")
         try:
             id_path.write_text(
-                _build_id_file_content(image_path_obj.name, model_desc, username, generated_at, detections)
+                _build_id_file_content(str(image_path_obj), model_desc, username, generated_at, detections)
             )
             written += 1
         except OSError:

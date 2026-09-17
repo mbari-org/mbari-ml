@@ -11,6 +11,59 @@ recognizable.
 
 ---
 
+## 0.19.0 — .id rows are TAB-delimited, and the header explains itself
+
+**The data rows were ambiguous.** Fields were space-separated, but taxon
+names routinely contain spaces, so `index, label, confidence, *corners =
+row.split()` yielded `label="marine"`, `confidence="organism"` — wrong, and
+wrong silently. Measured on one real survey export: **436 of 35,492
+identifications** across 7 taxa (`marine organism`, `Heteropolypus
+ritteri`, `Spectrunculus grandis`, `Geological feature`, `LRJ Complex`,
+`Saccocalyx pedunculatus`, `Bathyalcyon robustum`). Since the entire purpose
+of these files is that a navigation process re-parses them later to fill in
+lon/lat/depth, that is exactly where it would have surfaced.
+
+Rows are now TAB-delimited. A tab cannot occur inside a taxon name, so
+`row.split('\t')` is unambiguous for every label with no quoting or
+escaping. Verified by re-parsing all 35,492 rows in all 995 files of a real
+export: 0 malformed, 51 distinct labels recovered intact.
+
+**The header now explains the format instead of compressing it.** It was one
+line:
+
+```
+# index label confidence  vertices(TL,TR,BR,BL as px_x,px_y,lon,lat,depth)
+```
+
+which describes a nested structure — four corners, each itself five values —
+inside a single parenthesis, so it reads as one flat list of nine things and
+leaves the reader to work out where a corner ends. It is now a field-by-field
+legend naming each column, the corner order, the five values within a corner,
+their units, and the parse. Whoever writes the navigation merge reads this to
+learn the format; nine comment lines per file is a fair price.
+
+**Each row now carries the observation's position as a `center` point**, in
+front of the four corners and in the identical five-value encoding, so the
+navigation merge fills in its lon/lat/depth like any other point. One pixel
+position is what most consumers actually want; the corners remain for
+anything needing the extent.
+
+The center is the integer midpoint of the *rounded* TL/BR corners printed
+beside it, not a separately-rounded midpoint of the underlying floats. Those
+two disagree by a pixel on 222 of this survey's 35,492 rows — either is
+defensible alone, but a file whose stated center contradicts its own corners
+recreates the "two consumers compute different centers" problem the field
+exists to remove. Integer `//` rather than `round()` on the midpoint, since
+Python's round-half-to-even would make an odd span's tie-break depend on
+coordinate parity. Verified across all 35,492 rows: 0 disagreements.
+
+**`source_image` records the full path**, not the basename. With
+`--output-dir` the sidecars no longer sit beside their imagery, so a
+basename alone would not say which dive an identification came from — and a
+survey has many directories holding an image of the same name.
+
+---
+
 ## 0.18.0 — `stats` is an export subcommand only, and `export id` can emit raw detections
 
 **`mbariml stats` is gone; use `mbariml export stats`.** 0.17.0 registered it

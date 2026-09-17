@@ -639,27 +639,73 @@ since flattening a nested mission tree is precisely when two dives' same-named
 images would otherwise overwrite each other. Each file's header still records
 the original image name.
 
-Each file has a header (generator + version, the user who ran the export,
-the model that produced the detections — recorded automatically from
-the ingest command, or override with `--model`, the source image, and the
-identification count) followed by one line per identification, as a
-4-vertex polygon (top-left, top-right, bottom-right, bottom-left) with pixel
-coordinates filled in and `lon,lat,depth` left as `0.0` placeholders, meant
-to be filled in later by a separate navigation-merge process:
+Each file has a commented header — generator + version, who ran the export,
+the model that produced the detections (recorded automatically by the ingest
+command, or override with `--model`), the **full path** of the source image,
+the identification count, and a legend for the columns — followed by one row
+per identification. Each row carries the observation's position as a single
+center pixel, then the same box as a 4-vertex polygon (top-left, top-right,
+bottom-right, bottom-left), with pixel coordinates filled in and
+`lon,lat,depth` left as `0.0` placeholders, meant to be filled in later by a
+separate navigation-merge process:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.12.0
+# generator: mbariml v0.19.0
 # generated_by: lonny
-# generated_at: 2026-08-19T17:36:28Z
+# generated_at: 2026-09-17T21:29:20Z
 # model: /path/to/best.pt
-# source_image: 1619554491865857.png
+# source_image: /Volumes/SeafloorMapping/2026/20260718d1/images/.../1619554491865857.png
 # count: 2
 #
-# index label confidence  vertices(TL,TR,BR,BL as px_x,px_y,lon,lat,depth)
-0 Muusoctopus 0.8740  120,45,0.0,0.0,0.0  180,45,0.0,0.0,0.0  180,90,0.0,0.0,0.0  120,90,0.0,0.0,0.0
-1 Actiniaria 0.6110  40,200,0.0,0.0,0.0  95,200,0.0,0.0,0.0  95,260,0.0,0.0,0.0  40,260,0.0,0.0,0.0
+# One identification per row below, with these fields:
+#   index        0-based position of this identification within this file
+#   label        taxon name (may contain spaces)
+#   confidence   detector confidence, 0.0-1.0; 1.0000 means a human drew the box
+#   center       the observation's position: the box's center pixel, which is
+#                exactly the integer midpoint of the TL/BR corners below
+#   TL TR BR BL  the same box as four corners, in this order:
+#                top-left, top-right, bottom-right, bottom-left
+#
+# Fields are separated by a single TAB, not spaces -- a label may itself
+# contain spaces, so splitting a row on whitespace mis-reads those rows.
+# Parse a row with:
+#   index, label, confidence, center, tl, tr, br, bl = row.split('\t')
+#
+# center and each corner are five comma-separated values:
+#   px_x,px_y,lon,lat,depth
+#   px_x,px_y    pixel coordinates in the source image, origin at top-left
+#   lon,lat      decimal degrees; written as 0.0 placeholders here
+#   depth        meters, positive down; written as a 0.0 placeholder here
+# The lon/lat/depth placeholders are filled in later from navigation data,
+# by re-parsing and rewriting these same files.
+#
+# index→label→confidence→center→TL→TR→BR→BL
+0→Muusoctopus→0.8740→150,67,0.0,0.0,0.0→120,45,0.0,0.0,0.0→180,45,0.0,0.0,0.0→180,90,0.0,0.0,0.0→120,90,0.0,0.0,0.0
+1→marine organism→0.6110→67,230,0.0,0.0,0.0→40,200,0.0,0.0,0.0→95,200,0.0,0.0,0.0→95,260,0.0,0.0,0.0→40,260,0.0,0.0,0.0
 ```
+
+(`→` marks a literal tab above; the files contain real tab characters.)
+
+**`center` is the observation's position in one point** — what a consumer
+usually wants to put on a map or match against a navigation fix — and the
+corners are there for anything that needs the extent. It is the exact
+integer midpoint of the `TL`/`BR` corners printed beside it, not a
+separately-rounded midpoint of the underlying floats: those two differ by a
+pixel on 222 of this survey's 35,492 rows, and a file whose stated center
+disagrees with its own corners is the confusion the field exists to remove.
+It uses the identical five-value encoding, so the navigation merge fills in
+its lon/lat/depth like any other point.
+
+**Rows are TAB-delimited.** Taxon names routinely contain spaces —
+`marine organism`, `Heteropolypus ritteri`, `LRJ Complex` — and on a
+space-delimited row the obvious `index, label, confidence, *corners =
+row.split()` silently yields `label="marine"`, `confidence="organism"`. A
+tab cannot occur inside a taxon name, so `row.split('\t')` is unambiguous
+for every label without quoting or escaping. `source_image` is the full
+recorded path for the same reason it matters under `--output-dir`: the
+basename alone doesn't say which dive an identification came from, and a
+survey holds many directories with same-named images.
 
 ### Label counts and per-image detection stats
 
