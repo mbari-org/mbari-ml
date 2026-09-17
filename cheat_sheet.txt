@@ -428,6 +428,13 @@ export voc | yolo | id | html | stats
         `center` is the observation's position in one point (the exact
         integer midpoint of the TL/BR corners beside it, so the file never
         disagrees with itself); the corners give the extent.
+        The header also records image_width/image_height (read from the
+        image header only, ~6ms/image, 'unknown' if the file has moved), so
+        a coordinate can be bound-checked without opening the imagery.
+        Corner coordinates are box EDGES, so a box flush against the right
+        side of a 1936-wide frame has px_x 1936 -- one past the last column,
+        which is what makes width = right - left exact. center is a true
+        pixel index and stays within the frame.
         Rows are TAB-delimited
         and the header carries a legend for every field -- taxon names
         contain spaces ("marine organism", "LRJ Complex"), so a

@@ -57,6 +57,28 @@ exists to remove. Integer `//` rather than `round()` on the midpoint, since
 Python's round-half-to-even would make an odd span's tie-break depend on
 coordinate parity. Verified across all 35,492 rows: 0 disagreements.
 
+**The header records `image_width`/`image_height`.** A consumer can now
+bound-check a coordinate, or place it in the frame, without opening the
+imagery. Read via PIL's lazy `Image.open`, which parses the header and
+stops: 6.3 ms/image against cv2.imread's 43.9 ms on this survey's 1936x1456
+TIFFs, so ~6s rather than ~44s across a 995-image export. This is the only
+reason `export id` touches the imagery at all. An image that has moved or
+won't open writes `unknown` and logs a count; its identifications are
+unaffected, since all box geometry comes from the database.
+
+Adding the dimensions immediately caught something: **884 coordinates sat
+outside the frame** — all of them exactly `x=1936` or `y=1456`, only ever on
+the right/bottom corners, from 422 boxes touching the right edge and 13 the
+bottom. Not a data bug. Corner coordinates are box *edges*, spanning
+`[0,W]x[0,H]`, not pixel indices spanning `[0,W-1]x[0,H-1]`: a box flush
+against the right side legitimately has `px_x` one past the last column, and
+that is precisely what makes `width = right - left` exact — the same
+arithmetic `export yolo` already relies on. So the legend now states the
+real rule rather than declaring 884 good coordinates invalid, and notes that
+`center`, being a true pixel, does stay within `0..W-1`/`0..H-1`. Verified
+across all 35,492 rows: 0 corners outside `[0,W]x[0,H]`, 0 centers outside
+`[0,W-1]x[0,H-1]`.
+
 The point legend spells out that `px_x`/`px_y` are a *pair* — column from
 the left edge, row from the top, both 0-based — rather than "pixel
 coordinates", which read ambiguously enough that the first question asked of

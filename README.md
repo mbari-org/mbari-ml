@@ -656,6 +656,8 @@ separate navigation-merge process:
 # generated_at: 2026-09-17T21:29:20Z
 # model: /path/to/best.pt
 # source_image: /Volumes/SeafloorMapping/2026/20260718d1/images/.../1619554491865857.png
+# image_width: 1936
+# image_height: 1456
 # count: 2
 #
 # One identification per row below, with these fields:
@@ -666,6 +668,8 @@ separate navigation-merge process:
 #                exactly the integer midpoint of the TL/BR corners below
 #   TL TR BR BL  the same box as four corners, in this order:
 #                top-left, top-right, bottom-right, bottom-left
+#                The box covers columns TL.px_x .. TR.px_x-1 and rows
+#                TL.px_y .. BL.px_y-1; its width is TR.px_x - TL.px_x.
 #
 # Fields are separated by a single TAB, not spaces -- a label may itself
 # contain spaces, so splitting a row on whitespace mis-reads those rows.
@@ -676,9 +680,13 @@ separate navigation-merge process:
 #   px_x,px_y,lon,lat,depth
 #   px_x         COLUMN in the source image, counted from the left edge
 #   px_y         ROW in the source image, counted from the top edge
-#                Both are 0-based, so the top-left pixel is 0,0 and the
-#                bottom-right of a WxH image is W-1,H-1. A pixel is
-#                addressed by this PAIR -- there is no single pixel number.
+#                Both are 0-based. A pixel is addressed by this PAIR --
+#                there is no single pixel number.
+#                Corner coordinates are box EDGES: for this 1936x1456 image
+#                px_x spans 0..1936 and px_y spans 0..1456, so a box flush
+#                against the right side has px_x 1936 -- one past the last
+#                column (1935), which is what makes width = right - left exact.
+#                center is a true pixel, so it stays within 0..1935 / 0..1455.
 #   lon,lat      decimal degrees; written as 0.0 placeholders here
 #   depth        meters, positive down; written as a 0.0 placeholder here
 # The lon/lat/depth placeholders are filled in later from navigation data,
@@ -690,6 +698,20 @@ separate navigation-merge process:
 ```
 
 (`→` marks a literal tab above; the files contain real tab characters.)
+
+**`image_width`/`image_height` record the frame size**, so a consumer can
+bound-check a coordinate without opening the imagery. They're read from the
+image header only (PIL's lazy open), not by decoding it — 6.3 ms per image
+rather than 43.9 ms, about 6s instead of 44s across a 995-image export. An
+image that has moved or won't open writes `unknown` and the identifications
+are unaffected, since all box geometry comes from the database.
+
+**Corner coordinates are box *edges*, not pixel indices.** A box flush
+against the right side of a 1936-wide frame has `px_x` 1936 — one past the
+last column (1935). That is correct, not an off-by-one: it's what makes
+`width = right - left` exact, the same arithmetic `export yolo` uses. On this
+survey 422 boxes touch the right edge and 13 the bottom. `center` is a true
+pixel index and always stays within `0..W-1` / `0..H-1`.
 
 Each point is a *pair* of numbers, not one: `1499,482,0.0,0.0,0.0` means
 column 1499, row 482, with `0.0,0.0,0.0` the lon/lat/depth placeholders. On
