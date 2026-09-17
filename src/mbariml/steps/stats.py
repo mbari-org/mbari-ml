@@ -29,7 +29,7 @@ import pandas as pd
 import typer
 
 from mbariml import db
-from mbariml.image_naming import disambiguated_stem
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Print label counts and per-image detection stats for a curation database.")
@@ -95,9 +95,10 @@ def _boxes_per_image(conn, exclude_noise: bool, include_unverified: bool) -> pd.
 
 
 def _write_matrix(conn, output_dir: Path, exclude_noise: bool, include_unverified: bool) -> tuple[Path, int, int]:
-    """Writes label_by_image_matrix.csv: rows=image (disambiguated stem,
-    collision-safe across dives -- see mbariml.image_naming), columns=label,
-    value=box count. Returns (path, n_images, n_labels)."""
+    """Writes label_by_image_matrix.csv: rows=image (the image's own
+    filename, prefixed by its parent directory only where two dives share a
+    name -- see mbariml.image_naming), columns=label, value=box count.
+    Returns (path, n_images, n_labels)."""
     long_df = conn.execute(
         f"""
         SELECT image_path, {_EFFECTIVE_LABEL_SQL} AS label, COUNT(*) AS count
@@ -107,7 +108,8 @@ def _write_matrix(conn, output_dir: Path, exclude_noise: bool, include_unverifie
         """
     ).df()
 
-    long_df["image"] = long_df["image_path"].apply(lambda p: disambiguated_stem(Path(p)))
+    stem_map = export_stem_map(long_df["image_path"].unique())
+    long_df["image"] = long_df["image_path"].map(stem_map)
     matrix = long_df.pivot_table(index="image", columns="label", values="count", fill_value=0, aggfunc="sum")
     matrix = matrix.sort_index()
 

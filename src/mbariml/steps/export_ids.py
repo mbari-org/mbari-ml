@@ -16,8 +16,9 @@ with what ``export yolo``/``voc`` write.
 
 ``--output-dir`` collects them into one directory instead, for a read-only
 survey volume or a handoff without the imagery. Names there are
-``disambiguated_stem``-based, since flattening a nested mission tree is
-precisely when two dives' same-named images would overwrite each other.
+the image's own filename, with a parent-directory prefix added only to names
+that would otherwise collide -- flattening a nested mission tree is precisely
+when two dives' same-named images would overwrite each other.
 
 Each bounding box is written as a 4-vertex polygon (top-left, top-right,
 bottom-right, bottom-left), with pixel coordinates filled in immediately and
@@ -44,7 +45,7 @@ from tqdm import tqdm
 
 from mbariml import __version__
 from mbariml import db
-from mbariml.image_naming import disambiguated_stem
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Export *.id identification sidecar files next to each source image.")
@@ -237,8 +238,9 @@ def export_ids(
     output_dir: Optional[str] = typer.Option(
         None,
         help="Write the .id files into this directory instead of next to each source image. "
-             "Filenames are disambiguated by parent directory, so two dives sharing an image "
-             "name don't collide. Default (unset) writes each sidecar beside its own image.",
+             "Each is named after its source image; a <parent_dir>_ prefix is added only where "
+             "two images would otherwise collide. Default (unset) writes each sidecar beside "
+             "its own image.",
     ),
     include_unverified: bool = typer.Option(
         False, "--include-unverified/--verified-only",
@@ -291,17 +293,20 @@ def export_ids(
     output_dir_path = Path(output_dir) if output_dir else None
     if output_dir_path:
         output_dir_path.mkdir(parents=True, exist_ok=True)
+    # Only needed when flattening into one directory; writing beside each
+    # source image can't collide, since the images are already distinct files.
+    stem_map = export_stem_map(grouped) if output_dir_path else {}
 
     written, failed, unsized = 0, 0, 0
     for image_path, detections in tqdm(grouped.items(), desc="Writing .id files"):
         image_path_obj = Path(image_path)
         if output_dir_path:
-            # disambiguated_stem, not the bare stem: flattening a mission's
-            # nested per-dive directories into one output directory is
-            # exactly when two dives' identically-named images collide, and
-            # the second would silently overwrite the first's identifications.
-            # Same naming every other export uses for the same reason.
-            id_path = output_dir_path / f"{disambiguated_stem(image_path_obj)}.id"
+            # The image's own filename, unless another image in this export
+            # shares it -- flattening a mission's nested per-dive directories
+            # into one output directory is exactly when two dives' identically
+            # named images would collide, and the second would silently
+            # overwrite the first's identifications. See export_stem_map.
+            id_path = output_dir_path / f"{stem_map[image_path]}.id"
         else:
             id_path = image_path_obj.with_suffix(".id")
         image_size = _image_size(image_path_obj)

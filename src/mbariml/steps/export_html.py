@@ -17,6 +17,7 @@ import typer
 from tqdm import tqdm
 
 from mbariml import db
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Generate a paginated HTML gallery of images and their labeled crops.")
@@ -72,6 +73,11 @@ def _process_images_and_crops(conn, output_dir: Path, *, include_unverified: boo
     seen_crops: set[tuple] = set()
     image_data: dict[str, dict] = {}
 
+    # Same naming rule as the other exports: the image's own filename, with a
+    # parent-directory prefix only where two source images would otherwise
+    # write to the same file in images/ or crops/.
+    stem_map = export_stem_map(grouped)
+
     for image_path_str, crops in tqdm(grouped.items(), desc="Processing images and crops"):
         image_path = Path(image_path_str)
         image = cv2.imread(str(image_path))
@@ -79,7 +85,7 @@ def _process_images_and_crops(conn, output_dir: Path, *, include_unverified: boo
             logger.warning("Could not read image (skipping): %s", image_path)
             continue
 
-        unique_stem = f"{image_path.parent.name}_{image_path.stem}"
+        unique_stem = stem_map[image_path_str]
         output_image_path = images_dir / f"{unique_stem}.jpg"
         annotated = image.copy()
 

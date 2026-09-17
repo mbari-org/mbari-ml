@@ -59,7 +59,7 @@ from tqdm import tqdm
 
 from mbariml import db
 from mbariml.export_common import write_image_manifest_and_script
-from mbariml.image_naming import disambiguated_stem
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Export curated labels to YOLO-format label files, plus a names file.")
@@ -85,7 +85,7 @@ def _fetch_curated(conn) -> list[tuple]:
     ).fetchall()
 
 
-def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str]]:
+def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str], dict[str, str]]:
     """Returns (files_written, sorted distinct names, exported image_path strings).
 
     The returned paths are only those a label file was actually written for
@@ -105,6 +105,14 @@ def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str]]:
     grouped: dict[str, list[tuple]] = {}
     for image_path, new_label, x_min, y_min, x_max, y_max in rows:
         grouped.setdefault(image_path, []).append((new_label, x_min, y_min, x_max, y_max))
+
+    # Computed ONCE, over every image in the export, and threaded through the
+    # label files, the manifest and the split lists alike. Recomputing it
+    # per-artifact would work only as long as each saw the identical path
+    # set -- and the split lists deliberately see a narrower one (images
+    # missing from disk are dropped), which is exactly how the three would
+    # drift into disagreeing about a colliding filename.
+    stem_map = export_stem_map(grouped)
 
     written = 0
     missing = 0
@@ -129,7 +137,7 @@ def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str]]:
             h = (y_max - y_min) / height
             lines.append(f"{class_index[new_label]} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
 
-        label_path = labels_dir / f"{disambiguated_stem(image_path)}.txt"
+        label_path = labels_dir / f"{stem_map[image_path_str]}.txt"
         label_path.write_text("\n".join(lines) + "\n")
         written += 1
         exported_paths.append(image_path_str)
@@ -137,7 +145,7 @@ def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str]]:
     if missing:
         logger.warning("%d image(s) recorded in the database could not be found on disk and were skipped "
                         "(their labels were not written -- normalizing boxes needs actual image dimensions).", missing)
-    return written, names, exported_paths
+    return written, names, exported_paths, stem_map
 
 
 SPLIT_NAMES = ("train", "val", "test")
@@ -210,6 +218,7 @@ def _write_splits(
     image_paths: list[str],
     output_dir: Path,
     *,
+    stem_map: dict[str, str],
     split_ratios: str,
     seed: int,
     pinned_test_file: Path | None,
@@ -233,7 +242,7 @@ def _write_splits(
     # order DuckDB returned rows in, which is not guaranteed stable, and
     # seeding a shuffle of an unstable order reproduces nothing.
     entries = sorted(
-        ((Path(p), f"{disambiguated_stem(Path(p))}{Path(p).suffix}") for p in set(image_paths)),
+        ((Path(p), f"{stem_map[p]}{Path(p).suffix}") for p in set(image_paths)),
         key=lambda entry: entry[1],
     )
 
@@ -407,10 +416,10 @@ def export_yolo(
 
     with db.connect(db_path, must_exist=True) as conn:
         db.require_verified_column(conn, db_path)
-        written, names, image_paths = _export_labels(conn, output_dir_path)
+        written, names, image_paths, stem_map = _export_labels(conn, output_dir_path)
 
     names_path = _write_names(names, output_dir_path)
-    write_image_manifest_and_script(image_paths, output_dir_path, export_name="yolo")
+    write_image_manifest_and_script(image_paths, output_dir_path, export_name="yolo", stem_map=stem_map)
 
     logger.info("Wrote %d YOLO label file(s) to %s", written, output_dir_path / "labels")
     logger.info("Wrote %d distinct label(s) to %s", len(names), names_path)
@@ -420,6 +429,7 @@ def export_yolo(
         split_counts = _write_splits(
             image_paths,
             output_dir_path,
+            stem_map=stem_map,
             split_ratios=split_ratios,
             seed=split_seed,
             pinned_test_file=pinned_test_file,

@@ -493,6 +493,40 @@ have no such flag by design.
 `cluster` is the deliberate exception: it groups and relabels **unverified**
 data too, since finding names for un-reviewed ROIs is the whole point of it.
 
+### Output filenames
+
+Every export that writes one file per source image — `export yolo`'s
+`labels/`, `export voc`'s XML, `export id`'s sidecars, `export html`'s
+images and crops, the image manifest, and the `stats` matrix rows — names
+that file after **the source image's own filename**:
+
+```
+/Volumes/.../PROSILICA_R/1784394530578235.tif
+  -> labels/1784394530578235.txt
+  -> pascal_voc/1784394530578235.xml
+  -> 1784394530578235.id
+```
+
+There is one exception, and it matters. Flattening a nested mission tree
+into a single output directory is exactly when `dive01/img_0001.jpg` and
+`dive02/img_0001.jpg` become the same output file, and the second silently
+overwrites the first — losing a whole image's annotations with no error.
+So naming is decided across the export as a whole: if two source images
+share a filename, **only those** fall back to `<parent_dir>_<stem>`, and the
+clash is logged:
+
+```
+WARNING  1 filename(s) appear on more than one source image in this export, so
+those output files keep the <parent_dir>_<filename> prefix to avoid
+overwriting each other: img_0001 (2 images)
+```
+
+One unlucky pair in a 10,000-image survey therefore doesn't prefix the other
+9,998. The same map names every artifact of a given export, so `labels/`,
+the split lists and the manifest can never disagree about what an image is
+called. If two images somehow resolve to the same name even after
+disambiguation, the export fails rather than overwriting.
+
 ### Exporting to YOLO format, and pulling the matching images
 
 `mbariml export yolo DB_PATH OUTPUT_DIR` writes a complete, trainable
@@ -569,9 +603,10 @@ since it points at the split files.
 dataset directory only ever refers to itself, so it can be zipped, copied to
 a training box, or moved between volumes without a single path needing to be
 rewritten — which absolute paths recorded on the machine that ran the export
-could not survive. Every filename in a split file is the same collision-safe
-`<parent_dir>_<stem>` name `copy_images.py` copies to and `labels/` is keyed
-by, so `images/X.jpg` ↔ `labels/X.txt` pairs up by construction — exactly the
+could not survive. Every filename in a split file is the same name
+`copy_images.py` copies to and `labels/` is keyed by — the source image's own
+filename (see [Output filenames](#output-filenames)) — so `images/X.jpg` ↔
+`labels/X.txt` pairs up by construction — exactly the
 pairing YOLO resolves by swapping `/images/` for `/labels/` in these paths.
 
 | Option | Default | Notes |
@@ -599,7 +634,7 @@ It deliberately doesn't copy the source images into an `images/` folder
 itself (they already exist on the survey volume this ran against, and
 copying every JPEG would duplicate the lot). Instead,
 `export yolo` and `export voc` both also write `image_manifest.csv` (every
-distinct source image referenced, mapped to a collision-safe destination
+distinct source image referenced, mapped to its destination
 filename) and a standalone `copy_images.py` next to it. Run that script
 later — from this machine or any other that can see the recorded source
 paths — to actually pull the matching images down, e.g. to Desktop or
@@ -634,10 +669,10 @@ survey volume or a handoff that doesn't include the imagery:
 mbariml export id /data/survey_results/yolo_predictions.duckdb --output-dir ~/Desktop/ids
 ```
 
-Filenames there are disambiguated by parent directory (`<parent>_<stem>.id`),
-since flattening a nested mission tree is precisely when two dives' same-named
-images would otherwise overwrite each other. Each file's header still records
-the original image name.
+Files there are named after the source image (`<stem>.id`), with the
+parent-directory prefix added only where two images would otherwise collide —
+see [Output filenames](#output-filenames). Each file's header records the
+full source path regardless.
 
 Each file has a commented header — generator + version, who ran the export,
 the model that produced the detections (recorded automatically by the ingest

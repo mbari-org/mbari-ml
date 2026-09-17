@@ -4,7 +4,7 @@ output lives in its own directory, separate from the source images
 
 Every such export also writes ``image_manifest.csv`` (every distinct source
 image it referenced, mapped to a collision-safe destination filename via
-``mbariml.image_naming.disambiguated_stem``) plus a standalone
+``mbariml.image_naming.export_stem_map``) plus a standalone
 ``copy_images.py`` next to it. Running that script pulls the actual images
 down to a destination directory (default ``~/Desktop/<export_name>_images``)
 -- handy for building a self-contained, trainable dataset out of an export
@@ -25,7 +25,7 @@ import string
 from pathlib import Path
 from typing import Iterable
 
-from mbariml.image_naming import disambiguated_stem
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -92,22 +92,32 @@ if __name__ == "__main__":
 
 
 def write_image_manifest_and_script(
-    image_paths: Iterable[Path | str], output_dir: Path, export_name: str
+    image_paths: Iterable[Path | str], output_dir: Path, export_name: str,
+    stem_map: dict[str, str] | None = None,
 ) -> tuple[Path, Path]:
     """Write ``image_manifest.csv`` and ``copy_images.py`` into
     ``output_dir``. ``image_paths`` may repeat/be unordered -- deduplicated
     and sorted here. Returns ``(manifest_path, script_path)``.
+
+    ``stem_map`` is the caller's :func:`mbariml.image_naming.export_stem_map`
+    result. Callers that name other artifacts per image (``export yolo``'s
+    label files and split lists) MUST pass the same map they used there --
+    the manifest decides what ``copy_images.py`` copies each image TO, so a
+    map computed twice, or computed here over a different set of paths, is
+    how ``images/X.jpg`` stops lining up with ``labels/X.txt``.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     distinct_paths = sorted({Path(p) for p in image_paths}, key=str)
+    if stem_map is None:
+        stem_map = export_stem_map(distinct_paths)
 
     manifest_path = output_dir / MANIFEST_NAME
     with open(manifest_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["source_path", "dest_filename"])
         for image_path in distinct_paths:
-            dest_filename = f"{disambiguated_stem(image_path)}{image_path.suffix}"
+            dest_filename = f"{stem_map[str(image_path)]}{image_path.suffix}"
             writer.writerow([str(image_path), dest_filename])
 
     script_path = output_dir / COPY_SCRIPT_NAME

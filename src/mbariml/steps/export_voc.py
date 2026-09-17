@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from mbariml import db
 from mbariml.export_common import write_image_manifest_and_script
+from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
 
 app = typer.Typer(help="Export curated labels to Pascal VOC XML annotation files.")
@@ -55,6 +56,11 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
             "xmin": int(x_min), "ymin": int(y_min),
             "xmax": int(x_max), "ymax": int(y_max),
         })
+
+    # One map for the whole export, same rule as every other export: the
+    # image's own filename, prefixed by its parent directory only where two
+    # source images would otherwise write to the same XML file.
+    stem_map = export_stem_map(grouped)
 
     written = 0
     missing = 0
@@ -97,7 +103,7 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
         # Prefix with the parent directory name too: two dives can each have
         # their own "img_0001.jpg", and a flat output directory needs unique
         # filenames even after the grouping fix above.
-        xml_name = f"{image_path.parent.name}_{image_path.stem}.xml"
+        xml_name = f"{stem_map[image_path_str]}.xml"
         ET.ElementTree(annotation).write(voc_dir / xml_name, xml_declaration=True, encoding="utf-8")
         written += 1
 

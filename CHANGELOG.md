@@ -11,6 +11,47 @@ recognizable.
 
 ---
 
+## 0.21.0 — exports are named after the source image, not `<parent>_<image>`
+
+Every export that writes one file per source image prefixed it with the
+image's parent directory, so an export of `PROSILICA_L` imagery produced
+`PROSILICA_L_1784391225718813.id`, `PROSILICA_L_...txt`, `PROSILICA_L_...xml`
+and so on. The prefix is noise when filenames are already unique — survey
+imagery is named by timestamp, and neither of this deployment's databases has
+a single colliding filename across 1,095 images.
+
+Files are now named after the source image itself: `1784391225718813.id`.
+
+The prefix existed for a real reason, though, and that reason still holds:
+flattening a nested mission tree into one output directory is exactly when
+`dive01/img_0001.jpg` and `dive02/img_0001.jpg` become the same output file,
+and the second silently overwrites the first — an entire image's annotations
+gone with no error. So naming is now decided for the export as a *whole*
+rather than per file: unique filenames are used bare, and only the names that
+genuinely clash fall back to `<parent_dir>_<stem>`, with a warning naming
+them. One unlucky pair in a 10,000-image survey no longer prefixes the other
+9,998. If two images resolve to the same name even after disambiguation, the
+export fails rather than overwriting.
+
+This also consolidates the rule. `export voc` and `export html` each built
+the prefix inline with their own f-string rather than calling the shared
+helper, so "how are output files named" had three implementations and could
+drift. There is now one `export_stem_map`, computed once per export and
+threaded through every artifact — label files, XML, sidecars, gallery images
+and crops, the manifest, the split lists, the stats matrix. That threading is
+load-bearing for `export yolo`: the split lists deliberately see a narrower
+path set than the label files (images missing from disk are dropped), so a
+map recomputed per artifact is precisely how `images/X.jpg` would stop lining
+up with `labels/X.txt`.
+
+Verified on a 995-image export: 995 label files, 995 split entries, 995
+manifest rows, 0 mismatches between any pair of them, 0 names carrying a
+prefix. Then verified the fallback by rewriting two images to share a
+filename across two dives: 993 bare names, 2 prefixed (`dive01_CLASH.id`,
+`dive02_CLASH.id`), warning emitted.
+
+---
+
 ## 0.20.0 — .id rows are flat CSV, and lon/lat/depth are stated once
 
 Each identification is now one plain CSV row:

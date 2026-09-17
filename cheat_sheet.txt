@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.20.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.21.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -389,8 +389,10 @@ export voc | yolo | id | html | stats
   raw detector output on an unreviewed database; the dataset exports do not.
   All
   four locate images via the path recorded at ingest -- no image_dir argument
-  -- and disambiguate output filenames with the parent directory name, so two
-  dives sharing a filename never collide.
+  -- and name output files after the source image's own filename, adding a
+  <parent_dir>_ prefix ONLY to names that would otherwise collide (and
+  logging when they do), so two dives sharing a filename never silently
+  overwrite each other.
 
     mbariml export voc  /data/results/yolo_predictions.duckdb /data/results/voc_out/
     mbariml export yolo /data/results/yolo_predictions.duckdb /data/results/yolo_out/
@@ -448,7 +450,8 @@ export voc | yolo | id | html | stats
 
         --output-dir collects them in one directory instead -- for a
         read-only survey volume, or a handoff without the imagery. Names
-        there are disambiguated by parent directory, since flattening a
+        there are the image's own filename, with a <parent_dir>_ prefix
+        added only where two images would otherwise collide -- flattening a
         nested mission tree is exactly when two dives' same-named images
         would otherwise overwrite each other.
   html  Paginated gallery of images and their labeled crops (writes its own
@@ -481,7 +484,8 @@ query
 Image manifest + copy_images.py (written by `export voc` / `export yolo`)
   Both write annotation files, not image copies -- the source images already
   exist wherever ingest found them. Each also writes image_manifest.csv
-  (source_path -> a collision-safe dest_filename) and a standalone
+  (source_path -> dest_filename, the image's own name unless it collides)
+  and a standalone
   copy_images.py. Run that later to pull the actual images down:
 
     python3 /data/results/voc_out/copy_images.py
@@ -529,7 +533,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.20.0. Run `mbariml <command> --help`
+Captured verbatim against v0.21.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -991,10 +995,10 @@ mbariml export id --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --output-dir                               <str>  Write the .id files into this directory        │
-│                                                   instead of next to each source image.          │
-│                                                   Filenames are disambiguated by parent          │
-│                                                   directory, so two dives sharing an image name  │
-│                                                   don't collide. Default (unset) writes each     │
+│                                                   instead of next to each source image. Each is  │
+│                                                   named after its source image; a <parent_dir>_  │
+│                                                   prefix is added only where two images would    │
+│                                                   otherwise collide. Default (unset) writes each │
 │                                                   sidecar beside its own image.                  │
 │ --include-unverified    --verified-only           Also write identifications nobody has verified │
 │                                                   yet, named with the raw detector label. Off by │
