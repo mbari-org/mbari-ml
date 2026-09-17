@@ -32,7 +32,9 @@ it directly whenever you want fresh sidecar files for a curated database.
 
 from __future__ import annotations
 
+import csv
 import getpass
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -79,44 +81,49 @@ def _image_size(image_path: Path) -> Optional[tuple[int, int]]:
         return None
 
 
-def _point(px_x: int, px_y: int) -> str:
-    """One point in the file's five-value encoding.
-
-    Takes integers, not floats: every pixel value in a row is rounded once,
-    up front, so the center and the corners are all derived from the same
-    numbers (see ``_row_points``). lon/lat/depth are placeholders the
-    navigation merge fills in later.
-    """
-    return f"{px_x},{px_y},0.0,0.0,0.0"
+COLUMNS = [
+    "index", "label", "confidence",
+    "center_x", "center_y", "lon", "lat", "depth",
+    "tl_x", "tl_y", "tr_x", "tr_y", "br_x", "br_y", "bl_x", "bl_y",
+]
 
 
-def _row_points(x_min: float, y_min: float, x_max: float, y_max: float) -> list[str]:
-    """``[center, TL, TR, BR, BL]`` for one box, as encoded points.
+def _row_values(
+    index: int, label: str, confidence: float,
+    x_min: float, y_min: float, x_max: float, y_max: float,
+) -> list:
+    """One identification as the flat list of values named by ``COLUMNS``.
 
     The box's float coordinates are rounded to whole pixels ONCE here, and
     the center is then the integer midpoint of those same rounded corners --
     not a separately-rounded midpoint of the original floats. Those two
     differ by a pixel surprisingly often: on a real 35,492-identification
-    export, 222 rows. Either answer is defensible on its own, but a file
-    whose stated center disagrees with the midpoint of the corners printed
-    beside it is the exact "two consumers compute different centers" problem
-    this field exists to remove -- so the file is made self-consistent, and
-    anyone who derives the center from the corners gets the value written
-    here.
+    export, 222 rows. Either answer is defensible alone, but a file whose
+    stated center disagrees with the midpoint of the corners printed beside
+    it is the exact "two consumers compute different centers" problem the
+    center exists to remove -- so anyone who derives it from the corners
+    gets the value written here.
 
     Integer ``//`` rather than ``round()`` on the midpoint, so an odd span
     resolves the same way every time. Python's ``round()`` is
     round-half-to-even, which would make the tie-break depend on the
     coordinate's parity.
+
+    lon/lat/depth appear ONCE, next to the center, rather than once per
+    vertex. They describe where the observation is, and an observation has
+    one position; carrying four more copies meant every row shipped five
+    identical ``0.0,0.0,0.0`` triples for a single unknown.
     """
     left, top = int(round(x_min)), int(round(y_min))
     right, bottom = int(round(x_max)), int(round(y_max))
     return [
-        _point((left + right) // 2, (top + bottom) // 2),  # center
-        _point(left, top),       # top-left
-        _point(right, top),      # top-right
-        _point(right, bottom),   # bottom-right
-        _point(left, bottom),    # bottom-left
+        index, label, f"{confidence:.4f}",
+        (left + right) // 2, (top + bottom) // 2,  # center_x, center_y
+        0.0, 0.0, 0.0,                             # lon, lat, depth -- placeholders
+        left, top,       # TL
+        right, top,      # TR
+        right, bottom,   # BR
+        left, bottom,    # BL
     ]
 
 
@@ -150,15 +157,17 @@ def _build_id_file_content(
         width, height = image_size
         bounds_lines = [
             f"#                Corner coordinates are box EDGES: for this {width}x{height} image",
-            f"#                px_x spans 0..{width} and px_y spans 0..{height}, so a box flush",
-            f"#                against the right side has px_x {width} -- one past the last",
-            f"#                column ({width - 1}), which is what makes width = right - left exact.",
-            f"#                center is a true pixel, so it stays within 0..{width - 1} / 0..{height - 1}.",
+            f"#                tl_x/tr_x/br_x/bl_x span 0..{width} and the _y values 0..{height},",
+            f"#                so a box flush against the right side has tr_x = {width} -- one",
+            f"#                past the last column ({width - 1}). That is what makes the width",
+            f"#                arithmetic exact, and must not be 'corrected' to {width - 1}.",
+            f"#                center_x/center_y are true pixels and stay within 0..{width - 1} / 0..{height - 1}.",
         ]
     else:
         bounds_lines = [
             "#                Corner coordinates are box EDGES, so they may sit one past the",
-            "#                last column/row (that is what makes width = right - left exact).",
+            "#                last column/row -- that is what makes the width arithmetic exact.",
+            "#                center_x/center_y are true pixels, always inside the frame.",
             "#                The frame size could not be read, so image_width/image_height",
             "#                above say 'unknown'.",
         ]
@@ -178,44 +187,44 @@ def _build_id_file_content(
         "#   index        0-based position of this identification within this file",
         "#   label        taxon name (may contain spaces)",
         "#   confidence   detector confidence, 0.0-1.0; 1.0000 means a human drew the box",
-        "#   center       the observation's position: the box's center pixel, which is",
-        "#                exactly the integer midpoint of the TL/BR corners below",
-        "#   TL TR BR BL  the same box as four corners, in this order:",
-        "#                top-left, top-right, bottom-right, bottom-left",
-        "#                The box covers columns TL.px_x .. TR.px_x-1 and rows",
-        "#                TL.px_y .. BL.px_y-1; its width is TR.px_x - TL.px_x.",
+        "#   center_x     the observation's position: the box's center pixel, which",
+        "#   center_y     is exactly the integer midpoint of the tl/br corners below",
+        "#   lon lat      geolocation OF THAT CENTER POINT (see below)",
+        "#   depth",
+        "#   tl_* tr_*    the same box as four corners, in this order: top-left,",
+        "#   br_* bl_*    top-right, bottom-right, bottom-left. The box covers",
+        "#                columns tl_x .. tr_x-1 and rows tl_y .. bl_y-1; its",
+        "#                width is tr_x - tl_x and its height is bl_y - tl_y.",
         "#",
-        "# Fields are separated by a single TAB, not spaces -- a label may itself",
-        "# contain spaces, so splitting a row on whitespace mis-reads those rows.",
-        "# Parse a row with:",
-        "#   index, label, confidence, center, tl, tr, br, bl = row.split('\\t')",
+        "# Every value is comma-separated -- the rows below are plain CSV, and the",
+        "# line just above the first one names the columns. Labels are written with",
+        "# standard CSV quoting, so a label containing a comma would be quoted.",
         "#",
-        "# center and each corner are five comma-separated values:",
-        "#   px_x,px_y,lon,lat,depth",
-        "#   px_x         COLUMN in the source image, counted from the left edge",
-        "#   px_y         ROW in the source image, counted from the top edge",
+        "#   *_x          COLUMN in the source image, counted from the left edge",
+        "#   *_y          ROW in the source image, counted from the top edge",
         "#                Both are 0-based. A pixel is addressed by this PAIR --",
         "#                there is no single pixel number.",
         *bounds_lines,
         "#   lon,lat      decimal degrees; written as 0.0 placeholders here",
         "#   depth        meters, positive down; written as a 0.0 placeholder here",
-        "# The lon/lat/depth placeholders are filled in later from navigation data,",
-        "# by re-parsing and rewriting these same files.",
         "#",
-        "# " + "\t".join(["index", "label", "confidence", "center", "TL", "TR", "BR", "BL"]),
+        "# lon/lat/depth describe where the OBSERVATION is -- they belong to the",
+        "# center point, not to each corner -- and are filled in later from",
+        "# navigation data by re-parsing and rewriting these same files.",
+        "#",
+        "# " + ",".join(COLUMNS),
     ]
+    # csv.writer, not ",".join: taxon names carry spaces, and while none in
+    # this survey's 51 labels contains a comma, one that did would silently
+    # add a column and shift every coordinate after it. The writer quotes
+    # only when it has to, so with ordinary labels the output is byte-for-byte
+    # what a plain join would produce, and a comma in a future label degrades
+    # to standard CSV quoting instead of corrupting the row.
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
     for i, (label, confidence, x_min, y_min, x_max, y_max) in enumerate(detections):
-        # TAB-delimited, not space-delimited: 434 identifications in a single
-        # real survey carried labels with spaces in them ("marine organism",
-        # "Heteropolypus ritteri", "LRJ Complex", ...), and on those rows the
-        # obvious `index, label, confidence, *corners = row.split()` yields
-        # label="marine", confidence="organism" -- wrong, and wrong quietly.
-        # A tab cannot appear in a taxon name, so this is unambiguous for any
-        # label without needing quoting or escaping.
-        lines.append("\t".join(
-            [str(i), label, f"{confidence:.4f}", *_row_points(x_min, y_min, x_max, y_max)]
-        ))
-    return "\n".join(lines) + "\n"
+        writer.writerow(_row_values(i, label, confidence, x_min, y_min, x_max, y_max))
+    return "\n".join(lines) + "\n" + buffer.getvalue()
 
 
 @app.command()

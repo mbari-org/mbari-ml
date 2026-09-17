@@ -11,6 +11,45 @@ recognizable.
 
 ---
 
+## 0.20.0 — .id rows are flat CSV, and lon/lat/depth are stated once
+
+Each identification is now one plain CSV row:
+
+```
+# index,label,confidence,center_x,center_y,lon,lat,depth,tl_x,tl_y,tr_x,tr_y,br_x,br_y,bl_x,bl_y
+0,Crinoidea,0.9463,1499,482,0.0,0.0,0.0,1470,454,1528,454,1528,510,1470,510
+```
+
+Two changes from 0.19.0's TAB-delimited, point-grouped rows.
+
+**Every value is comma-separated**, so `csv.reader`, pandas or a spreadsheet
+reads the rows with no custom splitting, and the last comment line is a
+usable header. The tab delimiter existed only to survive labels containing
+spaces; commas do that too, since no taxon name contains one. Rows are
+written with `csv.writer`, which quotes only when it must — a future
+`Nudibranchia, sp. A` comes out as `"Nudibranchia, sp. A"` instead of
+silently adding a column and shifting every coordinate after it.
+
+**`lon,lat,depth` appear once, beside the center**, instead of once per
+vertex. They describe where the observation *is*, and an observation has one
+position; the old layout shipped five identical `0.0,0.0,0.0` triples per row
+for a single unknown. Rows are a third shorter (80 chars vs ~120 on this
+survey).
+
+Note this drops the *option* of per-vertex geolocation the original format
+anticipated. Nothing had ever filled those in, and a per-observation fix is
+what a navigation merge actually produces — but if the box footprint on the
+seafloor is ever wanted, that is now a format change rather than filling in
+existing columns.
+
+Verified across all 35,492 rows of a real export: every row parses to exactly
+16 fields, `center` is the integer midpoint of its corners, the four corners
+form a rectangle, every corner lies within `[0,W]x[0,H]`, every center within
+`[0,W-1]x[0,H-1]`, and all 436 rows whose label contains a space round-trip
+intact.
+
+---
+
 ## 0.19.0 — .id rows are TAB-delimited, and the header explains itself
 
 **The data rows were ambiguous.** Fields were space-separated, but taxon

@@ -1,6 +1,6 @@
 mbari-ml Cheat Sheet
 ========================================
-Regenerated for the unified `mbariml` CLI (v0.19.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.20.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -422,25 +422,24 @@ export voc | yolo | id | html | stats
         opposite sides of the train/val line leak the same background and
         often the same animal across the split.
   id    A *.id sidecar per source image with a curated identification --
-        header records the model, who ran it, and when; each identification
-        is a center pixel plus the same box as a 4-vertex polygon, with
-        lon/lat/depth left as 0.0 placeholders for a later navigation merge.
-        `center` is the observation's position in one point (the exact
-        integer midpoint of the TL/BR corners beside it, so the file never
-        disagrees with itself); the corners give the extent.
-        The header also records image_width/image_height (read from the
-        image header only, ~6ms/image, 'unknown' if the file has moved), so
-        a coordinate can be bound-checked without opening the imagery.
-        Corner coordinates are box EDGES, so a box flush against the right
-        side of a 1936-wide frame has px_x 1936 -- one past the last column,
-        which is what makes width = right - left exact. center is a true
-        pixel index and stays within the frame.
-        Rows are TAB-delimited
-        and the header carries a legend for every field -- taxon names
-        contain spaces ("marine organism", "LRJ Complex"), so a
-        space-delimited row would parse as label="marine". Parse with
-        row.split('\t'). source_image is the full recorded path, so a
-        sidecar still names its dive after --output-dir flattens the tree.
+        header records the model, who ran it, when, the full source path and
+        the image's pixel dimensions, plus a legend for every column. Each
+        identification is one CSV row:
+
+          index,label,confidence,center_x,center_y,lon,lat,depth,
+          tl_x,tl_y,tr_x,tr_y,br_x,br_y,bl_x,bl_y
+
+        Every value is comma-separated, so csv.reader/pandas read it
+        directly; rows are written with csv.writer, so a label containing a
+        comma is quoted rather than shifting every column after it.
+        lon/lat/depth appear ONCE, beside the center -- they describe where
+        the observation is, and an observation has one position.
+        center_x/center_y are the exact integer midpoint of the tl/br
+        corners, so the file never disagrees with itself. Corner values are
+        box EDGES: a box flush against the right of a 1936-wide frame has
+        tr_x 1936, one past the last column, which is what makes
+        width = tr_x - tl_x exact -- do not clamp it. image_width/height are
+        read from the image header only (~6ms/image, 'unknown' if it moved).
         Writes next to the originals by default, so it takes no positional
         output_dir:
 
@@ -530,7 +529,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.19.0. Run `mbariml <command> --help`
+Captured verbatim against v0.20.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help

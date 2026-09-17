@@ -642,101 +642,65 @@ the original image name.
 Each file has a commented header — generator + version, who ran the export,
 the model that produced the detections (recorded automatically by the ingest
 command, or override with `--model`), the **full path** of the source image,
-the identification count, and a legend for the columns — followed by one row
-per identification. Each row carries the observation's position as a single
-center pixel, then the same box as a 4-vertex polygon (top-left, top-right,
-bottom-right, bottom-left), with pixel coordinates filled in and
-`lon,lat,depth` left as `0.0` placeholders, meant to be filled in later by a
-separate navigation-merge process:
+its pixel dimensions, the identification count, and a legend for the columns
+— followed by one **CSV row** per identification:
 
 ```
 # mbariml identification file
-# generator: mbariml v0.19.0
+# generator: mbariml v0.20.0
 # generated_by: lonny
-# generated_at: 2026-09-17T21:29:20Z
+# generated_at: 2026-09-17T21:55:59Z
 # model: /path/to/best.pt
 # source_image: /Volumes/SeafloorMapping/2026/20260718d1/images/.../1619554491865857.png
 # image_width: 1936
 # image_height: 1456
 # count: 2
 #
-# One identification per row below, with these fields:
-#   index        0-based position of this identification within this file
-#   label        taxon name (may contain spaces)
-#   confidence   detector confidence, 0.0-1.0; 1.0000 means a human drew the box
-#   center       the observation's position: the box's center pixel, which is
-#                exactly the integer midpoint of the TL/BR corners below
-#   TL TR BR BL  the same box as four corners, in this order:
-#                top-left, top-right, bottom-right, bottom-left
-#                The box covers columns TL.px_x .. TR.px_x-1 and rows
-#                TL.px_y .. BL.px_y-1; its width is TR.px_x - TL.px_x.
+#   ... field legend ...
 #
-# Fields are separated by a single TAB, not spaces -- a label may itself
-# contain spaces, so splitting a row on whitespace mis-reads those rows.
-# Parse a row with:
-#   index, label, confidence, center, tl, tr, br, bl = row.split('\t')
-#
-# center and each corner are five comma-separated values:
-#   px_x,px_y,lon,lat,depth
-#   px_x         COLUMN in the source image, counted from the left edge
-#   px_y         ROW in the source image, counted from the top edge
-#                Both are 0-based. A pixel is addressed by this PAIR --
-#                there is no single pixel number.
-#                Corner coordinates are box EDGES: for this 1936x1456 image
-#                px_x spans 0..1936 and px_y spans 0..1456, so a box flush
-#                against the right side has px_x 1936 -- one past the last
-#                column (1935), which is what makes width = right - left exact.
-#                center is a true pixel, so it stays within 0..1935 / 0..1455.
-#   lon,lat      decimal degrees; written as 0.0 placeholders here
-#   depth        meters, positive down; written as a 0.0 placeholder here
-# The lon/lat/depth placeholders are filled in later from navigation data,
-# by re-parsing and rewriting these same files.
-#
-# index→label→confidence→center→TL→TR→BR→BL
-0→Muusoctopus→0.8740→150,67,0.0,0.0,0.0→120,45,0.0,0.0,0.0→180,45,0.0,0.0,0.0→180,90,0.0,0.0,0.0→120,90,0.0,0.0,0.0
-1→marine organism→0.6110→67,230,0.0,0.0,0.0→40,200,0.0,0.0,0.0→95,200,0.0,0.0,0.0→95,260,0.0,0.0,0.0→40,260,0.0,0.0,0.0
+# index,label,confidence,center_x,center_y,lon,lat,depth,tl_x,tl_y,tr_x,tr_y,br_x,br_y,bl_x,bl_y
+0,Crinoidea,0.9463,1499,482,0.0,0.0,0.0,1470,454,1528,454,1528,510,1470,510
+1,marine organism,0.6110,67,230,0.0,0.0,0.0,40,200,95,200,95,260,40,260
 ```
 
-(`→` marks a literal tab above; the files contain real tab characters.)
+**Every value is comma-separated** — the rows are plain CSV and the last
+comment line names the columns, so `csv.reader` (or pandas, or a spreadsheet)
+reads them directly. Rows are written with `csv.writer`, which quotes only
+when it must: none of this survey's 51 labels contains a comma, but one that
+did would come out as `"Nudibranchia, sp. A"` rather than silently adding a
+column and shifting every coordinate after it.
 
-**`image_width`/`image_height` record the frame size**, so a consumer can
-bound-check a coordinate without opening the imagery. They're read from the
-image header only (PIL's lazy open), not by decoding it — 6.3 ms per image
-rather than 43.9 ms, about 6s instead of 44s across a 995-image export. An
-image that has moved or won't open writes `unknown` and the identifications
-are unaffected, since all box geometry comes from the database.
+**`lon,lat,depth` appear once, next to the center**, because they describe
+where the *observation* is and an observation has one position. They used to
+be repeated per vertex, so every row shipped five identical `0.0,0.0,0.0`
+triples for a single unknown.
 
-**Corner coordinates are box *edges*, not pixel indices.** A box flush
-against the right side of a 1936-wide frame has `px_x` 1936 — one past the
-last column (1935). That is correct, not an off-by-one: it's what makes
-`width = right - left` exact, the same arithmetic `export yolo` uses. On this
-survey 422 boxes touch the right edge and 13 the bottom. `center` is a true
-pixel index and always stays within `0..W-1` / `0..H-1`.
-
-Each point is a *pair* of numbers, not one: `1499,482,0.0,0.0,0.0` means
-column 1499, row 482, with `0.0,0.0,0.0` the lon/lat/depth placeholders. On
-the `Muusoctopus` row above, `center` is `(120+180)//2, (45+90)//2` =
-`150,67` — the midpoint of the `TL` and `BR` corners beside it.
-
-**`center` is the observation's position in one point** — what a consumer
-usually wants to put on a map or match against a navigation fix — and the
-corners are there for anything that needs the extent. It is the exact
-integer midpoint of the `TL`/`BR` corners printed beside it, not a
-separately-rounded midpoint of the underlying floats: those two differ by a
+**`center_x`/`center_y` are the observation's position** — one point to put
+on a map or match to a navigation fix — and the corners give the extent. The
+center is the exact integer midpoint of the `tl`/`br` corners beside it, not
+a separately-rounded midpoint of the underlying floats: those differ by a
 pixel on 222 of this survey's 35,492 rows, and a file whose stated center
 disagrees with its own corners is the confusion the field exists to remove.
-It uses the identical five-value encoding, so the navigation merge fills in
-its lon/lat/depth like any other point.
 
-**Rows are TAB-delimited.** Taxon names routinely contain spaces —
-`marine organism`, `Heteropolypus ritteri`, `LRJ Complex` — and on a
-space-delimited row the obvious `index, label, confidence, *corners =
-row.split()` silently yields `label="marine"`, `confidence="organism"`. A
-tab cannot occur inside a taxon name, so `row.split('\t')` is unambiguous
-for every label without quoting or escaping. `source_image` is the full
-recorded path for the same reason it matters under `--output-dir`: the
-basename alone doesn't say which dive an identification came from, and a
-survey holds many directories with same-named images.
+**Corner coordinates are box *edges*, not pixel indices.** A box flush
+against the right side of a 1936-wide frame has `tr_x` 1936 — one past the
+last column (1935). That is correct, not an off-by-one: it is what makes
+`width = tr_x - tl_x` exact, the same arithmetic `export yolo` uses. On this
+survey 422 boxes touch the right edge and 13 the bottom, so clamping them
+would quietly shrink 435 boxes by a pixel. `center_x`/`center_y` are true
+pixel indices and always stay within `0..W-1` / `0..H-1`.
+
+**`image_width`/`image_height` record the frame size**, so a consumer can
+bound-check a coordinate without opening the imagery. They come from the
+image header only (PIL's lazy open), not a decode — 6.3 ms per image rather
+than 43.9 ms, about 6s instead of 44s across a 995-image export. An image
+that has moved writes `unknown`; the identifications are unaffected, since
+all box geometry comes from the database.
+
+`source_image` is the full recorded path for the same reason it matters
+under `--output-dir`: the basename alone doesn't say which dive an
+identification came from, and a survey holds many directories with
+same-named images.
 
 ### Label counts and per-image detection stats
 
