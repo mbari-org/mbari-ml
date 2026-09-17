@@ -521,9 +521,8 @@ Those two commands leave a directory that trains as-is.
 
 ```yaml
 # train and val data
-train: /mnt/M3_ML/training_data/2026/my_dataset/train.txt
-val: /mnt/M3_ML/training_data/2026/my_dataset/val.txt
-test: /mnt/M3_ML/training_data/2026/my_dataset/test.txt
+train: train.txt
+val: val.txt
 
 # number of classes
 nc: 51
@@ -542,14 +541,25 @@ index is which taxon. That matters more than it sounds: a YAML whose name
 order differs from the indices in the label files trains every class against
 the wrong name and looks completely normal while doing it.
 
-Unlike the split files, the YAML's paths are **absolute**, rooted at
-`--yaml-root` (default: the output directory). The machine that trains
-usually mounts the dataset somewhere other than the machine that exported
-it, so that root is worth setting rather than hand-editing later:
+**The split paths are relative, and there is no `path:` key.** Ultralytics
+resolves them against the YAML's own directory when `path` is absent, so
+naming the YAML when you kick off training is all that's needed — the same
+dataset directory works read from `/Volumes/M3_ML/...` on a Mac or
+`/mnt/M3_ML/...` on the Linux trainer, with nothing to rewrite in between.
+(Verified against Ultralytics 8.4.154, including after moving the folder.)
+
+**An empty split is left out of the YAML entirely.** With `--split-ratios
+'85 15 0'` there is no test set, so no `test:` key is written — rather than
+one pointing at an empty `test.txt`, which would fail later, at evaluation
+time, long after the export looked fine.
+
+A typical export, 85/15 train/val with no test split:
 
 ```bash
-mbariml export yolo predictions.duckdb /Volumes/M3_ML/training_data/2026/my_dataset/ \
-  --yaml-root /mnt/M3_ML/training_data/2026/my_dataset
+mbariml export yolo /data/survey_results/yolo_predictions.duckdb \
+  /Volumes/M3_ML/training_data/2026/MBARI_lassml_my_survey_20260916/ \
+  --split-ratios '85 15 0' \
+  --yaml-name MBARI_lassml_my_survey_20260916_yolo26s_LL.yaml
 ```
 
 Pass `--no-yaml` to skip it. It needs `--splits` (which is the default),

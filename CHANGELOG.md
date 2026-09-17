@@ -101,13 +101,20 @@ second query, so no reordering can get between them: resolving every label
 file's class index through the YAML's `names` reproduces the database's
 per-class counts exactly, which is checked directly.
 
-Its paths are absolute and rooted at `--yaml-root` (default: the output
-directory), since the training box generally mounts the dataset at a
-different path than the machine that exported it — e.g. exported to
-`/Volumes/M3_ML/...` on macOS, read from `/mnt/M3_ML/...` on the Linux
-trainer. The split files stay relative, as before, so the directory remains
-movable as a self-contained unit. `--yaml-name` overrides the filename,
-`--no-yaml` skips it.
+Its split paths are relative and it writes no `path:` key, so Ultralytics
+resolves them against the YAML's own directory — naming the YAML at training
+time is all that's needed, and the dataset directory works unchanged whether
+it's read from `/Volumes/M3_ML/...` on macOS or `/mnt/M3_ML/...` on the
+Linux trainer. Same reasoning as the `./images/<file>` lines already inside
+the split files. Checked against Ultralytics 8.4.154 via
+`check_det_dataset`, from an unrelated working directory and again after
+copying the folder to a different path.
+
+An empty split is omitted from the YAML rather than written as a key
+pointing at an empty file: with `--split-ratios '85 15 0'` there is no test
+set, and a `test:` line promising one would fail at evaluation, long after
+the export looked fine. An empty *val* split warns, since Ultralytics needs
+one to train. `--yaml-name` overrides the filename, `--no-yaml` skips it.
 
 ---
 

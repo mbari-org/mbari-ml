@@ -364,11 +364,16 @@ export voc | yolo | id | html
   an HTML gallery for visual QA. `export yolo` also writes the Ultralytics
   dataset YAML (<output_dir name>.yaml) -- split paths, nc, names -- whose
   nc/names come from the same list that numbered the classes in labels/, so
-  they cannot drift apart. Its paths are absolute; point them at the
-  training box's own mount with --yaml-root:
+  they cannot drift apart. Its split paths are relative and it has no `path:`
+  key, so Ultralytics resolves them against the YAML's own directory: name
+  the YAML at training time and the folder works from any mount (/Volumes on
+  the Mac, /mnt on the trainer). An empty split is omitted, so '85 15 0'
+  writes no `test:` key rather than one pointing at an empty file.
 
-    mbariml export yolo predictions.duckdb /Volumes/M3_ML/training_data/2026/my_dataset/ \
-      --yaml-root /mnt/M3_ML/training_data/2026/my_dataset
+    mbariml export yolo predictions.duckdb \
+      /Volumes/M3_ML/training_data/2026/MBARI_lassml_my_survey_20260916/ \
+      --split-ratios '85 15 0' \
+      --yaml-name MBARI_lassml_my_survey_20260916_yolo26s_LL.yaml
 
 
   What gets exported, for all of them (and for stats):

@@ -11,13 +11,12 @@ that image's actual pixel dimensions (read from the image itself, same as
 the file Ultralytics training configs expect for ``names:``).
 
 Also writes the Ultralytics dataset YAML (``<output_dir>.yaml`` by default):
-train/val/test paths, ``nc``, and the ``names`` list. Its ``nc``/``names``
-are taken from the same in-memory list that assigned the class indices in
-``labels/`` and was written to ``names.txt``, so the three can never
-disagree about which class index is which taxon. Its paths are absolute and
-rooted at ``--yaml-root`` (default: the output directory), since the box
-that trains usually mounts the dataset at a different path than the box that
-exported it.
+split paths, ``nc``, and the ``names`` list. Its ``nc``/``names`` are taken
+from the same in-memory list that assigned the class indices in ``labels/``
+and was written to ``names.txt``, so the three can never disagree about
+which class index is which taxon. Its split paths are relative, like
+everything else here, so the directory is portable; an empty split is
+omitted rather than advertised as a key pointing at an empty file.
 
 Also writes ``train.txt``/``val.txt``/``test.txt`` -- the image lists
 Ultralytics/darknet training configs point at -- holding ``./images/<file>``
@@ -292,7 +291,7 @@ def _quote_yaml(name: str) -> str:
 
 
 def _write_dataset_yaml(
-    names: list[str], output_dir: Path, *, yaml_root: str, yaml_name: str, split_names: tuple[str, ...]
+    names: list[str], output_dir: Path, *, yaml_name: str, split_counts: dict[str, int]
 ) -> Path:
     """Write the Ultralytics dataset YAML (train/val/test paths, nc, names).
 
@@ -304,17 +303,22 @@ def _write_dataset_yaml(
     trains every class against the wrong name and looks entirely normal
     while doing it.
 
-    Paths are absolute and rooted at ``yaml_root`` because a training box
-    generally mounts the dataset somewhere other than the machine that
-    exported it (e.g. exported under /Volumes/M3_ML on macOS, read from
-    /mnt/M3_ML on the Linux trainer) -- so the root is worth overriding
-    without having to hand-edit the file. This is deliberately unlike the
-    split files themselves, which stay relative so the directory can be
-    moved or zipped as a self-contained unit.
+    Split paths are written RELATIVE (bare ``train.txt``), with no ``path:``
+    key. Ultralytics resolves them against the YAML's own directory when
+    ``path`` is absent, so naming the YAML at training time is genuinely all
+    that is needed and the dataset directory works unchanged wherever it is
+    mounted -- exported under /Volumes/M3_ML on macOS, read from /mnt/M3_ML
+    on the Linux trainer, with nothing to rewrite in between. Same reasoning
+    as the ``./images/<file>`` lines inside the split files themselves,
+    which Ultralytics likewise resolves relative to the split file.
+
+    An EMPTY split is left out entirely rather than written as a key
+    pointing at an empty file: with ratios like '85 15 0' there is no test
+    set, and a ``test:`` line promising one would fail at the moment someone
+    ran evaluation against it, long after the export looked fine.
     """
-    root = yaml_root.rstrip("/")
     lines = ["# train and val data"]
-    lines += [f"{split}: {root}/{split}.txt" for split in split_names]
+    lines += [f"{split}: {split}.txt" for split in SPLIT_NAMES if split_counts.get(split, 0) > 0]
     lines += ["", "# number of classes", f"nc: {len(names)}", "", "# class names"]
 
     if names:
@@ -372,12 +376,6 @@ def export_yolo(
         None,
         help="Filename for the dataset YAML. Defaults to '<output_dir name>.yaml'.",
     ),
-    yaml_root: str = typer.Option(
-        None,
-        help="Directory the YAML's train/val/test paths are rooted at. Defaults to the absolute "
-             "path of OUTPUT_DIR. Override when the training box mounts the dataset elsewhere, "
-             "e.g. --yaml-root /mnt/M3_ML/training_data/2026/my_dataset.",
-    ),
 ) -> None:
     """Export curated labels to YOLO-format label files, plus a names file.
 
@@ -393,8 +391,9 @@ def export_yolo(
         python3 dataset/copy_images.py --dest dataset/images
 
     The YAML's `nc`/`names` come from the same list that assigned the class
-    indices in labels/, so they cannot disagree. Point its paths at the
-    training box's own mount with --yaml-root.
+    indices in labels/, so they cannot disagree. Its split paths are
+    relative to the YAML itself, so naming it at training time is all that
+    is needed wherever the dataset is mounted.
     """
     output_dir_path = Path(output_dir)
 
@@ -416,8 +415,9 @@ def export_yolo(
     logger.info("Wrote %d YOLO label file(s) to %s", written, output_dir_path / "labels")
     logger.info("Wrote %d distinct label(s) to %s", len(names), names_path)
 
+    split_counts: dict[str, int] = {}
     if splits:
-        _write_splits(
+        split_counts = _write_splits(
             image_paths,
             output_dir_path,
             split_ratios=split_ratios,
@@ -426,14 +426,19 @@ def export_yolo(
         )
 
     if dataset_yaml and splits:
+        if not split_counts.get("val"):
+            logger.warning(
+                "The val split is empty, so the dataset YAML has no `val:` key -- Ultralytics "
+                "needs one to train. Give val a non-zero share in --split-ratios."
+            )
         yaml_path = _write_dataset_yaml(
             names,
             output_dir_path,
-            yaml_root=yaml_root or str(output_dir_path.resolve()),
             yaml_name=yaml_name or f"{output_dir_path.resolve().name}.yaml",
-            split_names=SPLIT_NAMES,
+            split_counts=split_counts,
         )
-        logger.info("Wrote dataset YAML (nc: %d) to %s", len(names), yaml_path)
+        listed = ", ".join(s for s in SPLIT_NAMES if split_counts.get(s, 0) > 0)
+        logger.info("Wrote dataset YAML (nc: %d, splits: %s) to %s", len(names), listed, yaml_path)
     elif dataset_yaml:
         logger.warning(
             "Skipped the dataset YAML: it points at train/val/test.txt, which --no-splits did "
