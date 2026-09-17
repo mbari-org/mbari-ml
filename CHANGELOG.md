@@ -57,6 +57,11 @@ exists to remove. Integer `//` rather than `round()` on the midpoint, since
 Python's round-half-to-even would make an odd span's tie-break depend on
 coordinate parity. Verified across all 35,492 rows: 0 disagreements.
 
+The point legend spells out that `px_x`/`px_y` are a *pair* — column from
+the left edge, row from the top, both 0-based — rather than "pixel
+coordinates", which read ambiguously enough that the first question asked of
+the new format was whether a pixel has a single unique number. (It does not.)
+
 **`source_image` records the full path**, not the basename. With
 `--output-dir` the sidecars no longer sit beside their imagery, so a
 basename alone would not say which dive an identification came from — and a

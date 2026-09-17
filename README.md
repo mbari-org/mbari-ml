@@ -674,7 +674,11 @@ separate navigation-merge process:
 #
 # center and each corner are five comma-separated values:
 #   px_x,px_y,lon,lat,depth
-#   px_x,px_y    pixel coordinates in the source image, origin at top-left
+#   px_x         COLUMN in the source image, counted from the left edge
+#   px_y         ROW in the source image, counted from the top edge
+#                Both are 0-based, so the top-left pixel is 0,0 and the
+#                bottom-right of a WxH image is W-1,H-1. A pixel is
+#                addressed by this PAIR -- there is no single pixel number.
 #   lon,lat      decimal degrees; written as 0.0 placeholders here
 #   depth        meters, positive down; written as a 0.0 placeholder here
 # The lon/lat/depth placeholders are filled in later from navigation data,
@@ -686,6 +690,11 @@ separate navigation-merge process:
 ```
 
 (`→` marks a literal tab above; the files contain real tab characters.)
+
+Each point is a *pair* of numbers, not one: `1499,482,0.0,0.0,0.0` means
+column 1499, row 482, with `0.0,0.0,0.0` the lon/lat/depth placeholders. On
+the `Muusoctopus` row above, `center` is `(120+180)//2, (45+90)//2` =
+`150,67` — the midpoint of the `TL` and `BR` corners beside it.
 
 **`center` is the observation's position in one point** — what a consumer
 usually wants to put on a map or match against a navigation fix — and the
