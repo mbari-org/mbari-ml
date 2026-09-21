@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "mbariml: a curation pipeline for turning deep-sea imagery and video into object-detection training data"
+abstract: >-
+  A Python pipeline for turning deep-sea imagery and video into object-detection
+  training data. It runs an Ultralytics YOLO model over stills or video, stores
+  every detection as a reviewable region of interest, groups those regions by
+  visual similarity so a human can accept or reject them in bulk, and exports the
+  result as training data, statistics, identification sidecars, and galleries.
+type: software
+license: MIT
+version: 0.21.0
+repository-code: "https://github.com/mbari-org/mbari-ml"
+authors:
+  - family-names: Lundsten
+    given-names: Lonny
+    email: lonny@mbari.org
+    affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+  - family-names: Barnard
+    given-names: Kevin
+    affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+  - family-names: Caress
+    given-names: Dave
+    affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+
+# ---------------------------------------------------------------------------
+# TO DO once the preprint is posted to arXiv: fill in the identifier, URL and
+# year below and uncomment the block. GitHub will then offer the paper, rather
+# than this repository, as the preferred citation.
+#
+# preferred-citation:
+#   type: article
+#   title: "mbariml: a curation pipeline for turning deep-sea imagery and video into object-detection training data"
+#   authors:
+#     - family-names: Lundsten
+#       given-names: Lonny
+#     - family-names: Barnard
+#       given-names: Kevin
+#     - family-names: Caress
+#       given-names: Dave
+#   year: <YEAR>
+#   journal: "arXiv preprint"
+#   identifiers:
+#     - type: other
+#       value: "arXiv:<ID>"
+#   url: "https://arxiv.org/abs/<ID>"
+# ---------------------------------------------------------------------------

@@ -817,6 +817,25 @@ they're interactive, or they don't belong in the middle of a batch run.
 | **"Open Video" does nothing useful** | Install IINA, mpv, or VLC — all honor a start position. Without one it falls back to your browser, which only seeks for codecs the browser can play. |
 | Opening an **older database** errors on a missing column | Only `review` and the two `infer` commands open through `init_curation_db`, which runs the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations; the rest open the file as-is. Open it once with `mbariml review` to migrate it in place, then re-run whatever failed. |
 
+## Citing this work
+
+The design, the workflow, and what has and has not been measured are written up
+in a manuscript, *mbariml: a curation pipeline for turning deep-sea imagery and
+video into object-detection training data* (Lundsten, Barnard & Caress). **A
+preprint is planned for arXiv; this section and `CITATION.cff` will carry the
+identifier and link once it is posted.**
+
+Until then, cite the software itself. GitHub's "Cite this repository" button
+reads [`CITATION.cff`](CITATION.cff), which also holds a commented-out
+`preferred-citation` block ready for the arXiv details — filling that in is all
+that is needed to make the paper the preferred citation.
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Parts of the review GUI are adapted from MBARI's
+[vars-gridview](https://github.com/mbari-org/vars-gridview), also MIT; see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
 ## What changed
 
 Version-by-version history — including the measured performance findings
