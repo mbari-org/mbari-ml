@@ -9,3 +9,6 @@ dist/
 
 # Manuscript working copy -- kept locally, deliberately not published here.
 mbariml-paper/
+
+# Editor config -- personal, not part of the project.
+.vscode/
