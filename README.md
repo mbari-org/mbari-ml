@@ -22,9 +22,7 @@ controls panel. "Open Video" is live because this ROI came from
 **Also in this repo:** [`cheat_sheet.txt`](cheat_sheet.txt) (one worked
 example per command, plus verbatim `--help` for all of them) ·
 [`docs/SCHEMA.md`](docs/SCHEMA.md) (what's in the database, column by
-column) · [`CHANGELOG.md`](CHANGELOG.md) (what changed, and why) ·
-[`docs/paper/`](docs/paper/) (a short write-up of the design and what
-has and hasn't been measured).
+column) · [`CHANGELOG.md`](CHANGELOG.md) (what changed, and why).
 
 ## Setup
 
@@ -112,7 +110,7 @@ mbariml infer video models/best.pt /data/dive_video/ /data/results/
 you want for building curation/training data from video: a sponge in view for
 300 frames is one animal, not 300 training examples — 300 near-identical
 crops would swamp clustering and be tedious to review. Measured on a real
-8-second benthic clip: **633 observations collapsed to 4 tracks → 4 ROIs.**
+ten-second benthic clip: **711 detections collapsed to 7 tracks → 7 ROIs.**
 
 Tracking is necessarily **two passes**, because a track's representative
 frame can't be chosen until the track has ended:

@@ -552,7 +552,7 @@ both to neutral, and the setting carries across paging and sorting.
 `--mode track` (default) keeps **one ROI per tracked object**, which is what
 you want for building curation/training data from video: an animal in view
 for 300 frames is one observation, not 300 training examples. Measured on a
-real 8-second benthic clip: 633 detections collapsed to 4 tracks → 4 ROIs.
+real ten-second benthic clip: 711 detections collapsed to 7 tracks → 7 ROIs.
 Tracking is necessarily two passes, because a track's representative frame
 can't be chosen until the track has ended — pass 1 tracks the whole video
 recording *metadata only* (memory is O(open tracks), not O(video)); pass 2
