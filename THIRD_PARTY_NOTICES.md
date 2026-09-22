@@ -1,5 +1,33 @@
 # Third-Party Notices
 
+## Ultralytics YOLO
+
+`mbariml` calls [Ultralytics YOLO](https://github.com/ultralytics/ultralytics)
+for all model loading, inference, and multi-object tracking (see
+`src/mbariml/yolo_utils.py`). It is imported as a dependency rather than
+vendored, so no Ultralytics source is redistributed here.
+
+**Ultralytics is licensed AGPL-3.0**, and that is why this project is AGPL-3.0
+as well: a program written to link against an AGPL library is a derivative work
+of it, so it cannot be released under more permissive terms. Anyone who needs
+permissive terms for a work built on Ultralytics should look at the Ultralytics
+Enterprise licence, which exists for that purpose.
+
+Note this covers Ultralytics' *code*. Model weights carry their own terms: a
+fine-tuned checkpoint inherits whatever the base weights were licensed under,
+and the DINOv3 weights used for embeddings (pulled by `timm` as
+`vit_large_patch16_dinov3.lvd1689m`) are covered by Meta's DINOv3 licence rather
+than by `timm`'s Apache-2.0. Check those terms before relying on either in a
+context they were not licensed for.
+
+## Other dependencies
+
+Beyond Ultralytics, the runtime dependencies are permissively licensed --
+DuckDB (MIT), timm (Apache-2.0), torchvision (BSD), pandas (BSD), OpenCV
+(Apache-2.0), pyqtgraph (MIT), tqdm (MPL-2.0/MIT) -- with one to be aware of:
+**PySide6 is LGPL-3.0/GPL**, used here as an ordinary pip-installed dynamic
+import, which is what the LGPL contemplates.
+
 ## vars-gridview
 
 The mosaic rendering/threading engine in `src/mbariml/gui/` (`mosaic_view.py`,

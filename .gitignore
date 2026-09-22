@@ -12,3 +12,6 @@ mbariml-paper/
 
 # Editor config -- personal, not part of the project.
 .vscode/
+
+# Claude Code per-machine settings -- personal paths, not shared config.
+.claude/settings.local.json

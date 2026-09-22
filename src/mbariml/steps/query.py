@@ -1,8 +1,8 @@
 """Emit: ad hoc SQL queries against a curation database.
 
 The original ``8_query.py`` wasn't really a script -- it was a notebook-style
-file with a hardcoded absolute path to one specific database
-(``/Users/lonny/Desktop/mbariml/results/...``) and a fixed sequence of
+file with a hardcoded absolute path to one specific database on its
+author's machine, and a fixed sequence of
 queries (including one that nulled out every ``new_label``/``evoc_clust``
 value, uncommented, ready to run against whatever path was hardcoded at the
 time). That's a rewrite hazard waiting to happen. This replaces it with a
