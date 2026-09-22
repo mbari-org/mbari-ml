@@ -8,7 +8,7 @@ abstract: >-
   visual similarity so a human can accept or reject them in bulk, and exports the
   result as training data, statistics, identification sidecars, and galleries.
 type: software
-license: AGPL-3.0-or-later
+license: MIT
 version: 0.21.0
 repository-code: "https://github.com/mbari-org/mbari-ml"
 authors:

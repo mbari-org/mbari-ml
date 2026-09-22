@@ -7,18 +7,17 @@ for all model loading, inference, and multi-object tracking (see
 `src/mbariml/yolo_utils.py`). It is imported as a dependency rather than
 vendored, so no Ultralytics source is redistributed here.
 
-**Ultralytics is licensed AGPL-3.0**, and that is why this project is AGPL-3.0
-as well: a program written to link against an AGPL library is a derivative work
-of it, so it cannot be released under more permissive terms. Anyone who needs
-permissive terms for a work built on Ultralytics should look at the Ultralytics
-Enterprise licence, which exists for that purpose.
+**Ultralytics is licensed AGPL-3.0**, which is more restrictive than this
+project's own MIT licence, and installing `mbariml` installs it. Anyone
+redistributing work built on this pipeline, or offering it as a network
+service, should read Ultralytics' terms and decide what they require; the
+Ultralytics Enterprise licence exists for users who need permissive terms.
 
-Note this covers Ultralytics' *code*. Model weights carry their own terms: a
-fine-tuned checkpoint inherits whatever the base weights were licensed under,
-and the DINOv3 weights used for embeddings (pulled by `timm` as
-`vit_large_patch16_dinov3.lvd1689m`) are covered by Meta's DINOv3 licence rather
-than by `timm`'s Apache-2.0. Check those terms before relying on either in a
-context they were not licensed for.
+Model weights carry terms separate from the code that loads them. A fine-tuned
+checkpoint inherits whatever its base weights were licensed under, and the
+DINOv3 weights used for embeddings (pulled by `timm` as
+`vit_large_patch16_dinov3.lvd1689m`) are covered by Meta's DINOv3 licence
+rather than by `timm`'s Apache-2.0.
 
 ## Other dependencies
 

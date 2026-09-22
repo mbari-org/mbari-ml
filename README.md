@@ -832,6 +832,30 @@ that is needed to make the paper the preferred citation.
 
 ## Licence
 
+MIT — see [`LICENSE`](LICENSE). Copyright (c) 2026 Monterey Bay Aquarium
+Research Institute (MBARI).
+
+Parts of the review GUI are adapted from MBARI's
+[vars-gridview](https://github.com/mbari-org/vars-gridview), also MIT. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for that attribution and for
+the licences of the dependencies, which are not all permissive — in particular
+Ultralytics YOLO is AGPL-3.0.
+
+## Citing this work
+
+The design, the workflow, and what has and has not been measured are written up
+in a manuscript, *mbariml: a curation pipeline for turning deep-sea imagery and
+video into object-detection training data* (Lundsten, Barnard & Caress). **A
+preprint is planned for arXiv; this section and `CITATION.cff` will carry the
+identifier and link once it is posted.**
+
+Until then, cite the software itself. GitHub's "Cite this repository" button
+reads [`CITATION.cff`](CITATION.cff), which also holds a commented-out
+`preferred-citation` block ready for the arXiv details — filling that in is all
+that is needed to make the paper the preferred citation.
+
+## Licence
+
 GNU Affero General Public License v3.0 or later — see [`LICENSE`](LICENSE).
 
 Copyright (C) 2026 Monterey Bay Aquarium Research Institute (MBARI).
