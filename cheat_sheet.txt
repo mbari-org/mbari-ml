@@ -1,5 +1,9 @@
 mbari-ml Cheat Sheet
 ========================================
+Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
+for turning deep-sea imagery and video into object-detection training data",
+arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
+
 Regenerated for the unified `mbariml` CLI (v0.21.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's

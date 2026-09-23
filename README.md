@@ -1,7 +1,12 @@
 # mbari-ml pipeline
 
+[![arXiv](https://img.shields.io/badge/arXiv-2609.25500-b31b1b.svg)](https://arxiv.org/abs/2609.25500)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Turn raw survey imagery **or video** into a curated, labeled DuckDB database,
-then out again as training data. Four phases:
+then out again as training data. Described in
+[arXiv:2609.25500](https://arxiv.org/abs/2609.25500) (see
+[Citing this work](#citing-this-work)). Four phases:
 
 | Phase | Commands | What it does |
 |---|---|---|
@@ -820,15 +825,30 @@ they're interactive, or they don't belong in the middle of a batch run.
 ## Citing this work
 
 The design, the workflow, and what has and has not been measured are written up
-in a manuscript, *mbariml: a curation pipeline for turning deep-sea imagery and
-video into object-detection training data* (Lundsten, Barnard & Caress). **A
-preprint is planned for arXiv; this section and `CITATION.cff` will carry the
-identifier and link once it is posted.**
+in:
 
-Until then, cite the software itself. GitHub's "Cite this repository" button
-reads [`CITATION.cff`](CITATION.cff), which also holds a commented-out
-`preferred-citation` block ready for the arXiv details — filling that in is all
-that is needed to make the paper the preferred citation.
+> Lundsten, L., Barnard, K., & Caress, D. (2026). *mbariml: a curation pipeline
+> for turning deep-sea imagery and video into object-detection training data.*
+> arXiv:2609.25500. https://doi.org/10.48550/arXiv.2609.25500
+
+[Abstract](https://arxiv.org/abs/2609.25500) ·
+[PDF](https://arxiv.org/pdf/2609.25500)
+
+```bibtex
+@article{lundsten2026mbariml,
+  title   = {mbariml: a curation pipeline for turning deep-sea imagery and
+             video into object-detection training data},
+  author  = {Lundsten, Lonny and Barnard, Kevin and Caress, Dave},
+  journal = {arXiv preprint arXiv:2609.25500},
+  year    = {2026},
+  doi     = {10.48550/arXiv.2609.25500},
+  url     = {https://arxiv.org/abs/2609.25500}
+}
+```
+
+GitHub's "Cite this repository" button reads
+[`CITATION.cff`](CITATION.cff), which names the paper as the preferred citation
+and the software as the fallback.
 
 ## Licence
 

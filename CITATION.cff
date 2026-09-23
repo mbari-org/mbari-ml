@@ -23,25 +23,24 @@ authors:
     given-names: Dave
     affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
 
-# ---------------------------------------------------------------------------
-# TO DO once the preprint is posted to arXiv: fill in the identifier, URL and
-# year below and uncomment the block. GitHub will then offer the paper, rather
-# than this repository, as the preferred citation.
-#
-# preferred-citation:
-#   type: article
-#   title: "mbariml: a curation pipeline for turning deep-sea imagery and video into object-detection training data"
-#   authors:
-#     - family-names: Lundsten
-#       given-names: Lonny
-#     - family-names: Barnard
-#       given-names: Kevin
-#     - family-names: Caress
-#       given-names: Dave
-#   year: <YEAR>
-#   journal: "arXiv preprint"
-#   identifiers:
-#     - type: other
-#       value: "arXiv:<ID>"
-#   url: "https://arxiv.org/abs/<ID>"
-# ---------------------------------------------------------------------------
+preferred-citation:
+  type: article
+  title: "mbariml: a curation pipeline for turning deep-sea imagery and video into object-detection training data"
+  authors:
+    - family-names: Lundsten
+      given-names: Lonny
+      affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+    - family-names: Barnard
+      given-names: Kevin
+      affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+    - family-names: Caress
+      given-names: Dave
+      affiliation: "Monterey Bay Aquarium Research Institute (MBARI)"
+  year: 2026
+  month: 9
+  journal: "arXiv"
+  doi: 10.48550/arXiv.2609.25500
+  url: "https://arxiv.org/abs/2609.25500"
+  identifiers:
+    - type: other
+      value: "arXiv:2609.25500"
