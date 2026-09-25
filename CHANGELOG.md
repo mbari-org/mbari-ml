@@ -11,6 +11,41 @@ recognizable.
 
 ---
 
+## 0.21.1 — "Open Video" launched IINA but never played anything
+
+The button reported success and nothing happened: no window, no playback, and
+the position was never reached because the file was never opened.
+
+`iina-cli` tries to guess whether standard input holds media, and when it
+guesses wrong it passes `--stdin` through to IINA. IINA then waits for media on
+standard input and ignores the file it was handed. Caught in the process tree:
+
+```
+iina-cli --mpv-start=12.500 ... → IINA --stdin --mpv-start=12.500 ... <file>
+```
+
+`iina-cli` also never returned, though it is documented to exit as soon as IINA
+has the file. Its own `--help` says to "supply `--no-stdin` when you are not
+intend to use stdin", which is now passed. A GUI launched from a terminal hands
+its stdin to every child process, which is what made the misdetection likely
+here, so the player is additionally spawned with stdin closed rather than
+inherited.
+
+Two related problems, both of which kept this invisible:
+
+- Launching was treated as playing. `Popen` succeeding only means the process
+  was spawned, so the status line said "IINA at 12.5s" no matter what happened
+  next. Each candidate player is now checked briefly after launch and, if it
+  has already exited non-zero, the next one is tried instead. Exiting zero
+  immediately is expected for `iina-cli`; staying alive is expected for mpv and
+  VLC.
+- The browser fallback was described as though it seeks. For a local file macOS
+  generally hands the `file://` URL to whatever owns the extension, which
+  ignores the `#t=` fragment and opens at zero — and no browser decodes ProRes.
+  It is now documented as a last resort rather than an equivalent option.
+
+---
+
 ## 0.21.0 — exports are named after the source image, not `<parent>_<image>`
 
 Every export that writes one file per source image prefixed it with the

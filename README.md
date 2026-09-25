@@ -321,8 +321,11 @@ while preserving the human labels.
 - **Open Video** (next to Delete): for ROIs that came from `infer video`,
   opens the *source footage* at the exact moment that detection was made,
   from the row's `video_path` + `frame_time_s`. Tries IINA, then mpv, then
-  VLC (all of which honor a start position), falling back to the default
-  browser with a `#t=` media fragment. Greyed out for ROIs that came from
+  VLC — all of which honor a start position — falling back to the default
+  browser with a `#t=` media fragment. **Install one of the three.** The
+  browser fallback is a last resort: for a local file macOS usually hands the
+  `file://` URL straight to whatever owns that extension, which ignores the
+  fragment and opens at zero, and no browser plays ProRes. Greyed out for ROIs that came from
   still images, so the button state itself answers "did this come from
   video?".
 - **Add New ROI** (green button, top of the controls panel): for a detection
@@ -819,7 +822,8 @@ they're interactive, or they don't belong in the middle of a batch run.
 | Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a min-confidence floor also narrow the pool by design. |
 | Clustering or similarity results look **nonsensical** | Check you haven't mixed embeddings from two models in one database. If you changed `EMBEDDING_MODEL_NAME`, re-embed everything with `mbariml embed --force`. |
 | `embed` is **slow, and getting slower** | Confirm the device (it logs MPS/CUDA/CPU at startup), then check nothing else is competing for the GPU. The historical cause was a DuckDB write pattern, long since fixed — see [CHANGELOG.md](CHANGELOG.md). |
-| **"Open Video" does nothing useful** | Install IINA, mpv, or VLC — all honor a start position. Without one it falls back to your browser, which only seeks for codecs the browser can play. |
+| **"Open Video" does nothing useful** | Install IINA, mpv, or VLC — all honor a start position. Without one it falls back to your browser, which for a local file usually just hands off to the default app and opens at zero. |
+| **"Open Video" reports success but no window appears** | Fixed in v0.21.1. `iina-cli` could misdetect standard input and pass `--stdin` to IINA, which then waited for media on stdin and never played the file. If you are on an older version, upgrade or launch the player by hand. |
 | Opening an **older database** errors on a missing column | Only `review` and the two `infer` commands open through `init_curation_db`, which runs the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations; the rest open the file as-is. Open it once with `mbariml review` to migrate it in place, then re-run whatever failed. |
 
 ## Citing this work

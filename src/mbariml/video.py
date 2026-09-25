@@ -216,14 +216,34 @@ def save_frame(frame_bgr, output_path: str | Path, jpeg_quality: int = 95) -> bo
 # on PATH is a separate opt-in step most people never do.
 _IINA_BUNDLED_CLI = "/Applications/IINA.app/Contents/MacOS/iina-cli"
 
+# How long to wait before deciding a launcher started cleanly. Long enough to
+# catch an immediate non-zero exit, short enough not to stall the GUI thread.
+_LAUNCH_CHECK_SECONDS = 0.5
+
 
 def _iina_command(path: Path, seconds: float) -> list[str] | None:
     cli = shutil.which("iina-cli") or (_IINA_BUNDLED_CLI if os.path.exists(_IINA_BUNDLED_CLI) else None)
     if cli is None:
         return None
-    # --mpv-resume-playback=no matters: without it, IINA restores wherever you
-    # last left this file and silently ignores the start position we asked for.
-    return [cli, f"--mpv-start={seconds:.3f}", "--mpv-resume-playback=no", str(path)]
+    # --no-stdin is not optional, despite looking like tidiness. iina-cli tries
+    # to guess whether stdin holds media and, when it guesses wrong, passes
+    # --stdin through to IINA -- which then waits for media on standard input
+    # and never plays the file it was given. Observed directly: the process
+    # tree showed `IINA --stdin --mpv-start=... <file>`, IINA sat with no
+    # window, and iina-cli itself never exited (it normally returns at once).
+    # Its own --help warns to "supply --no-stdin when you are not intend to use
+    # stdin". This is why "Open Video" appeared to do nothing at all.
+    #
+    # --mpv-resume-playback=no matters for a different reason: without it, IINA
+    # restores wherever you last left this file and silently ignores the start
+    # position we asked for.
+    return [
+        cli,
+        "--no-stdin",
+        f"--mpv-start={seconds:.3f}",
+        "--mpv-resume-playback=no",
+        str(path),
+    ]
 
 
 def _mpv_command(path: Path, seconds: float) -> list[str] | None:
@@ -260,13 +280,41 @@ def open_video_at(video_path: str | Path, seconds: float) -> str:
         if command is None:
             continue
         try:
-            # Detached: the player outlives this call, and a player that exits
-            # non-zero later must not surface as an exception here.
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            logger.info("Opened %s at %.1fs in %s", path.name, seconds, name)
-            return f"{name} at {seconds:.1f}s"
+            # stdin is closed explicitly, not inherited: a GUI launched from a
+            # terminal hands its stdin to every child, and that is exactly what
+            # makes iina-cli misdetect piped media (see _iina_command).
+            #
+            # Detached otherwise: the player outlives this call, and a player
+            # that exits non-zero much later must not surface here.
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except OSError:
             logger.exception("Failed to launch %s; trying the next player", name)
+            continue
+
+        # Spawning successfully is not the same as playing. Give the launcher a
+        # moment and check it did not fall over: a player that has already
+        # exited NON-ZERO failed, and should hand off to the next candidate
+        # rather than be reported as success. Exiting zero is normal and
+        # expected for iina-cli, which returns as soon as IINA has the file;
+        # still running is normal for mpv and VLC, which are the player.
+        try:
+            returncode = process.wait(timeout=_LAUNCH_CHECK_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        if returncode not in (None, 0):
+            logger.warning(
+                "%s exited %d without playing %s; trying the next player",
+                name, returncode, path.name,
+            )
+            continue
+
+        logger.info("Opened %s at %.1fs in %s", path.name, seconds, name)
+        return f"{name} at {seconds:.1f}s"
 
     url = path.resolve().as_uri() + f"#t={seconds:.3f}"
     if webbrowser.open(url):
