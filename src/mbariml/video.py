@@ -211,18 +211,51 @@ def save_frame(frame_bgr, output_path: str | Path, jpeg_quality: int = 95) -> bo
 
 # -- "Open Video" (review GUI) ------------------------------------------------
 
-# Players that can be told to start at a timestamp, best first. IINA is
-# checked inside its app bundle too: it ships `iina-cli`, but installing that
-# on PATH is a separate opt-in step most people never do.
+# Players that can be told to start at a timestamp, best first. Each is looked
+# up on PATH and then at the places its installer actually puts it, because
+# "installed" and "on PATH" are different things on macOS and Windows: IINA
+# ships iina-cli inside its bundle, VLC's Windows installer does not touch
+# PATH, and ffmpeg on Windows is usually an unzipped folder somebody added by
+# hand or did not.
 _IINA_BUNDLED_CLI = "/Applications/IINA.app/Contents/MacOS/iina-cli"
+
+_MPV_FALLBACKS = (
+    "/Applications/mpv.app/Contents/MacOS/mpv",
+    r"C:\Program Files\mpv\mpv.exe",
+    r"C:\Program Files (x86)\mpv\mpv.exe",
+)
+_VLC_FALLBACKS = (
+    "/Applications/VLC.app/Contents/MacOS/VLC",
+    r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+    r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+    "/snap/bin/vlc",
+)
+_FFPLAY_FALLBACKS = (
+    r"C:\Program Files\ffmpeg\bin\ffplay.exe",
+    "/usr/local/bin/ffplay",
+    "/opt/homebrew/bin/ffplay",
+)
 
 # How long to wait before deciding a launcher started cleanly. Long enough to
 # catch an immediate non-zero exit, short enough not to stall the GUI thread.
 _LAUNCH_CHECK_SECONDS = 0.5
 
 
+def _find_player(executable: str, fallbacks: tuple[str, ...] = ()) -> str | None:
+    """``executable`` from PATH, else the first fallback that exists.
+
+    ``shutil.which`` handles the Windows ``.exe``/PATHEXT lookup itself, so the
+    fallbacks only need to cover installers that never edit PATH.
+    """
+    found = shutil.which(executable)
+    if found:
+        return found
+    return next((c for c in fallbacks if os.path.exists(c)), None)
+
+
 def _iina_command(path: Path, seconds: float) -> list[str] | None:
-    cli = shutil.which("iina-cli") or (_IINA_BUNDLED_CLI if os.path.exists(_IINA_BUNDLED_CLI) else None)
+    """IINA -- macOS only, and the nicest of these to actually review in."""
+    cli = _find_player("iina-cli", (_IINA_BUNDLED_CLI,))
     if cli is None:
         return None
     # --no-stdin is not optional, despite looking like tidiness. iina-cli tries
@@ -247,15 +280,50 @@ def _iina_command(path: Path, seconds: float) -> list[str] | None:
 
 
 def _mpv_command(path: Path, seconds: float) -> list[str] | None:
-    mpv = shutil.which("mpv")
+    """mpv -- cross-platform, exact seek, the best non-macOS option."""
+    mpv = _find_player("mpv", _MPV_FALLBACKS)
     return [mpv, f"--start={seconds:.3f}", str(path)] if mpv else None
 
 
 def _vlc_command(path: Path, seconds: float) -> list[str] | None:
-    vlc = shutil.which("vlc")
-    if vlc is None and sys.platform == "darwin" and os.path.exists("/Applications/VLC.app/Contents/MacOS/VLC"):
-        vlc = "/Applications/VLC.app/Contents/MacOS/VLC"
+    """VLC -- cross-platform, exact seek, and the one most people already have."""
+    vlc = _find_player("vlc", _VLC_FALLBACKS)
     return [vlc, f"--start-time={seconds:.3f}", str(path)] if vlc else None
+
+
+def _ffplay_command(path: Path, seconds: float) -> list[str] | None:
+    """ffplay -- last real player before the browser.
+
+    Tried last of the four because it is a debug tool rather than a viewer: no
+    controls, no scrubbing, no window chrome. It earns its place anyway,
+    because ffmpeg is already installed on most Linux boxes and in most
+    ML environments, so it is very often the only one of these present.
+
+    ``-ss`` before the input is a keyframe seek, so playback can begin a
+    fraction of a second BEFORE the requested time (measured here: 46.98s for a
+    47.25s request on 60fps footage). For reviewing a detection that is
+    harmless, and arguably useful -- you see the animal arrive.
+    """
+    ffplay = _find_player("ffplay", _FFPLAY_FALLBACKS)
+    if ffplay is None:
+        return None
+    return [
+        ffplay,
+        "-ss", f"{seconds:.3f}",
+        "-autoexit",
+        "-window_title", f"{path.name} @ {seconds:.1f}s",
+        str(path),
+    ]
+
+
+# Order is deliberate: exact-seek viewers first, then the debug player, then
+# the browser, which for a local file usually cannot seek at all.
+_PLAYERS = (
+    ("IINA", _iina_command),
+    ("mpv", _mpv_command),
+    ("VLC", _vlc_command),
+    ("ffplay", _ffplay_command),
+)
 
 
 def open_video_at(video_path: str | Path, seconds: float) -> str:
@@ -275,7 +343,7 @@ def open_video_at(video_path: str | Path, seconds: float) -> str:
         raise RuntimeError(f"Video not found on disk: {path}")
     seconds = max(0.0, float(seconds))
 
-    for name, build in (("IINA", _iina_command), ("mpv", _mpv_command), ("VLC", _vlc_command)):
+    for name, build in _PLAYERS:
         command = build(path, seconds)
         if command is None:
             continue

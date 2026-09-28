@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.21.1). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.21.2). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -339,12 +339,15 @@ review (interactive GUI)
 
   "Open Video" (next to Delete) -- for ROIs that came from `infer video`.
   Opens the SOURCE FOOTAGE at the exact moment this detection was made, using
-  the row's video_path + frame_time_s. Tries IINA, then mpv, then VLC (all of
-  which honor a start position), falling back to your browser with a #t=
-  media fragment. Install one of the three -- the browser fallback is a last
-  resort, since macOS usually hands a local file:// URL to whatever owns the
-  extension, which ignores the fragment and starts at zero. Greyed out for
-  ROIs that came from still images.
+  the row's video_path + frame_time_s. Tries IINA (macOS), then mpv, then VLC,
+  then ffplay -- all four honor a start position -- falling back to your
+  browser with a #t= media fragment. Each is found on PATH or at its usual
+  install location (IINA's CLI lives inside the app bundle; VLC's Windows
+  installer doesn't touch PATH). Install any one of the four; on Linux ffplay
+  usually comes free with ffmpeg, though it has no controls, so it's tried
+  last. The browser fallback is a last resort, since the OS usually hands a
+  local file:// URL to whatever owns the extension, which ignores the fragment
+  and starts at zero. Greyed out for ROIs that came from still images.
 
 remap-labels
   Bulk-rename new_label values from a two-column CSV (old_label,new_label per
@@ -540,7 +543,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.21.1. Run `mbariml <command> --help`
+Captured verbatim against v0.21.2. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help

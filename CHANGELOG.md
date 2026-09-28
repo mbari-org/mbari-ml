@@ -11,6 +11,36 @@ recognizable.
 
 ---
 
+## 0.21.2 — "Open Video" now works off macOS
+
+The player chain was IINA, mpv, VLC, and only IINA had a non-PATH lookup. That
+is a macOS-shaped assumption: on Windows neither VLC's nor mpv's installer puts
+anything on PATH, so a machine with VLC sitting in Program Files would find
+nothing and fall through to the browser, which for a local file opens at zero
+if it opens anything.
+
+Each player is now looked up on PATH first and then where its installer
+actually puts it -- VLC and mpv under both Program Files directories, VLC's
+snap path on Linux, IINA's bundled CLI as before.
+
+**ffplay is added as a fourth option.** ffmpeg is already installed on most
+Linux boxes and in most ML environments, which frequently makes it the only one
+of these present -- it was installed on the very machine where "Open Video" was
+reported broken, and was never tried. It is tried last of the four because it
+is a debug tool: no controls, no scrubbing, no window chrome. Its `-ss` is a
+keyframe seek, so playback can begin a fraction of a second before the
+requested time (measured: 46.98s for a 47.25s request on 60fps footage), which
+for reviewing a detection is harmless and arguably useful.
+
+Verified on macOS: the chain resolves IINA and ffplay and skips the two that
+are absent; with IINA, mpv and VLC all made unavailable, ffplay launches at the
+right offset; and a player that spawns but exits non-zero is skipped in favour
+of the next rather than reported as success. The Windows and Linux install
+paths are written from documented defaults and are **not** verified -- nobody
+has run this on either platform yet.
+
+---
+
 ## 0.21.1 — "Open Video" launched IINA but never played anything
 
 The button reported success and nothing happened: no window, no playback, and
