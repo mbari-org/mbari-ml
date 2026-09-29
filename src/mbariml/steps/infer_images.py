@@ -145,6 +145,30 @@ def insert_rows(conn, rows: list[tuple]) -> None:
     )
 
 
+def _predict(model, batch_files, yolo_params: dict) -> list:
+    """model.predict over batch_files, halving the batch and retrying if MPS
+    rejects a tensor for exceeding INT_MAX elements.
+
+    Ultralytics autocasts a list of paths into in-memory images and runs them
+    as ONE forward pass (B = len(list), whatever ``batch`` says -- the
+    "Speed: ... at shape (1, 3, ...)" log line is misleading). When a batch
+    mixes image sizes it can't letterbox to a shared rectangle, so every image
+    is padded to imgsz x imgsz; at 50 x 1952^2 the C2PSA attention matrix
+    (B * heads * (H*W)^2 at stride 32) passes 2^31 and MPSGraph refuses it.
+    Same-size batches stay under, which is why this only hit some batches.
+    Results come back in the same order as batch_files either way.
+    """
+    try:
+        return model.predict(source=[str(f) for f in batch_files], **yolo_params)
+    except RuntimeError as exc:
+        if "INT_MAX" not in str(exc) or len(batch_files) == 1:
+            raise
+        mid = len(batch_files) // 2
+        logger.warning("Batch of %d images too large for MPS; retrying as %d + %d",
+                       len(batch_files), mid, len(batch_files) - mid)
+        return _predict(model, batch_files[:mid], yolo_params) + _predict(model, batch_files[mid:], yolo_params)
+
+
 def _run_batches(model, image_files, batch_size: int, conn, yolo_params: dict) -> tuple[int, int]:
     """Process every batch, committing rows to the database as soon as each
     batch finishes. Returns (rows_inserted, batches_failed)."""
@@ -159,7 +183,7 @@ def _run_batches(model, image_files, batch_size: int, conn, yolo_params: dict) -
     for batch_num, i in enumerate(range(0, len(image_files), batch_size), start=1):
         batch_files = image_files[i : i + batch_size]
         try:
-            results = model.predict(source=[str(f) for f in batch_files], **yolo_params)
+            results = _predict(model, batch_files, yolo_params)
             rows, roi_index = _results_to_rows(results, batch_files, model, roi_index)
             insert_rows(conn, rows)
             total_rows += len(rows)
