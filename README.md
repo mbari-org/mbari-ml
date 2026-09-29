@@ -500,8 +500,10 @@ and trained against the reviewer's own identifications.
 
 `export html` and `stats` are diagnostics as well as previews, so they
 accept `--include-unverified` to fall back to summarizing raw detector
-output on a database that has not been reviewed yet. The dataset exports
-have no such flag by design.
+output on a database that has not been reviewed yet. `export yolo` also
+accepts it, opt-in, for bootstrapping a dataset from model predictions
+(still excluding `noise`); verified-only stays its default. `export voc`
+and `export id` have no such flag.
 
 `cluster` is the deliberate exception: it groups and relabels **unverified**
 data too, since finding names for un-reviewed ROIs is the whole point of it.
@@ -562,6 +564,19 @@ python3 /data/survey_results/yolo_out/copy_images.py --dest /data/survey_results
 ```
 
 Those two commands leave a directory that trains as-is.
+
+**Blending into an existing dataset.** Class indices are assigned
+alphabetically by default, so a separate export's class 3 need not be the
+existing dataset's class 3. Pass `--names-file` with that dataset's
+`names.txt` or dataset `.yaml` to keep its exact order: every name keeps its
+index, including ones this export doesn't use, and any label it doesn't list
+is appended at the end (logged, with a hint when it differs from an existing
+name only by case). The written `names.txt`/YAML is then the full, extended
+list — use it for the blended dataset.
+
+```bash
+mbariml export yolo new.duckdb new_export/ --names-file existing_dataset/existing.yaml
+```
 
 **The dataset YAML.** Named `<output_dir name>.yaml` by default
 (`--yaml-name` to change it), in the format Ultralytics expects:

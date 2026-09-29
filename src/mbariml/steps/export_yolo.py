@@ -1,7 +1,8 @@
 """Export curated labels to YOLO-format label files, plus a names file.
 
 Writes one ``labels/<disambiguated_stem>.txt`` per source image with at
-least one curated identification -- every VERIFIED localization, named
+least one curated identification -- every VERIFIED localization (every
+localization at all with ``--include-unverified``), named
 ``new_label`` where the reviewer retyped it and the original detector
 ``label`` where they confirmed it unchanged, excluding ``noise`` (see
 ``mbariml.db.curated_where``, the same rule every export uses), each line
@@ -55,6 +56,7 @@ from pathlib import Path
 
 import cv2
 import typer
+import yaml  # PyYAML, already installed as an Ultralytics dependency
 from tqdm import tqdm
 
 from mbariml import db
@@ -66,8 +68,9 @@ app = typer.Typer(help="Export curated labels to YOLO-format label files, plus a
 logger = get_logger(__name__)
 
 
-def _fetch_curated(conn) -> list[tuple]:
-    """Every VERIFIED localization, carrying its effective label.
+def _fetch_curated(conn, *, include_unverified: bool = False) -> list[tuple]:
+    """Every VERIFIED localization (or every one, with include_unverified),
+    carrying its effective label.
 
     Selection and naming are both ``mbariml.db``'s shared rule: a row is in
     the dataset because a human verified it, and it is named ``new_label``
@@ -80,13 +83,65 @@ def _fetch_curated(conn) -> list[tuple]:
         f"""
         SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max
         FROM predictions
-        {db.curated_where()}
+        {db.curated_where(require_verified=not include_unverified)}
         """
     ).fetchall()
 
 
-def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str], dict[str, str]]:
-    """Returns (files_written, sorted distinct names, exported image_path strings).
+def _read_names_file(names_file: Path) -> list[str]:
+    """Class names, in class-index order, from an existing dataset's
+    ``names.txt`` (one per line) or Ultralytics dataset YAML (``names:`` as a
+    list, or as the ``{index: name}`` mapping Ultralytics also accepts)."""
+    if names_file.suffix.lower() in (".yaml", ".yml"):
+        names = (yaml.safe_load(names_file.read_text()) or {}).get("names")
+        if isinstance(names, dict):
+            names = [names[i] for i in sorted(names)]
+        if not isinstance(names, list):
+            raise typer.BadParameter(f"--names-file {names_file}: no `names:` list or mapping found")
+        names = [str(name).strip() for name in names]
+    else:
+        names = [line.strip() for line in names_file.read_text().splitlines() if line.strip()]
+
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise typer.BadParameter(f"--names-file {names_file} lists these names more than once: {duplicates}")
+    return names
+
+
+def _class_names(labels: set[str], fixed_names: list[str] | None) -> list[str]:
+    """Class-index order for this export.
+
+    Without a names file: alphabetical over the labels being exported. With
+    one (``--names-file``): exactly that file's order, so this export's
+    indices line up with the dataset it's being blended into -- including
+    names this export doesn't use, since dropping one would shift every
+    index after it. Labels the file doesn't have are appended at the end
+    (alphabetically), which extends the class list without renumbering
+    anything already in it; they're logged, with a hint when one differs
+    from an existing name only by case, since that's usually a typo that
+    should be remapped rather than a genuinely new class.
+    """
+    if fixed_names is None:
+        return sorted(labels)
+
+    new = sorted(labels - set(fixed_names))
+    if new:
+        logger.warning(
+            "%d label(s) not in --names-file, appended as classes %d-%d: %s",
+            len(new), len(fixed_names), len(fixed_names) + len(new) - 1, new,
+        )
+        by_lower = {name.lower(): name for name in fixed_names}
+        for name in new:
+            if name.lower() in by_lower:
+                logger.warning("  '%s' differs from existing class '%s' only by case -- remap it?",
+                               name, by_lower[name.lower()])
+    return fixed_names + new
+
+
+def _export_labels(
+    conn, output_dir: Path, *, include_unverified: bool = False, fixed_names: list[str] | None = None
+) -> tuple[int, list[str], list[str], dict[str, str]]:
+    """Returns (files_written, class names in index order, exported image_path strings).
 
     The returned paths are only those a label file was actually written for
     -- images recorded in the database but no longer on disk are left out.
@@ -98,8 +153,8 @@ def _export_labels(conn, output_dir: Path) -> tuple[int, list[str], list[str], d
     labels_dir = output_dir / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = _fetch_curated(conn)
-    names = sorted({new_label for _, new_label, *_ in rows})
+    rows = _fetch_curated(conn, include_unverified=include_unverified)
+    names = _class_names({new_label for _, new_label, *_ in rows}, fixed_names)
     class_index = {name: i for i, name in enumerate(names)}
 
     grouped: dict[str, list[tuple]] = {}
@@ -385,6 +440,19 @@ def export_yolo(
         None,
         help="Filename for the dataset YAML. Defaults to '<output_dir name>.yaml'.",
     ),
+    include_unverified: bool = typer.Option(
+        False, "--include-unverified/--verified-only",
+        help="Also export localizations nobody has verified yet (raw detector output, still "
+             "excluding 'noise') -- e.g. to bootstrap a dataset from model predictions. Off by "
+             "default: a training set should hold only reviewed boxes. [default: verified-only]",
+    ),
+    names_file: str = typer.Option(
+        None,
+        help="An existing dataset's names.txt or dataset .yaml whose class order to keep, so this "
+             "export can be blended into it. Every name keeps its index (even ones this export "
+             "doesn't use); labels it doesn't list are appended at the end, with a warning. "
+             "[default: alphabetical]",
+    ),
 ) -> None:
     """Export curated labels to YOLO-format label files, plus a names file.
 
@@ -413,10 +481,22 @@ def export_yolo(
     # than after writing a directory of label files.
     if splits:
         _parse_split_ratios(split_ratios)
+    fixed_names = None
+    if names_file:
+        names_file_path = Path(names_file)
+        if not names_file_path.exists():
+            raise typer.BadParameter(f"--names-file not found: {names_file_path}")
+        fixed_names = _read_names_file(names_file_path)
+        logger.info("Class order from %s (%d name(s))", names_file_path, len(fixed_names))
 
     with db.connect(db_path, must_exist=True) as conn:
-        db.require_verified_column(conn, db_path)
-        written, names, image_paths, stem_map = _export_labels(conn, output_dir_path)
+        if include_unverified:
+            logger.warning("--include-unverified: exporting unreviewed detections as training labels.")
+        else:
+            db.require_verified_column(conn, db_path)
+        written, names, image_paths, stem_map = _export_labels(
+            conn, output_dir_path, include_unverified=include_unverified, fixed_names=fixed_names
+        )
 
     names_path = _write_names(names, output_dir_path)
     write_image_manifest_and_script(image_paths, output_dir_path, export_name="yolo", stem_map=stem_map)

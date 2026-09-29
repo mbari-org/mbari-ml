@@ -387,6 +387,14 @@ export voc | yolo | id | html | stats
       --split-ratios '85 15 0' \
       --yaml-name MBARI_lassml_my_survey_20260916_yolo26s_LL.yaml
 
+  Blending into an existing dataset? Class indices are alphabetical by
+  default, so they won't match its. --names-file takes its names.txt or
+  dataset .yaml and keeps that exact order (every name keeps its index);
+  labels it doesn't list are appended at the end with a warning.
+
+    mbariml export yolo predictions.duckdb new_export/ \
+      --names-file /Volumes/M3_ML/training_data/existing/existing.yaml
+
 
   What gets exported, for all of them (and for stats):
     verified, name unchanged  -> exported, named with the original detector label
@@ -396,7 +404,8 @@ export voc | yolo | id | html | stats
   verified WITHOUT writing new_label -- only relabelling writes it -- so
   filtering on new_label alone silently drops every box you confirmed but
   did not retype. html and stats take --include-unverified to fall back to
-  raw detector output on an unreviewed database; the dataset exports do not.
+  raw detector output on an unreviewed database. `export yolo` takes it too
+  (opt-in, e.g. to bootstrap a dataset from model output); voc and id do not.
   All
   four locate images via the path recorded at ingest -- no image_dir argument
   -- and name output files after the source image's own filename, adding a
