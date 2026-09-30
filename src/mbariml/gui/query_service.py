@@ -36,8 +36,18 @@ logger = get_logger(__name__)
 # needed for it to work on an existing database. NULLIF guards a
 # zero-height box (shouldn't happen, but would otherwise be a division by
 # zero) rather than erroring the whole sort.
+#
+# "New Label" sorts by the EFFECTIVE label (see EFFECTIVE_LABEL_SQL): a row
+# with no new_label yet sorts under its original label, interleaved with the
+# renamed rows by name, rather than all piling up unsorted at the end.
+#
+# NULLIF, unlike db.EFFECTIVE_LABEL_SQL's plain COALESCE: the GUI treats an
+# empty-string new_label as "no new label" (it's falsy on a row), so SQL must
+# too, or such a row would sort/match as '' instead of by its original label.
+EFFECTIVE_LABEL_SQL = "COALESCE(NULLIF(new_label, ''), label)"
+
 SORT_COLUMNS = {
-    "New Label": "new_label",
+    "New Label": EFFECTIVE_LABEL_SQL,
     "Original Label": "label",
     "Image Name": "image_path",
     "Sharpness": "sharpness",
@@ -329,7 +339,11 @@ def fetch_known_labels(conn: duckdb.DuckDBPyConnection) -> list[str]:
 # label_filter is always matched against one of these two columns -- an
 # allowlist since the column name is interpolated directly into the query
 # (DuckDB can't parameterize identifiers), same reasoning as SORT_COLUMNS.
-SIMILARITY_LABEL_COLUMNS = {"new": "new_label", "original": "label"}
+SIMILARITY_LABEL_COLUMNS = {
+    "new": "new_label",
+    "original": "label",
+    "effective": EFFECTIVE_LABEL_SQL,
+}
 
 
 def _build_similarity_pool_where(
@@ -412,10 +426,11 @@ def compute_similarity_order(
     similarity of its embedding to ``roi_index``'s.
 
     *label_mode* picks which column *label_filter* is matched against --
-    "new" (new_label, the default: the curated label, what the global
-    ``--label`` filter and "same label" always meant before the "show
-    original label" display toggle existed) or "original" (the raw YOLO
-    class). Matters for "find similar with same label": that label_filter
+    "new" (new_label, the default), "original" (the raw YOLO class), or
+    "effective" (new_label where set, else the original label -- what "Find
+    similar with same label" uses, so a tile that was never renamed is
+    matched by its original label and one that was renamed only by its new
+    one). Matters for "find similar with same label": that label_filter
     comes from whatever's currently displayed on the clicked tile, so it
     must be checked against the same column that produced it, or the filter
     either does nothing (comparing an original-label string against

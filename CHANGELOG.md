@@ -11,6 +11,32 @@ recognizable.
 
 ---
 
+## 0.22.1 — `export yolo --conf` treats verified boxes as 100%; label matching in review
+
+**Review: "Find similar with same label" and the "New Label" sort now use the
+effective label** -- `new_label` where set, else the original `label`, for
+the clicked tile and for every candidate alike. "Same label" used to match one
+fixed column: `new_label` if the clicked tile had one, else `label`. From a
+never-renamed tile that missed every other tile of that name that had been
+renamed to it, and pulled in tiles since renamed to something else; from a
+renamed tile it missed every never-renamed tile sharing the name. The
+"New Label" sort ordered by `new_label` alone, so every not-yet-renamed tile
+collected, unsorted, at the end. An empty-string `new_label` counts as none,
+as it already did for the clicked tile.
+
+
+A verified box's detector score says nothing once a human has confirmed it,
+so `--conf` now counts every verified box as 100% and applies the threshold
+only to unverified ones. In 0.22.0 a box you had verified or relabelled could
+drop its whole image for having a low original score.
+
+Consequence: `--conf` only has an effect together with `--include-unverified`
+(verified data, plus only the confident part of the raw output), and warns
+when given without it. A NULL confidence on an unverified box still counts as
+below the threshold.
+
+---
+
 ## 0.22.0 — `export yolo` filters and class order; nested boxes; MPS batch fix
 
 **`export yolo --conf`** (default `all`) exports only confident training data:

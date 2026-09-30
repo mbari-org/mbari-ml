@@ -1349,18 +1349,14 @@ class MainWindow(QMainWindow):
         the clicked tile's own label) by embedding similarity to it."""
         roi_index = rect_widget.roi_index
         if same_label_only:
-            # Both labels are always shown now (no display-mode toggle), so
-            # there's no single "currently displayed" label to key off of
-            # any more -- prefer the curated new_label when the clicked tile
-            # has one (the more specific, human-reviewed grouping), falling
-            # back to the raw original_label pre-clustering, when new_label
-            # is still blank for every row.
-            if rect_widget.row.label:
-                label_filter = rect_widget.row.label
-                label_mode = "new"
-            else:
-                label_filter = rect_widget.row.original_label
-                label_mode = "original"
+            # The clicked tile's effective label -- new_label if it has one,
+            # else its original label -- matched against every candidate's
+            # effective label by the same rule. Matching one fixed column
+            # instead (new_label, or label) missed every never-renamed tile
+            # that shares the name, and in "original" mode also pulled in
+            # tiles since renamed to something else.
+            label_filter = rect_widget.row.label or rect_widget.row.original_label
+            label_mode = "effective"
         else:
             label_filter = self.label_filter
             label_mode = "new"

@@ -308,7 +308,14 @@ while preserving the human labels.
   missing embeddings, which is the one thing that can narrow it: run
   `mbariml embed` to include the rest. Requires `mbariml embed` to have run
   first. Changing the Sort dropdown exits similarity mode and returns to
-  normal sorting.
+  normal sorting. **"Find similar with same label"** narrows the ranking to
+  the clicked tile's label, by the same rule everywhere: a tile's name is its
+  new label if it has one, otherwise its original label. So a never-renamed
+  `A` tile finds every other tile named `A` -- renamed to `A` or still `A`
+  from the detector -- but not one since renamed to `B`.
+- **Sort by "New Label"** uses that same rule: a tile with no new label sorts
+  under its original label, in among the renamed tiles, rather than all of
+  them collecting at the end.
 - The status line under the buttons always shows the current page, how many
   ROIs are shown, and how many are selected, so a keypress never surprises you.
 - **Brightness / Contrast sliders** (below the tile-size slider) adjust the
@@ -585,12 +592,15 @@ detection confidence, as a percentage (`50`, `70`, `85%`) or a fraction
 (`0.7`). It filters whole **images**: an image is exported only if every box
 it would export meets the threshold, because dropping just the low box would
 leave that object in the image unlabeled, which YOLO learns as background.
-Hand-drawn boxes are stored at confidence 1.0 and always pass; relabelled
-boxes keep the detector's original confidence. The log reports how many
-images and boxes were dropped.
+A **verified** box counts as 100% whatever the detector scored it (a human
+confirmed it; hand-drawn boxes are verified too), so the threshold only ever
+applies to unverified boxes -- use it with `--include-unverified`, to take
+the verified data plus only the confident part of the raw model output. On
+its own it has no effect (and says so). The log reports how many images and
+boxes were dropped.
 
 ```bash
-mbariml export yolo predictions.duckdb high_conf/ --conf 70
+mbariml export yolo predictions.duckdb dataset/ --include-unverified --conf 70
 ```
 
 **The dataset YAML.** Named `<output_dir name>.yaml` by default

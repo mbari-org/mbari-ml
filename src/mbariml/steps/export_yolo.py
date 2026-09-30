@@ -81,7 +81,7 @@ def _fetch_curated(conn, *, include_unverified: bool = False) -> list[tuple]:
     """
     return conn.execute(
         f"""
-        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max, confidence
+        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max, confidence, verified
         FROM predictions
         {db.curated_where(require_verified=not include_unverified)}
         """
@@ -156,17 +156,25 @@ def _parse_min_conf(conf: str) -> float | None:
 
 
 def _filter_by_conf(rows: list[tuple], min_conf: float) -> list[tuple]:
-    """Keep only the images whose every exported box has confidence >=
-    min_conf; an image with even one box below it is dropped whole.
+    """Keep only the images whose every exported box is verified or has
+    confidence >= min_conf; an image with even one box below it is dropped
+    whole.
+
+    A verified box counts as 100%: a human has confirmed it, so the
+    detector's original score says nothing more about it. The threshold is
+    therefore only ever applied to unverified boxes, i.e. only matters with
+    --include-unverified.
 
     Whole images, not individual boxes, because a training image with a box
     removed still shows that object -- now unlabeled, which YOLO learns as
     background, i.e. trains against the very class it belongs to. A NULL
-    confidence counts as below the threshold. Boxes drawn by hand in
-    `review` are stored at confidence 1.0, so they always pass; relabelled
-    boxes keep the detector's original confidence.
+    confidence on an unverified box counts as below the threshold.
     """
-    failing = {row[0] for row in rows if row[-1] is None or row[-1] < min_conf}
+    failing = {
+        image_path
+        for image_path, *_, confidence, verified in rows
+        if verified != 1 and (confidence is None or confidence < min_conf)
+    }
     kept = [row for row in rows if row[0] not in failing]
     logger.info(
         "--conf %.0f%%: dropped %d image(s) with a box below it (%d box(es)); kept %d image(s), %d box(es).",
@@ -202,7 +210,7 @@ def _export_labels(
     class_index = {name: i for i, name in enumerate(names)}
 
     grouped: dict[str, list[tuple]] = {}
-    for image_path, new_label, x_min, y_min, x_max, y_max, _confidence in rows:
+    for image_path, new_label, x_min, y_min, x_max, y_max, _confidence, _verified in rows:
         grouped.setdefault(image_path, []).append((new_label, x_min, y_min, x_max, y_max))
 
     # Computed ONCE, over every image in the export, and threaded through the
@@ -501,8 +509,8 @@ def export_yolo(
         "all",
         help="Minimum detection confidence: 'all', a percentage (50, 70) or a fraction (0.5). An "
              "image is exported only if EVERY box it would export meets it -- one box below drops "
-             "the whole image, so no object is left in it unlabeled. Hand-drawn boxes count as "
-             "100%.",
+             "the whole image, so no object is left in it unlabeled. Verified boxes count as 100%, "
+             "so this only filters unverified ones: use it with --include-unverified.",
     ),
 ) -> None:
     """Export curated labels to YOLO-format label files, plus a names file.
@@ -533,6 +541,9 @@ def export_yolo(
     if splits:
         _parse_split_ratios(split_ratios)
     min_conf = _parse_min_conf(conf)
+    if min_conf is not None and not include_unverified:
+        logger.warning("--conf has no effect without --include-unverified: every exported box is "
+                       "verified, and verified boxes count as 100%.")
     fixed_names = None
     if names_file:
         names_file_path = Path(names_file)

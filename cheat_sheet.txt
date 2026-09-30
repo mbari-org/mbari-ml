@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.22.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.22.1). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -316,7 +316,9 @@ review (interactive GUI)
   status bar says how much of the dataset was actually ranked ("all 8,412
   matching ROIs", or "3,001 of 8,412 -- 5,411 not embedded yet" if `embed`
   was interrupted or run with --limit, which is the one thing that can
-  narrow the search).
+  narrow the search). "Find similar with same label" and the "New Label"
+  sort both use a tile's new label if it has one, else its original label --
+  so a never-renamed tile is matched/sorted under its original name.
   Delete removes the selection (asks first -- permanent); Escape clears it. A
   tile-size slider and a "Hide verified" checkbox control what's shown, and
   Brightness/Contrast sliders below the tile-size slider stretch the
@@ -401,9 +403,10 @@ export voc | yolo | id | html | stats
   --conf (default 'all') keeps only confident training data: 50, 70, 0.7 or
   85%. An image is exported only if EVERY box it would export meets it; one
   box below drops the whole image, so nothing is left in it unlabeled.
-  Hand-drawn boxes count as 100%; relabelled boxes keep the detector's conf.
+  Verified boxes (hand-drawn ones included) count as 100%, so it only filters
+  UNVERIFIED boxes -- pair it with --include-unverified. Alone it does nothing.
 
-    mbariml export yolo predictions.duckdb high_conf/ --conf 70
+    mbariml export yolo predictions.duckdb dataset/ --include-unverified --conf 70
 
 
   What gets exported, for all of them (and for stats):
@@ -563,7 +566,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.22.0. Run `mbariml <command> --help`
+Captured verbatim against v0.22.1. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -1021,7 +1024,9 @@ mbariml export yolo --help
 │                                                   image is exported only if EVERY box it would   │
 │                                                   export meets it -- one box below drops the     │
 │                                                   whole image, so no object is left in it        │
-│                                                   unlabeled. Hand-drawn boxes count as 100%.     │
+│                                                   unlabeled. Verified boxes count as 100%, so    │
+│                                                   this only filters unverified ones: use it with │
+│                                                   --include-unverified.                          │
 │                                                   [default: all]                                 │
 │ --help                                            Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
