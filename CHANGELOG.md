@@ -11,6 +11,51 @@ recognizable.
 
 ---
 
+## 0.22.0 — `export yolo` filters and class order; nested boxes; MPS batch fix
+
+**`export yolo --conf`** (default `all`) exports only confident training data:
+`--conf 70`, `0.7` or `85%`. It filters whole *images*, not boxes: an image is
+exported only if every box it would export meets the threshold. Dropping just
+the low box would leave that object in the image unlabeled, which YOLO learns
+as background -- training against the very class it belongs to. Hand-drawn
+boxes are stored at confidence 1.0 and always pass; relabelled boxes keep the
+detector's confidence; a NULL confidence counts as below.
+
+**`export yolo --names-file`** takes an existing dataset's `names.txt` or
+dataset YAML (list or `{index: name}` mapping) and keeps its exact class
+order, so an export can be blended into that dataset without indices
+shifting. Every name keeps its index, including ones this export doesn't use.
+Labels it doesn't list are appended at the end with a warning, plus a hint
+when one differs from an existing name only by case. A file listing a name
+twice is rejected. Without it, classes stay alphabetical (case-sensitive
+`sorted()`) as before.
+
+**`export yolo --include-unverified`** (opt-in; verified-only stays the
+default) also exports un-reviewed detections, still excluding `noise` --
+e.g. to bootstrap a dataset from model output. It matches the flag
+`export id`, `export html` and `stats` already had; `export voc` is now the
+only export without it.
+
+**Drawing a box inside or on top of an existing one.** With "Add New ROI"
+armed, a drag that started inside an existing box was claimed by that box
+(pyqtgraph hands a drag to whichever item accepted it on hover, with no
+fallback), so it moved the old box instead of drawing a new one. Existing
+boxes now step aside while drawing -- handles hidden, not translatable, body
+ignores drags -- and become editable again on Done/Escape.
+
+**`infer images` batches failing on MPS with "MPSGraph does not support
+tensor dims larger than INT_MAX".** Ultralytics runs a list of paths as one
+forward pass (B = the whole batch, whatever its `batch` setting and the
+"shape (1, 3, ...)" log line say). A batch mixing image sizes can't share a
+rectangular letterbox, so every image is padded to imgsz x imgsz; at
+50 x 1952^2 the C2PSA attention matrix (B * heads * (H*W)^2 at stride 32)
+reached 1.29x INT_MAX and MPS refused it. Same-size batches stay under, which
+is why only some batches failed -- in the J-Litter run, batch 150 mixed 14
+1080x1920 frames with 36 360x480 ones. Such a batch is now halved and retried
+until it fits, with results kept in order; batches that fit are unaffected.
+
+---
+
 ## 0.21.2 — "Open Video" now works off macOS
 
 The player chain was IINA, mpv, VLC, and only IINA had a non-PATH lookup. That

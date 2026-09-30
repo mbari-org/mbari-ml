@@ -81,7 +81,7 @@ def _fetch_curated(conn, *, include_unverified: bool = False) -> list[tuple]:
     """
     return conn.execute(
         f"""
-        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max
+        SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, x_min, y_min, x_max, y_max, confidence
         FROM predictions
         {db.curated_where(require_verified=not include_unverified)}
         """
@@ -138,8 +138,50 @@ def _class_names(labels: set[str], fixed_names: list[str] | None) -> list[str]:
     return fixed_names + new
 
 
+def _parse_min_conf(conf: str) -> float | None:
+    """``--conf`` value -> minimum confidence as a 0-1 fraction, or None for
+    'all'. Accepts a percentage (50, 70) or a fraction (0.5, 0.7): anything
+    above 1 is read as a percentage, so '1' means 1.0 (100%), not 1%."""
+    if conf.strip().lower() == "all":
+        return None
+    try:
+        value = float(conf.strip().rstrip("%"))
+    except ValueError:
+        raise typer.BadParameter(f"--conf must be 'all', a percentage (e.g. 50) or a fraction (e.g. 0.5), got {conf!r}")
+    if value > 1:
+        value /= 100
+    if not 0 <= value <= 1:
+        raise typer.BadParameter(f"--conf must be between 0 and 100%, got {conf!r}")
+    return value
+
+
+def _filter_by_conf(rows: list[tuple], min_conf: float) -> list[tuple]:
+    """Keep only the images whose every exported box has confidence >=
+    min_conf; an image with even one box below it is dropped whole.
+
+    Whole images, not individual boxes, because a training image with a box
+    removed still shows that object -- now unlabeled, which YOLO learns as
+    background, i.e. trains against the very class it belongs to. A NULL
+    confidence counts as below the threshold. Boxes drawn by hand in
+    `review` are stored at confidence 1.0, so they always pass; relabelled
+    boxes keep the detector's original confidence.
+    """
+    failing = {row[0] for row in rows if row[-1] is None or row[-1] < min_conf}
+    kept = [row for row in rows if row[0] not in failing]
+    logger.info(
+        "--conf %.0f%%: dropped %d image(s) with a box below it (%d box(es)); kept %d image(s), %d box(es).",
+        min_conf * 100, len(failing), len(rows) - len(kept), len({row[0] for row in kept}), len(kept),
+    )
+    return kept
+
+
 def _export_labels(
-    conn, output_dir: Path, *, include_unverified: bool = False, fixed_names: list[str] | None = None
+    conn,
+    output_dir: Path,
+    *,
+    include_unverified: bool = False,
+    fixed_names: list[str] | None = None,
+    min_conf: float | None = None,
 ) -> tuple[int, list[str], list[str], dict[str, str]]:
     """Returns (files_written, class names in index order, exported image_path strings).
 
@@ -154,11 +196,13 @@ def _export_labels(
     labels_dir.mkdir(parents=True, exist_ok=True)
 
     rows = _fetch_curated(conn, include_unverified=include_unverified)
+    if min_conf is not None:
+        rows = _filter_by_conf(rows, min_conf)
     names = _class_names({new_label for _, new_label, *_ in rows}, fixed_names)
     class_index = {name: i for i, name in enumerate(names)}
 
     grouped: dict[str, list[tuple]] = {}
-    for image_path, new_label, x_min, y_min, x_max, y_max in rows:
+    for image_path, new_label, x_min, y_min, x_max, y_max, _confidence in rows:
         grouped.setdefault(image_path, []).append((new_label, x_min, y_min, x_max, y_max))
 
     # Computed ONCE, over every image in the export, and threaded through the
@@ -453,6 +497,13 @@ def export_yolo(
              "doesn't use); labels it doesn't list are appended at the end, with a warning. "
              "[default: alphabetical]",
     ),
+    conf: str = typer.Option(
+        "all",
+        help="Minimum detection confidence: 'all', a percentage (50, 70) or a fraction (0.5). An "
+             "image is exported only if EVERY box it would export meets it -- one box below drops "
+             "the whole image, so no object is left in it unlabeled. Hand-drawn boxes count as "
+             "100%.",
+    ),
 ) -> None:
     """Export curated labels to YOLO-format label files, plus a names file.
 
@@ -481,6 +532,7 @@ def export_yolo(
     # than after writing a directory of label files.
     if splits:
         _parse_split_ratios(split_ratios)
+    min_conf = _parse_min_conf(conf)
     fixed_names = None
     if names_file:
         names_file_path = Path(names_file)
@@ -495,7 +547,8 @@ def export_yolo(
         else:
             db.require_verified_column(conn, db_path)
         written, names, image_paths, stem_map = _export_labels(
-            conn, output_dir_path, include_unverified=include_unverified, fixed_names=fixed_names
+            conn, output_dir_path, include_unverified=include_unverified, fixed_names=fixed_names,
+            min_conf=min_conf,
         )
 
     names_path = _write_names(names, output_dir_path)

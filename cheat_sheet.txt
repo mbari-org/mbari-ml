@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.21.2). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.22.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -332,7 +332,10 @@ review (interactive GUI)
 
   "+ Add New ROI" (green, top of the controls panel) -- for a detection the
   model missed entirely. Click it, drag a box on the image, type a label, and
-  keep going until you click it again or press Escape. Each box is saved the
+  keep going until you click it again or press Escape. While it's on,
+  existing boxes hide their handles and can't be moved, so you can draw a
+  new box on top of or inside one; they're editable again once you're done.
+  Each box is saved the
   moment you label it (confidence 1.0, verified set -- a human drew it), and
   its embedding is computed in the background using the same DINOv3 model
   `embed` uses, so it's immediately usable by similarity search/clustering.
@@ -395,6 +398,13 @@ export voc | yolo | id | html | stats
     mbariml export yolo predictions.duckdb new_export/ \
       --names-file /Volumes/M3_ML/training_data/existing/existing.yaml
 
+  --conf (default 'all') keeps only confident training data: 50, 70, 0.7 or
+  85%. An image is exported only if EVERY box it would export meets it; one
+  box below drops the whole image, so nothing is left in it unlabeled.
+  Hand-drawn boxes count as 100%; relabelled boxes keep the detector's conf.
+
+    mbariml export yolo predictions.duckdb high_conf/ --conf 70
+
 
   What gets exported, for all of them (and for stats):
     verified, name unchanged  -> exported, named with the original detector label
@@ -404,8 +414,9 @@ export voc | yolo | id | html | stats
   verified WITHOUT writing new_label -- only relabelling writes it -- so
   filtering on new_label alone silently drops every box you confirmed but
   did not retype. html and stats take --include-unverified to fall back to
-  raw detector output on an unreviewed database. `export yolo` takes it too
-  (opt-in, e.g. to bootstrap a dataset from model output); voc and id do not.
+  raw detector output on an unreviewed database. `export id` and `export
+  yolo` take it too (opt-in; yolo e.g. to bootstrap a dataset from model
+  output); only voc does not.
   All
   four locate images via the path recorded at ingest -- no image_dir argument
   -- and name output files after the source image's own filename, adding a
@@ -552,7 +563,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.21.2. Run `mbariml <command> --help`
+Captured verbatim against v0.22.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -944,7 +955,6 @@ mbariml export voc --help
 
 
 mbariml export yolo --help
-
                                                                                                     
  Usage: mbariml export yolo [OPTIONS] {db_path} {output_dir}                                        
                                                                                                     
@@ -973,27 +983,47 @@ mbariml export yolo --help
 │                             [required]                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --splits              --no-splits           Also write train.txt/val.txt/test.txt image lists.   │
-│                                             [default: splits]                                    │
-│ --split-ratios                       <str>  Train/val/test percentages, e.g. '85 10 5'. Must sum │
-│                                             to 100.                                              │
-│                                             [default: 85 10 5]                                   │
-│ --split-seed                         <int>  Seed for the split shuffle. The same database +      │
-│                                             ratios + seed always produce the same split, so      │
-│                                             re-exporting after relabelling doesn't reshuffle     │
-│                                             what was held out.                                   │
-│                                             [default: 42]                                        │
-│ --test-images-file                   <str>  Optional file of image filenames (one per line) to   │
-│                                             force into the test split -- e.g. a fixed benchmark  │
-│                                             set you want held out of training across every       │
-│                                             export.                                              │
-│ --yaml                --no-yaml             Also write the Ultralytics dataset YAML              │
-│                                             (train/val/test paths, nc, names). Requires          │
-│                                             --splits, since it points at the split files.        │
-│                                             [default: yaml]                                      │
-│ --yaml-name                          <str>  Filename for the dataset YAML. Defaults to           │
-│                                             '<output_dir name>.yaml'.                            │
-│ --help                                      Show this message and exit.                          │
+│ --splits                --no-splits               Also write train.txt/val.txt/test.txt image    │
+│                                                   lists.                                         │
+│                                                   [default: splits]                              │
+│ --split-ratios                             <str>  Train/val/test percentages, e.g. '85 10 5'.    │
+│                                                   Must sum to 100.                               │
+│                                                   [default: 85 10 5]                             │
+│ --split-seed                               <int>  Seed for the split shuffle. The same database  │
+│                                                   + ratios + seed always produce the same split, │
+│                                                   so re-exporting after relabelling doesn't      │
+│                                                   reshuffle what was held out.                   │
+│                                                   [default: 42]                                  │
+│ --test-images-file                         <str>  Optional file of image filenames (one per      │
+│                                                   line) to force into the test split -- e.g. a   │
+│                                                   fixed benchmark set you want held out of       │
+│                                                   training across every export.                  │
+│ --yaml                  --no-yaml                 Also write the Ultralytics dataset YAML        │
+│                                                   (train/val/test paths, nc, names). Requires    │
+│                                                   --splits, since it points at the split files.  │
+│                                                   [default: yaml]                                │
+│ --yaml-name                                <str>  Filename for the dataset YAML. Defaults to     │
+│                                                   '<output_dir name>.yaml'.                      │
+│ --include-unverified    --verified-only           Also export localizations nobody has verified  │
+│                                                   yet (raw detector output, still excluding      │
+│                                                   'noise') -- e.g. to bootstrap a dataset from   │
+│                                                   model predictions. Off by default: a training  │
+│                                                   set should hold only reviewed boxes.           │
+│                                                   [default: verified-only]                       │
+│ --names-file                               <str>  An existing dataset's names.txt or dataset     │
+│                                                   .yaml whose class order to keep, so this       │
+│                                                   export can be blended into it. Every name      │
+│                                                   keeps its index (even ones this export doesn't │
+│                                                   use); labels it doesn't list are appended at   │
+│                                                   the end, with a warning.                       │
+│ --conf                                     <str>  Minimum detection confidence: 'all', a         │
+│                                                   percentage (50, 70) or a fraction (0.5). An    │
+│                                                   image is exported only if EVERY box it would   │
+│                                                   export meets it -- one box below drops the     │
+│                                                   whole image, so no object is left in it        │
+│                                                   unlabeled. Hand-drawn boxes count as 100%.     │
+│                                                   [default: all]                                 │
+│ --help                                            Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

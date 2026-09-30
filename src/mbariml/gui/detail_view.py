@@ -143,14 +143,21 @@ class DetailView(QtWidgets.QWidget):
         ``_DrawableViewBox``). While on, a left-drag on empty image
         background draws a new box instead of panning, reported via
         *on_box_drawn* as ``(x_min, y_min, x_max, y_max)`` in image-pixel
-        coordinates; wheel-zoom and dragging an *existing* box (which
-        intercepts the drag itself, before it ever reaches the ViewBox) both
-        keep working exactly as before. A crosshair cursor is the only other
-        visible sign draw mode is active -- there's no separate "drawing
-        overlay" to tear down on exit.
+        coordinates. Wheel-zoom keeps working; existing boxes stop taking the
+        mouse (handles hidden, body not draggable) so a new box can be drawn
+        on top of or inside one, and become editable again when draw mode
+        turns off. A crosshair cursor is the only other visible sign draw
+        mode is active -- there's no separate "drawing overlay" to tear down
+        on exit.
         """
         self._view_box.draw_mode = enabled
         self._view_box.box_drawn = on_box_drawn if enabled else None
+        # Existing boxes step aside so a drag started inside one draws a new
+        # box on top of/within it instead of moving it (see
+        # BoundingBox.set_interactive); set_boxes() applies the same to boxes
+        # rebuilt while draw mode is still on.
+        for box in self._boxes:
+            box.set_interactive(not enabled)
         self._graphics_view.setCursor(
             QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor
         )
@@ -182,6 +189,8 @@ class DetailView(QtWidgets.QWidget):
                 changed_callback=on_changed,
                 delete_callback=on_delete,
             )
+            if self._view_box.draw_mode:
+                box.set_interactive(False)
             self._boxes.append(box)
 
     def update_active(self, active_roi_indices: set[int]) -> None:

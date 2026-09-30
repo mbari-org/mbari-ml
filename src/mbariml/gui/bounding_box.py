@@ -89,6 +89,31 @@ class BoundingBox(pg.RectROI):
         self.sigRegionChangeFinished.connect(self._on_region_change_finished)
         self.sigClicked.connect(self._on_clicked)
 
+    def set_interactive(self, interactive: bool) -> None:
+        """Let mouse events pass straight through this box (False) or not.
+
+        Off while "Add New ROI" draw mode is on, so a drag that starts inside
+        an existing box draws a new (nested/overlapping) box instead of moving
+        this one. pyqtgraph's scene hands a drag straight to whichever item
+        claimed it on hover (the body does while ``translatable``; a handle
+        does whenever visible), with no fallback; otherwise it offers it to
+        each item under the cursor until one accepts. So: not translatable,
+        handles hidden, and the body ignores drags (``mouseDragEvent``).
+        """
+        self._interactive = interactive
+        self.translatable = interactive
+        for handle in self.getHandles():
+            handle.setVisible(interactive)
+
+    def mouseDragEvent(self, ev) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        # Ignored before pyqtgraph's own handler runs: that one calls
+        # setSelected(True) -- re-showing every handle -- at drag start even
+        # when it then declines the drag.
+        if not getattr(self, "_interactive", True):
+            ev.ignore()
+            return
+        super().mouseDragEvent(ev)
+
     def set_active(self, is_active: bool) -> None:
         """Recolor without rebuilding -- called when grid selection changes."""
         self.setPen(pg.mkPen(ACTIVE_COLOR if is_active else INACTIVE_COLOR, width=PEN_WIDTH))

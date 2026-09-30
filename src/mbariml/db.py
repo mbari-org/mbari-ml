@@ -189,10 +189,11 @@ def curated_where(*, exclude_noise: bool = True, require_verified: bool = True) 
 
     ``require_verified`` is the important half: an unverified row is raw
     detector output no human has confirmed, and it has no business in a
-    training set or an identification sidecar. It is only ever relaxed by
-    the two *diagnostic* consumers (`stats`, `export html`), which are
-    documented to be useful against a database that has not been reviewed
-    yet, and only behind an explicit --include-unverified flag.
+    training set or an identification sidecar by default. It is only ever
+    relaxed behind an explicit, off-by-default --include-unverified flag:
+    on the diagnostic consumers (`stats`, `export html`), which are useful
+    against a database not reviewed yet, and on `export id`/`export yolo`
+    for deliberately emitting raw detector output. `export voc` has none.
 
     Note `cluster` deliberately does NOT use this: clustering exists to
     group and name data that has NOT been reviewed, so restricting it to

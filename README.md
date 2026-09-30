@@ -352,9 +352,11 @@ while preserving the human labels.
   (if that background step ever fails, the ROI itself is still saved and
   `mbariml embed` remains a safe fallback -- it only ever fills in rows
   that are still NULL). An empty/cancelled label prompt discards that box --
-  nothing is written. Wheel-zoom, dragging an *existing* box, and everything
-  else on the panel work exactly as before; only a drag on empty image
-  background behaves differently while armed.
+  nothing is written. While armed, existing boxes step aside -- their
+  handles hide and they can't be dragged -- so a new box can be drawn on
+  top of or inside one (a fish in front of a rock, a part within a whole);
+  they become editable again when you click Done or press Escape.
+  Wheel-zoom and right-click "Delete" keep working throughout.
 
 Labeling and deleting no longer rebuild the entire page of thumbnails (the
 original did, on every single click, which is why review used to feel slow) —
@@ -500,10 +502,10 @@ and trained against the reviewer's own identifications.
 
 `export html` and `stats` are diagnostics as well as previews, so they
 accept `--include-unverified` to fall back to summarizing raw detector
-output on a database that has not been reviewed yet. `export yolo` also
-accepts it, opt-in, for bootstrapping a dataset from model predictions
-(still excluding `noise`); verified-only stays its default. `export voc`
-and `export id` have no such flag.
+output on a database that has not been reviewed yet. `export id` and
+`export yolo` accept it too, opt-in -- `yolo` for bootstrapping a dataset
+from model predictions (still excluding `noise`); verified-only stays the
+default everywhere. `export voc` is the only export without it.
 
 `cluster` is the deliberate exception: it groups and relabels **unverified**
 data too, since finding names for un-reviewed ROIs is the whole point of it.
@@ -576,6 +578,19 @@ list — use it for the blended dataset.
 
 ```bash
 mbariml export yolo new.duckdb new_export/ --names-file existing_dataset/existing.yaml
+```
+
+**Exporting only confident boxes.** `--conf` (default `all`) sets a minimum
+detection confidence, as a percentage (`50`, `70`, `85%`) or a fraction
+(`0.7`). It filters whole **images**: an image is exported only if every box
+it would export meets the threshold, because dropping just the low box would
+leave that object in the image unlabeled, which YOLO learns as background.
+Hand-drawn boxes are stored at confidence 1.0 and always pass; relabelled
+boxes keep the detector's original confidence. The log reports how many
+images and boxes were dropped.
+
+```bash
+mbariml export yolo predictions.duckdb high_conf/ --conf 70
 ```
 
 **The dataset YAML.** Named `<output_dir name>.yaml` by default
