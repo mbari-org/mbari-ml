@@ -17,8 +17,9 @@ confirmation, right-click similarity sort, full-image preview with
 selection boxes, and page navigation. What's new: threaded/bounded-
 concurrency ROI decoding, a bounded LRU cache for full-image previews,
 diff-based grid re-layout instead of full rebuilds on every page/sort
-change, a tile zoom slider, a "verified" flag (with a Verify button and a
-"hide verified" display filter), arrow-key tile navigation with Shift/Ctrl
+change, a tile zoom slider, a "verified" flag (with a Verify button and
+"hide verified"/"hide unverified" display filters), a display-only colour
+correction toggle (see ``mbariml.gui.colour``), arrow-key tile navigation with Shift/Ctrl
 range selection, wheel-zoom/drag-pan on the full-image panel, and
 draggable/resizable bounding boxes for every detection on the shown image
 (not just the current mosaic page's rows -- other detections on the same
@@ -110,6 +111,11 @@ _BORDER = "#46484d"
 _TEXT = "#e3e3e3"
 _TEXT_DISABLED = "#6f7278"
 _ACCENT = "#34a1eb"  # matches RectWidget.SELECTION_HIGHLIGHT_COLOR
+_KEYLINE = "#ffffff"  # checkbox indicator outline -- see QCheckBox::indicator below
+# Styling QCheckBox::indicator at all replaces the platform's native
+# indicator, checkmark included, so the checked state draws its own. as_posix:
+# Qt stylesheet url()s want forward slashes on every platform.
+_CHECK_ICON = (Path(__file__).parent / "check.svg").as_posix()
 
 DARK_STYLESHEET = f"""
     QWidget {{
@@ -159,6 +165,24 @@ DARK_STYLESHEET = f"""
     QCheckBox {{
         background: transparent;
         spacing: 6px;
+    }}
+    /* A white keyline so an unchecked box doesn't vanish into the dark panel. */
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {_KEYLINE};
+        border-radius: 3px;
+        background-color: {_PANEL};
+    }}
+    QCheckBox::indicator:hover {{
+        background-color: {_PANEL_HOVER};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {_ACCENT};
+        image: url("{_CHECK_ICON}");
+    }}
+    QCheckBox::indicator:disabled {{
+        border-color: {_TEXT_DISABLED};
     }}
     QSlider::groove:horizontal {{
         height: 4px;
@@ -217,6 +241,7 @@ class MainWindow(QMainWindow):
         # referencing it -- confirmed directly: exactly this "Referenced
         # column 'verified' not found" error against a real pre-existing
         # database.
+        self._database_path = database_path
         self._db_ctx = db.init_curation_db(database_path)
         self.conn = self._db_ctx.__enter__()
         self._roi_service = RoiService()
@@ -235,6 +260,11 @@ class MainWindow(QMainWindow):
         # skipped for want of an embedding. See count_similarity_pool.
         self.similarity_pool_total: int | None = None
         self.hide_verified = False
+        self.hide_unverified = False
+        # Built on first use of "Color-correct display" -- see
+        # _on_colour_correct_toggled. Kept after it's turned off so turning it
+        # back on reuses every measurement already made.
+        self._colour_corrector = None
         # 0.0 = no floor (every confidence value passes). Applied at the
         # query level everywhere label_filter/exclude_verified are -- see
         # query_service._build_where.
@@ -321,6 +351,11 @@ class MainWindow(QMainWindow):
         """Stop pending background loads and flush/close the DuckDB connection."""
         self._roi_loading_cancel_event.set()
         self._roi_loading.cancel_pending()
+        if self._colour_corrector is not None:
+            try:
+                self._colour_corrector.save()
+            except Exception:  # noqa: BLE001 -- only a cache; rebuilt next time
+                logger.exception("Could not save the colour-correction cache")
         try:
             self._db_ctx.__exit__(None, None, None)
         except Exception:
@@ -466,6 +501,14 @@ class MainWindow(QMainWindow):
         reset_display_button.clicked.connect(self._reset_display_adjustment)
         contrast_layout.addWidget(reset_display_button)
         controls_layout.addLayout(contrast_layout)
+        self.colour_correct_box = QCheckBox("Color-correct display")
+        self.colour_correct_box.setToolTip(
+            "Remove the green/blue cast and restore contrast and colour in what you see "
+            "(tiles and the image), measured on each whole image so a tile keeps its own "
+            "colour. Display only: labels, boxes and embeddings use the original pixels."
+        )
+        self.colour_correct_box.toggled.connect(self._on_colour_correct_toggled)
+        controls_layout.addWidget(self.colour_correct_box)
         controls_layout.addWidget(
             QLabel("View-only: brightens/stretches the ROI thumbnails to help spot faint "
                    "animals. Never changes stored data.")
@@ -495,9 +538,12 @@ class MainWindow(QMainWindow):
         unverify_button = QPushButton("Unverify (Shift+V)")
         unverify_button.clicked.connect(self.unverify_selected)
         visibility_layout.addWidget(unverify_button)
-        hide_verified_box = QCheckBox("Hide verified")
-        hide_verified_box.toggled.connect(self._on_hide_verified_toggled)
-        visibility_layout.addWidget(hide_verified_box)
+        self.hide_verified_box = QCheckBox("Hide verified")
+        self.hide_verified_box.toggled.connect(self._on_hide_verified_toggled)
+        visibility_layout.addWidget(self.hide_verified_box)
+        self.hide_unverified_box = QCheckBox("Hide unverified")
+        self.hide_unverified_box.toggled.connect(self._on_hide_unverified_toggled)
+        visibility_layout.addWidget(self.hide_unverified_box)
         controls_layout.addLayout(visibility_layout)
 
         controls_layout.addWidget(QLabel("Relabel selected (type a new label, or pick an existing one):"))
@@ -715,6 +761,7 @@ class MainWindow(QMainWindow):
             sort_option=self.sort_option,
             similarity_order=self.similarity_order,
             exclude_verified=self.hide_verified,
+            exclude_unverified=self.hide_unverified,
             min_confidence=self.min_confidence,
         )
         worker.signals.result.connect(self._on_page_loaded)
@@ -742,10 +789,11 @@ class MainWindow(QMainWindow):
                 cursor,
                 label_filter=label_filter,
                 exclude_verified=kwargs.get("exclude_verified", False),
+                exclude_unverified=kwargs.get("exclude_unverified", False),
                 min_confidence=min_confidence,
             )
         # Review-progress counter (see update_status_bar): deliberately
-        # scoped to label_filter/min_confidence only, not hide_verified or
+        # scoped to label_filter/min_confidence only, not hide_(un)verified or
         # any active similarity sort -- see count_verified's docstring for
         # why.
         verified_count, unverified_count = query_service.count_verified(
@@ -800,7 +848,9 @@ class MainWindow(QMainWindow):
     def render_mosaic(self) -> None:
         visible_widgets = self._mosaic_view.select_visible_widgets(
             all_widgets=self._rect_widgets,
-            filters=MosaicVisibilityFilters(hide_verified=self.hide_verified),
+            filters=MosaicVisibilityFilters(
+                hide_verified=self.hide_verified, hide_unverified=self.hide_unverified
+            ),
         )
         result = self._mosaic_view.render(all_widgets=self._rect_widgets, visible_widgets=visible_widgets)
         self._n_columns = result.columns
@@ -934,19 +984,69 @@ class MainWindow(QMainWindow):
         self.load_page()
 
     def _on_hide_verified_toggled(self, checked: bool) -> None:
-        """Toggling this now requeries (not just a client-side re-render):
-        exclude_verified is applied at the query level (see
-        query_service._build_where's docstring for why -- otherwise "Page
+        self._set_verified_visibility(hide_verified=checked, hide_unverified=self.hide_unverified and not checked)
+
+    def _on_hide_unverified_toggled(self, checked: bool) -> None:
+        self._set_verified_visibility(hide_verified=self.hide_verified and not checked, hide_unverified=checked)
+
+    def _set_verified_visibility(self, *, hide_verified: bool, hide_unverified: bool) -> None:
+        """Toggling either box requeries (not just a client-side re-render):
+        exclude_verified/exclude_unverified are applied at the query level
+        (see query_service._build_where's docstring for why -- otherwise "Page
         X/Y" and per-page counts include rows that can never actually be
         shown). A stale similarity ranking computed under the old setting
         would still contain/omit the wrong rows, so it's cleared, same as
-        a sort or search change."""
-        self.hide_verified = checked
+        a sort or search change.
+
+        The two boxes are mutually exclusive -- both on would hide every ROI
+        -- so checking one unchecks the other, with signals blocked so that
+        is still one requery, not two."""
+        for box, value in ((self.hide_verified_box, hide_verified), (self.hide_unverified_box, hide_unverified)):
+            box.blockSignals(True)
+            box.setChecked(value)
+            box.blockSignals(False)
+        self.hide_verified = hide_verified
+        self.hide_unverified = hide_unverified
         self.similarity_order = None
         self.similarity_reference = None
         self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
+
+    def _on_colour_correct_toggled(self, checked: bool) -> None:
+        """Display-only colour correction for green/blue water, exactly as
+        mbariml-autolabel does it (see mbariml.gui.colour): tiles and the
+        full image both, each measured on the whole frame it came from.
+        Labels, boxes, embeddings and box-edit re-crops all keep using the
+        original pixels -- RoiService.fetch_full_image never returns the
+        corrected frame.
+
+        Measurements are cached in ``<database>_colour.npz`` next to the
+        database -- the same file autolabel uses, so either tool reuses the
+        other's -- and saved on close.
+        """
+        if checked and self._colour_corrector is None:
+            from mbariml.gui.colour import Corrector
+
+            db_path = Path(self._database_path)
+            self._colour_corrector = Corrector(db_path.with_name(db_path.stem + "_colour.npz"))
+        self._roi_service.set_corrector(self._colour_corrector if checked else None)
+
+        # Re-decode every tile (threaded; each measures its frame on the
+        # worker if it isn't cached yet). Brightness/contrast still apply on
+        # top, in getpic.
+        for rect_widget in self._rect_widgets:
+            rect_widget.request_roi_refresh()
+
+        if self._current_detail_image_path is not None:
+            image = self._roi_service.fetch_full_image(self._current_detail_image_path)
+            if image is not None:
+                # Same path as what's shown, so show_image keeps the zoom/pan;
+                # the box overlays are separate items and stay as they are.
+                self._detail_view.show_image(
+                    self._current_detail_image_path,
+                    self._roi_service.correct_for_display(image, self._current_detail_image_path),
+                )
 
     # -- Selection / preview --------------------------------------------------
 
@@ -999,7 +1099,9 @@ class MainWindow(QMainWindow):
             logger.warning("Image not found: %s", image_path)
             return
 
-        self._detail_view.show_image(image_path, image)
+        # Display only (when colour correction is on): `image` itself stays
+        # the original pixels, which is what box edits re-crop from.
+        self._detail_view.show_image(image_path, self._roi_service.correct_for_display(image, image_path))
         self._current_detail_image_path = image_path
 
         all_frame_rois = query_service.fetch_rois_for_image(self.conn, image_path)
@@ -1364,7 +1466,7 @@ class MainWindow(QMainWindow):
         # See load_page()'s comment: self.conn (not a cursor made from it on
         # this thread) is passed through, and a real bound method -- not a
         # lambda -- is connected so PySide correctly queues delivery onto
-        # the GUI thread. exclude_verified/min_confidence narrow the
+        # the GUI thread. exclude_verified/exclude_unverified/min_confidence narrow the
         # ranking pool itself (see compute_similarity_order's docstring for
         # why that has to happen here, not just as a display-time filter).
         worker = Worker(
@@ -1374,6 +1476,7 @@ class MainWindow(QMainWindow):
             label_filter,
             label_mode,
             self.hide_verified,
+            self.hide_unverified,
             self.min_confidence,
         )
         worker.signals.result.connect(self._on_similarity_computed)
@@ -1389,6 +1492,7 @@ class MainWindow(QMainWindow):
         label_filter: str | None,
         label_mode: str,
         exclude_verified: bool,
+        exclude_unverified: bool,
         min_confidence: float | None,
     ):
         # .cursor() called here, i.e. on the worker thread that will use it.
@@ -1399,6 +1503,7 @@ class MainWindow(QMainWindow):
             label_filter,
             label_mode,
             exclude_verified=exclude_verified,
+            exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
         )
         # Same pool, minus the embedding requirement -- so the GUI can say
@@ -1409,6 +1514,7 @@ class MainWindow(QMainWindow):
             label_filter,
             label_mode,
             exclude_verified=exclude_verified,
+            exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
         )
         return roi_index, order, pool_total
@@ -1489,8 +1595,8 @@ class MainWindow(QMainWindow):
         logger.info("Applied label '%s' to %d ROI(s) (also verified).", new_label, len(selected))
         self.selection_model.clear()
         self._refresh_known_labels()
-        if self.hide_verified:
-            self.render_mosaic()  # newly-verified tiles may need to disappear now
+        if self.hide_verified or self.hide_unverified:
+            self.render_mosaic()  # newly-verified tiles may need to disappear/appear now
         self.update_status_bar()
 
     def verify_selected(self) -> None:
@@ -1531,7 +1637,7 @@ class MainWindow(QMainWindow):
             rect_widget.set_verified(verified)
 
         logger.info("%s %d ROI(s).", "Verified" if verified else "Unverified", len(selected))
-        if self.hide_verified:
+        if self.hide_verified or self.hide_unverified:
             self.render_mosaic()  # verified/unverified tiles may need to appear/disappear now
         self.update_status_bar()
 

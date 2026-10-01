@@ -320,11 +320,14 @@ review (interactive GUI)
   sort both use a tile's new label if it has one, else its original label --
   so a never-renamed tile is matched/sorted under its original name.
   Delete removes the selection (asks first -- permanent); Escape clears it. A
-  tile-size slider and a "Hide verified" checkbox control what's shown, and
+  tile-size slider and "Hide verified"/"Hide unverified" checkboxes (checking
+  one unchecks the other) control what's shown, and
   Brightness/Contrast sliders below the tile-size slider stretch the
   thumbnails across the whole grid -- faint animals against sediment are much
-  easier to pick out that way. Both are view-only (stored ROIs are never
-  modified); "Reset" puts them back to neutral.
+  easier to pick out that way. "Color-correct display" removes the green/blue
+  water cast from tiles and the full image, using mbariml-autolabel's exact
+  correction (cached in <database>_colour.npz). All are view-only (stored
+  ROIs are never modified); "Reset" puts brightness/contrast back to neutral.
 
   The right panel shows the full source image with mouse-wheel zoom and
   click-drag pan, overlaying EVERY detection on that image -- not just the
@@ -524,8 +527,9 @@ Image manifest + copy_images.py (written by `export voc` / `export yolo`)
     python3 /data/results/voc_out/copy_images.py
     python3 /data/results/voc_out/copy_images.py --dest ~/Desktop/my_training_images
 
-  For a YOLO export specifically, point it at an images/ directory INSIDE the
-  export -- that's the directory train/val/test.txt's ./images/ paths mean:
+  For a YOLO export, --dest (alias --output-dir) is REQUIRED -- point it at an
+  images/ directory INSIDE the export, the directory train/val/test.txt's
+  ./images/ paths mean:
 
     python3 /data/results/yolo_out/copy_images.py --dest /data/results/yolo_out/images
 

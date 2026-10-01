@@ -143,6 +143,7 @@ def _build_where(
     params: list,
     *,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
 ) -> str:
     conditions = []
@@ -151,6 +152,8 @@ def _build_where(
         params.extend([label_filter, label_filter])
     if exclude_verified:
         conditions.append("(verified IS NULL OR verified != 1)")
+    if exclude_unverified:
+        conditions.append("verified = 1")
     if min_confidence is not None and min_confidence > 0:
         conditions.append("confidence >= ?")
         params.append(min_confidence)
@@ -164,13 +167,15 @@ def count_rows(
     label_filter: str | None = None,
     *,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
 ) -> int:
     """Total rows matching the given filters (or the whole table if none) --
     backs the "Page X/Y" count and the jump-to-page range."""
     params: list = []
     query = "SELECT COUNT(*) FROM predictions" + _build_where(
-        label_filter, params, exclude_verified=exclude_verified, min_confidence=min_confidence
+        label_filter, params, exclude_verified=exclude_verified,
+        exclude_unverified=exclude_unverified, min_confidence=min_confidence,
     )
     return conn.execute(query, params).fetchone()[0]
 
@@ -185,7 +190,7 @@ def count_verified(
     filters (or the whole table if none) -- backs the review-progress
     counter next to the page counts.
 
-    Deliberately independent of "Hide verified" and any active similarity
+    Deliberately independent of "Hide verified"/"Hide unverified" and any active similarity
     sort -- neither changes what "the dataset" means for review-progress
     purposes, they just change what's currently drawn/ranked. label_filter
     and min_confidence, on the other hand, narrow "what am I actually
@@ -212,13 +217,14 @@ def fetch_page(
     sort_option: str = DEFAULT_SORT_OPTION,
     similarity_order: list[int] | None = None,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
 ) -> list[RoiRow]:
     """Fetch one page's worth of ROIs.
 
     In normal mode, sorts by ``sort_option`` (must be a key of
     ``SORT_COLUMNS``) and pages via LIMIT/OFFSET, applying exclude_verified/
-    min_confidence at the query level. In similarity mode (``similarity_order``
+    exclude_unverified/min_confidence at the query level. In similarity mode (``similarity_order``
     given), slices the precomputed ``roi_index`` ordering instead and
     preserves its rank order -- the whole ROI set was already re-ranked (and
     filtered by those same criteria) by :func:`compute_similarity_order`, so
@@ -247,7 +253,8 @@ def fetch_page(
 
     params: list = []
     query = f"SELECT {_ROW_COLUMNS} FROM predictions" + _build_where(
-        label_filter, params, exclude_verified=exclude_verified, min_confidence=min_confidence
+        label_filter, params, exclude_verified=exclude_verified,
+        exclude_unverified=exclude_unverified, min_confidence=min_confidence,
     )
     query += f" ORDER BY {sort_column} LIMIT ? OFFSET ?"
     params.extend([page_size, offset])
@@ -351,6 +358,7 @@ def _build_similarity_pool_where(
     label_mode: str,
     *,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
     require_embedding: bool,
 ) -> tuple[str, list]:
@@ -372,6 +380,8 @@ def _build_similarity_pool_where(
         params.append(label_filter)
     if exclude_verified:
         conditions.append("(verified IS NULL OR verified != 1)")
+    if exclude_unverified:
+        conditions.append("verified = 1")
     if min_confidence is not None and min_confidence > 0:
         conditions.append("confidence >= ?")
         params.append(min_confidence)
@@ -386,6 +396,7 @@ def count_similarity_pool(
     label_mode: str = "new",
     *,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
 ) -> int:
     """How many ROIs a similarity search *could* rank -- the same pool
@@ -407,6 +418,7 @@ def count_similarity_pool(
         label_filter,
         label_mode,
         exclude_verified=exclude_verified,
+        exclude_unverified=exclude_unverified,
         min_confidence=min_confidence,
         require_embedding=False,
     )
@@ -420,6 +432,7 @@ def compute_similarity_order(
     label_mode: str = "new",
     *,
     exclude_verified: bool = False,
+    exclude_unverified: bool = False,
     min_confidence: float | None = None,
 ) -> list[int] | None:
     """Rank every ROI (respecting *label_filter*, if given) by cosine
@@ -437,7 +450,7 @@ def compute_similarity_order(
     new_label, which is often still blank) or silently returns the wrong
     matches.
 
-    exclude_verified/min_confidence narrow the ranking POOL itself (not
+    exclude_verified/exclude_unverified/min_confidence narrow the ranking POOL itself (not
     just what's later hidden from display) -- see _build_where's docstring
     for why that distinction matters: excluding them only at display time
     left "Page X/Y" (== len(this ranking)) counting rows that could never
@@ -460,6 +473,7 @@ def compute_similarity_order(
         label_filter,
         label_mode,
         exclude_verified=exclude_verified,
+        exclude_unverified=exclude_unverified,
         min_confidence=min_confidence,
         require_embedding=True,
     )

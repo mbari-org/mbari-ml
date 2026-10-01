@@ -177,7 +177,11 @@ class RectWidget(QtWidgets.QGraphicsWidget):
     # -- ROI loading ----------------------------------------------------------
 
     def get_roi(self) -> np.ndarray:
-        return self._roi_service.decode_roi(self.row.roi_blob)
+        """The decoded crop as displayed -- colour-corrected when that's on
+        (see RoiService.correct_for_display). Display only: nothing reads
+        self.roi back into stored data."""
+        roi = self._roi_service.decode_roi(self.row.roi_blob)
+        return self._roi_service.correct_for_display(roi, self.row.image_path)
 
     def update_roi_pic(self) -> None:
         self.roi = self.get_roi()

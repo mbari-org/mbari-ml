@@ -37,6 +37,10 @@ class RoiService:
         self._max_cache_entries = max(1, int(max_cache_entries))
         self._cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
         self._lock = threading.Lock()
+        # Display-only colour correction (mbariml.gui.colour.Corrector), or
+        # None when it's off. See correct_for_display.
+        self._corrector = None
+        self._correct_lock = threading.Lock()
 
     def decode_roi(self, roi_blob: bytes | None) -> np.ndarray:
         """Decode a JPEG ROI blob into a BGR ``np.ndarray``.
@@ -82,6 +86,29 @@ class RoiService:
                 self._cache.popitem(last=False)
 
         return image
+
+    def set_corrector(self, corrector) -> None:
+        """Turn display colour correction on (a ``Corrector``) or off (None)."""
+        self._corrector = corrector
+
+    def correct_for_display(self, bgr: np.ndarray | None, image_path: str) -> np.ndarray | None:
+        """*bgr* colour-corrected for display, or unchanged when correction is
+        off. For a tile crop or the full frame alike, ``image_path`` is the
+        frame it came from: the correction is measured on that whole frame,
+        so a crop keeps its colour relative to its surroundings.
+
+        Safe to call from a worker thread. The (cached) per-image measurement
+        runs outside the lock so tile workers measure in parallel; ``apply``
+        itself is serialized because it uses one shared CLAHE object, and
+        OpenCV's CLAHE keeps scratch buffers on the object -- not
+        thread-safe.
+        """
+        corrector = self._corrector
+        if corrector is None or bgr is None:
+            return bgr
+        corrector.params_for(image_path)
+        with self._correct_lock:
+            return corrector.apply(bgr, image_path)
 
     def invalidate(self, image_path: str | None = None) -> None:
         """Drop one cached image, or every cached image if *image_path* is None."""

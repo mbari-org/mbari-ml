@@ -563,7 +563,9 @@ def export_yolo(
         )
 
     names_path = _write_names(names, output_dir_path)
-    write_image_manifest_and_script(image_paths, output_dir_path, export_name="yolo", stem_map=stem_map)
+    write_image_manifest_and_script(
+        image_paths, output_dir_path, export_name="yolo", stem_map=stem_map, require_dest=True,
+    )
 
     logger.info("Wrote %d YOLO label file(s) to %s", written, output_dir_path / "labels")
     logger.info("Wrote %d distinct label(s) to %s", len(names), names_path)

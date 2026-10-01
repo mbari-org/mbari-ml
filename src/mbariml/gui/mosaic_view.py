@@ -31,6 +31,7 @@ class MosaicVisibilityFilters:
     """Visibility toggles used to choose which widgets are rendered."""
 
     hide_verified: bool = False
+    hide_unverified: bool = False
 
 
 class MosaicView:
@@ -188,7 +189,10 @@ class MosaicView:
             row = getattr(widget, "row", None)
             if row is None:
                 continue
-            if filters.hide_verified and getattr(row, "verified", False):
+            verified = getattr(row, "verified", False)
+            if filters.hide_verified and verified:
+                continue
+            if filters.hide_unverified and not verified:
                 continue
             visible_widgets.append(widget)
         return visible_widgets

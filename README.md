@@ -298,8 +298,8 @@ while preserving the human labels.
 - **Escape** clears the selection.
 - **Right-click** a thumbnail to rank **every ROI in the database** by
   embedding similarity to that one (most similar first), respecting the
-  current `--label` filter, "Hide verified" and the min-confidence floor if
-  set. This is a whole-dataset re-ranking, not a re-ordering of the page
+  current `--label` filter, "Hide verified"/"Hide unverified" and the
+  min-confidence floor if set. This is a whole-dataset re-ranking, not a re-ordering of the page
   you're on: the closest matches are pulled onto page 1 from wherever in the
   database they were, and every following page continues down the same
   ranking. The status line says so explicitly — *"sorted by similarity to
@@ -325,6 +325,17 @@ while preserving the human labels.
   two sliders act independently rather than fighting each other, and
   **Reset** returns both to neutral. View-only: the stored ROI is never
   modified, so this changes nothing you export.
+- **Color-correct display** removes the green/blue water cast and restores
+  contrast and the weak reds, on the tiles and the full image alike. It's
+  the same code `mbariml-autolabel` uses (copied into
+  `mbariml/gui/colour.py`), measured per whole source image so a crop keeps
+  its colour relative to its surroundings. Measurements are cached in
+  `<database>_colour.npz` next to the database (the same file autolabel
+  uses). View-only: labels, boxes, embeddings and box-edit re-crops all use
+  the original pixels.
+- **Hide verified / Hide unverified** narrow the grid to what still needs
+  review, or to what's already done. Checking one unchecks the other, since
+  both together would hide everything.
 - **Open Video** (next to Delete): for ROIs that came from `infer video`,
   opens the *source footage* at the exact moment that detection was made,
   from the row's `video_path` + `frame_time_s`. Tries **IINA** (macOS), then
@@ -690,11 +701,13 @@ copying every JPEG would duplicate the lot). Instead,
 distinct source image referenced, mapped to its destination
 filename) and a standalone `copy_images.py` next to it. Run that script
 later — from this machine or any other that can see the recorded source
-paths — to actually pull the matching images down, e.g. to Desktop or
-straight into an `images/` directory next to the label files:
+paths — to actually pull the matching images down. The voc script
+defaults to Desktop; the yolo script requires `--dest` (alias
+`--output-dir`), since its images belong in the `images/` directory next to
+the label files:
 
 ```bash
-python3 /data/survey_results/yolo_out/copy_images.py
+python3 /data/survey_results/voc_out/copy_images.py
 python3 /data/survey_results/yolo_out/copy_images.py --dest /data/survey_results/yolo_out/images
 ```
 
