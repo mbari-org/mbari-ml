@@ -11,7 +11,7 @@ recognizable.
 
 ---
 
-## Unreleased — optional SAM3 in review; box edits recompute embeddings
+## 0.23.0 — optional SAM3 in review; box edits recompute embeddings
 
 **Review: "Add ROI with SAM3" and "Tighten Boxes (SAM3)"**, both optional.
 With `--sam3-model PATH` (or `$MBARIML_SAM3_MODEL`) and Ultralytics' CLIP

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbariml"
-version = "0.22.1"
+version = "0.23.0"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "YOLO detection -> embedding -> clustering -> curation pipeline for deep sea imagery."
