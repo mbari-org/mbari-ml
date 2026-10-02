@@ -11,6 +11,50 @@ recognizable.
 
 ---
 
+## 0.25.0 — confidence range slider; search matches the new label, else the original; SAM3 tightens loose boxes further
+
+**Review: the confidence slider has two handles.** "Min confidence" is now a
+range, both ends included, so a band like 0.20-0.30 can be reviewed on its
+own. Show applies it, as before; page counts, the Verified/Unverified counter
+and "Find similar" all follow it. Rows with no confidence show only at the
+full 0.00-1.00 range. It's a small painted widget (`gui/range_slider.py`), not
+a new dependency.
+
+Fixed with it: `confidence` is a 32-bit FLOAT, so a stored 0.70 is really
+0.69999999, and a minimum of 0.70 left those rows out. Both ends of the range
+now allow for that rounding.
+
+
+**Review: Search (and `--label`) match each ROI's effective label** -- its new
+label where one is set, otherwise its original label -- the label the tile
+shows in bold. It used to match a row if *either* label matched, so searching
+`trash` kept showing tiles already relabeled `animal`, and a search's page
+counts included them. The search dropdown now lists exactly the labels a
+search can find: an original class every row has been renamed away from is
+no longer offered (the relabel dropdown still lists both).
+
+"Find similar" within a search now ranks by the same rule. It matched the new
+label alone, so within a search on a class nobody had renamed yet -- every row
+before review -- it had nothing to rank.
+
+**Tighten Boxes (SAM3) now tightens loose boxes much further.** SAM3's box
+prompt stays close to the box it's given, so a loose box came back only partly
+tightened. Its result is now fed back in as the next prompt until it stops
+changing (at most 5 prompts; ~15-50 ms each). Measured on 150 verified
+SeaClear boxes loosened on every side, median IoU with the original box:
+
+| loosened by | one prompt (before) | iterated (now) |
+|---|---|---|
+| 15% | 0.86 | 0.89 |
+| 30% | 0.58 | 0.75 |
+| 50% | 0.34 | 0.45 |
+
+Boxes that were already tight move about as little as before (0.94 vs 0.92).
+Very loose boxes are still only partly fixed; for those, "Add ROI with SAM3"
+(click the object) gives a tight box directly.
+
+---
+
 ## 0.24.0 — delete from a tile's right-click menu; no more Magic Mouse zoom jumps
 
 **Review: Delete on a grid tile's right-click menu.** Right-clicking a tile

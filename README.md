@@ -114,7 +114,7 @@ intent distinction survives as `--preset`:
 - **`--preset curate`** (default) — conf 0.005, imgsz 1952, no annotated
   images. Mine everything, then cluster/review and discard the noise. Default
   deliberately: an over-permissive threshold is recoverable (filter later —
-  the review GUI even has a min-confidence slider), while a too-strict one
+  the review GUI even has a confidence-range slider), while a too-strict one
   silently drops detections you can't get back without a full re-run.
 - **`--preset predict`** — conf 0.08, imgsz 992, saves annotated images.
   Believable predictions over new imagery.
@@ -314,10 +314,23 @@ while preserving the human labels.
   that's part of the selection; on a tile that isn't, **right-click →
   Delete...** removes just that one (also confirmed first).
 - **Escape** clears the selection.
+- **Confidence range** (two-handle slider, then **Show**): shows only ROIs
+  whose YOLO confidence is in the range, both ends included -- drag the
+  ends to, say, 0.20 and 0.30 to review just that band. Click a handle (or
+  Tab to the slider) and the arrow keys move it by 0.01, Page Up/Down by
+  0.10. Rows with no confidence show only at the full 0.00-1.00 range. The
+  page counts, the Verified/Unverified counter and "Find similar" all follow
+  the range. View-only: nothing stored changes.
+- **Search** (type or pick a label, Enter) shows only ROIs whose *effective*
+  label matches: the new label where one is set, otherwise the original
+  label -- the same label the tile shows in bold. A row renamed from `trash`
+  to `animal` is found by `animal`, not by `trash`. The dropdown lists exactly
+  the labels a search can find; `--label` on the command line filters the same
+  way, and "Find similar" ranks within the search by the same rule.
 - **Right-click** a thumbnail → **Find similar** to rank **every ROI in the database** by
   embedding similarity to that one (most similar first), respecting the
   current `--label` filter, "Hide verified"/"Hide unverified" and the
-  min-confidence floor if set. This is a whole-dataset re-ranking, not a re-ordering of the page
+  confidence range if set. This is a whole-dataset re-ranking, not a re-ordering of the page
   you're on: the closest matches are pulled onto page 1 from wherever in the
   database they were, and every following page continues down the same
   ranking. The status line says so explicitly — *"sorted by similarity to
@@ -405,7 +418,8 @@ while preserving the human labels.
   stays on for more objects until you click the button again or press
   Escape; dragging pans. The two add modes are exclusive.
 - **Tighten Boxes (SAM3)**: SAM3 refits every *unverified* box on the shown
-  image, using each box as its prompt. You see the new boxes dashed yellow
+  image, using each box as its prompt -- and then SAM3's own box as the
+  next prompt, until it stops shrinking (up to 5 prompts per box). You see the new boxes dashed yellow
   and confirm before anything is written. Only real tightening is offered:
   boxes SAM3 leaves about the same, or where its box reaches well outside the
   current one or shrinks to a small part of it (it found something else
@@ -932,7 +946,7 @@ they're interactive, or they don't belong in the middle of a batch run.
 | An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded at ingest (absolute since v0.11.0); re-ingest if the imagery has been relocated. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
 | Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
-| Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a min-confidence floor also narrow the pool by design. |
+| Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a confidence range also narrow the pool by design. |
 | Clustering or similarity results look **nonsensical** | Check you haven't mixed embeddings from two models in one database. If you changed `EMBEDDING_MODEL_NAME`, re-embed everything with `mbariml embed --force`. |
 | `embed` is **slow, and getting slower** | Confirm the device (it logs MPS/CUDA/CPU at startup), then check nothing else is competing for the GPU. The historical cause was a DuckDB write pattern, long since fixed — see [CHANGELOG.md](CHANGELOG.md). |
 | **"Open Video" does nothing useful** | Install IINA (macOS), mpv, VLC, or ffmpeg/ffplay — all honor a start position. Without one it falls back to your browser, which for a local file usually just hands off to the default app and opens at zero. |

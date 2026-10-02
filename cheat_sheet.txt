@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.24.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.25.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -82,7 +82,7 @@ infer images
                        Mine everything, then cluster/review and throw away the
                        noise. Default deliberately: an over-permissive
                        threshold is recoverable (filter later -- the review
-                       GUI even has a min-confidence slider), a too-strict one
+                       GUI even has a confidence-range slider), a too-strict one
                        silently drops detections you can't get back without a
                        full re-run.
     --preset predict   conf 0.08, imgsz 992, saves annotated images
@@ -312,6 +312,12 @@ review (interactive GUI)
   or click Label, to apply it to the selection. Right-click an ROI ->
   "Delete..." deletes just that ROI, or "Delete selected..." the whole
   selection if it's part of it (confirmed first, like the Delete key).
+  Confidence (two-handle slider, then Show) -- show only ROIs whose YOLO
+  confidence is in the range, ends included (e.g. 0.20-0.30). Arrow keys
+  move the last-clicked handle by 0.01, Page Up/Down by 0.10. View-only.
+  Search (type or pick a label, Enter) matches each ROI's new label, or its
+  original label if it has no new one -- a row renamed trash -> animal is
+  found by "animal" only. --label filters the same way.
   Right-click an ROI -> "Find similar" to rank
   EVERY ROI in the database by embedding similarity to it -- the whole
   dataset, not the page you're on; the most similar rows are then pulled
@@ -593,7 +599,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.24.0. Run `mbariml <command> --help`
+Captured verbatim against v0.25.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help

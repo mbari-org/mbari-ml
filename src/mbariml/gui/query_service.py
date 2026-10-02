@@ -116,10 +116,33 @@ class RoiRow:
         )
 
 
+_CONFIDENCE_SLACK = 1e-6  # far above FLOAT rounding (~3e-8 near 0.5), far below the slider's 0.01 steps
+
+
+def _confidence_conditions(min_confidence: float | None, max_confidence: float | None, params: list) -> list[str]:
+    """The confidence-range part of a WHERE clause (both ends inclusive).
+    Either end left at its extreme -- min 0 or None, max 1 or None -- adds no
+    condition, so with the full range rows with a NULL confidence still show;
+    any narrowing excludes them, since NULL is in no range.
+
+    Both ends get a hair of slack (_CONFIDENCE_SLACK): ``confidence`` is a
+    32-bit FLOAT, so a stored 0.30 is really 0.30000001 and a stored 0.70 is
+    0.69999999 -- compared exactly, a 0.20-0.30 range left out the 0.30s and
+    a 0.70 floor the 0.70s."""
+    conditions = []
+    if min_confidence is not None and min_confidence > 0:
+        conditions.append("confidence >= ?")
+        params.append(min_confidence - _CONFIDENCE_SLACK)
+    if max_confidence is not None and max_confidence < 1:
+        conditions.append("confidence <= ?")
+        params.append(max_confidence + _CONFIDENCE_SLACK)
+    return conditions
+
+
 # Shared by count_rows, fetch_page's normal-sort branch, count_verified, and
 # compute_similarity_order's ranking pool, so "what counts as the current
-# dataset" -- a label/search filter, hiding verified ROIs, a minimum-
-# confidence floor -- is applied consistently everywhere a row count or
+# dataset" -- a label/search filter, hiding verified ROIs, a confidence
+# range -- is applied consistently everywhere a row count or
 # ranking is computed, not just in what's visually hidden after the fact.
 #
 # This matters more than it looks: *_count/*_order values back "Page X/Y"
@@ -133,11 +156,13 @@ class RoiRow:
 # not remotely what a reviewer means by "spans everything I still need to
 # look at".
 #
-# label_filter matches EITHER new_label (curated) or label (raw YOLO
-# class), not just new_label alone: the search dropdown is populated from
-# both columns (see fetch_known_labels), so a concept that only exists as
-# an original YOLO class -- the common case before clustering/review has
-# ever run -- would otherwise silently match nothing.
+# label_filter matches each row's *effective* label: new_label (curated) where
+# it's set, else label (the raw YOLO class) -- EFFECTIVE_LABEL_SQL, the same
+# rule display, the "New Label" sort and `stats` use. Not new_label alone: a
+# concept that exists only as an original class -- every row, before
+# clustering/review has ever run -- would match nothing. And not "new_label
+# OR label", as it once did: that also matched rows already renamed to
+# something else, so searching "trash" kept showing tiles relabeled "animal".
 def _build_where(
     label_filter: str | None,
     params: list,
@@ -145,18 +170,17 @@ def _build_where(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> str:
     conditions = []
     if label_filter:
-        conditions.append("(new_label = ? OR label = ?)")
-        params.extend([label_filter, label_filter])
+        conditions.append(f"{EFFECTIVE_LABEL_SQL} = ?")
+        params.append(label_filter)
     if exclude_verified:
         conditions.append("(verified IS NULL OR verified != 1)")
     if exclude_unverified:
         conditions.append("verified = 1")
-    if min_confidence is not None and min_confidence > 0:
-        conditions.append("confidence >= ?")
-        params.append(min_confidence)
+    conditions += _confidence_conditions(min_confidence, max_confidence, params)
     if not conditions:
         return ""
     return " WHERE " + " AND ".join(conditions)
@@ -169,13 +193,14 @@ def count_rows(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> int:
     """Total rows matching the given filters (or the whole table if none) --
     backs the "Page X/Y" count and the jump-to-page range."""
     params: list = []
     query = "SELECT COUNT(*) FROM predictions" + _build_where(
         label_filter, params, exclude_verified=exclude_verified,
-        exclude_unverified=exclude_unverified, min_confidence=min_confidence,
+        exclude_unverified=exclude_unverified, min_confidence=min_confidence, max_confidence=max_confidence,
     )
     return conn.execute(query, params).fetchone()[0]
 
@@ -185,6 +210,7 @@ def count_verified(
     label_filter: str | None = None,
     *,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> tuple[int, int]:
     """(verified_count, unverified_count) among rows matching the given
     filters (or the whole table if none) -- backs the review-progress
@@ -193,7 +219,7 @@ def count_verified(
     Deliberately independent of "Hide verified"/"Hide unverified" and any active similarity
     sort -- neither changes what "the dataset" means for review-progress
     purposes, they just change what's currently drawn/ranked. label_filter
-    and min_confidence, on the other hand, narrow "what am I actually
+    and the confidence range, on the other hand, narrow "what am I actually
     reviewing right now" the same way they narrow the grid, so this counter
     tracks them too. Cheap even at survey scale: a columnar aggregate that
     never touches the ROI blob/embedding columns.
@@ -203,7 +229,7 @@ def count_verified(
         "SELECT COUNT(*) FILTER (WHERE verified = 1), "
         "COUNT(*) FILTER (WHERE verified IS NULL OR verified != 1) "
         "FROM predictions"
-    ) + _build_where(label_filter, params, min_confidence=min_confidence)
+    ) + _build_where(label_filter, params, min_confidence=min_confidence, max_confidence=max_confidence)
     verified_count, unverified_count = conn.execute(query, params).fetchone()
     return verified_count, unverified_count
 
@@ -219,12 +245,13 @@ def fetch_page(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> list[RoiRow]:
     """Fetch one page's worth of ROIs.
 
     In normal mode, sorts by ``sort_option`` (must be a key of
     ``SORT_COLUMNS``) and pages via LIMIT/OFFSET, applying exclude_verified/
-    exclude_unverified/min_confidence at the query level. In similarity mode (``similarity_order``
+    exclude_unverified/min_confidence/max_confidence at the query level. In similarity mode (``similarity_order``
     given), slices the precomputed ``roi_index`` ordering instead and
     preserves its rank order -- the whole ROI set was already re-ranked (and
     filtered by those same criteria) by :func:`compute_similarity_order`, so
@@ -254,7 +281,7 @@ def fetch_page(
     params: list = []
     query = f"SELECT {_ROW_COLUMNS} FROM predictions" + _build_where(
         label_filter, params, exclude_verified=exclude_verified,
-        exclude_unverified=exclude_unverified, min_confidence=min_confidence,
+        exclude_unverified=exclude_unverified, min_confidence=min_confidence, max_confidence=max_confidence,
     )
     query += f" ORDER BY {sort_column} LIMIT ? OFFSET ?"
     params.extend([page_size, offset])
@@ -343,7 +370,23 @@ def fetch_known_labels(conn: duckdb.DuckDBPyConnection) -> list[str]:
     return [row[0] for row in rows]
 
 
-# label_filter is always matched against one of these two columns -- an
+def fetch_effective_labels(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    """Every distinct *effective* label (new_label where set, else label),
+    alphabetically -- exactly the values a search (see ``_build_where``) can
+    match, so every choice in the search dropdown finds something. An
+    original class that every row has been renamed away from isn't listed."""
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT {EFFECTIVE_LABEL_SQL} AS l
+        FROM predictions
+        WHERE l IS NOT NULL AND l != ''
+        ORDER BY LOWER(l) ASC
+        """
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+# label_filter is always matched against one of these columns -- an
 # allowlist since the column name is interpolated directly into the query
 # (DuckDB can't parameterize identifiers), same reasoning as SORT_COLUMNS.
 SIMILARITY_LABEL_COLUMNS = {
@@ -360,6 +403,7 @@ def _build_similarity_pool_where(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
     require_embedding: bool,
 ) -> tuple[str, list]:
     """WHERE clause defining a similarity search's ranking pool.
@@ -382,9 +426,7 @@ def _build_similarity_pool_where(
         conditions.append("(verified IS NULL OR verified != 1)")
     if exclude_unverified:
         conditions.append("verified = 1")
-    if min_confidence is not None and min_confidence > 0:
-        conditions.append("confidence >= ?")
-        params.append(min_confidence)
+    conditions += _confidence_conditions(min_confidence, max_confidence, params)
     if not conditions:
         return "", params
     return " WHERE " + " AND ".join(conditions), params
@@ -398,6 +440,7 @@ def count_similarity_pool(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> int:
     """How many ROIs a similarity search *could* rank -- the same pool
     :func:`compute_similarity_order` ranks, minus its ``embedding IS NOT
@@ -419,7 +462,7 @@ def count_similarity_pool(
         label_mode,
         exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified,
-        min_confidence=min_confidence,
+        min_confidence=min_confidence, max_confidence=max_confidence,
         require_embedding=False,
     )
     return conn.execute("SELECT COUNT(*) FROM predictions" + where_sql, params).fetchone()[0]
@@ -434,6 +477,7 @@ def compute_similarity_order(
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ) -> list[int] | None:
     """Rank every ROI (respecting *label_filter*, if given) by cosine
     similarity of its embedding to ``roi_index``'s.
@@ -450,7 +494,7 @@ def compute_similarity_order(
     new_label, which is often still blank) or silently returns the wrong
     matches.
 
-    exclude_verified/exclude_unverified/min_confidence narrow the ranking POOL itself (not
+    exclude_verified/exclude_unverified/the confidence range narrow the ranking POOL itself (not
     just what's later hidden from display) -- see _build_where's docstring
     for why that distinction matters: excluding them only at display time
     left "Page X/Y" (== len(this ranking)) counting rows that could never
@@ -474,7 +518,7 @@ def compute_similarity_order(
         label_mode,
         exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified,
-        min_confidence=min_confidence,
+        min_confidence=min_confidence, max_confidence=max_confidence,
         require_embedding=True,
     )
     query = "SELECT roi_index, embedding FROM predictions" + where_sql
@@ -523,6 +567,7 @@ __all__ = [
     "fetch_page",
     "fetch_rois_for_image",
     "fetch_known_labels",
+    "fetch_effective_labels",
     "compute_similarity_order",
     "count_similarity_pool",
     "SIMILARITY_LABEL_COLUMNS",

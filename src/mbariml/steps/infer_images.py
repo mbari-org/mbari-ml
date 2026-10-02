@@ -14,7 +14,7 @@ sometimes wasn't). The intent distinction survives as ``--preset``:
                       Mine everything, then cluster/review and throw away the
                       noise. This is the default, deliberately: an
                       over-permissive threshold is recoverable (filter later
-                      -- the review GUI even has a min-confidence slider),
+                      -- the review GUI even has a confidence-range slider),
                       while a too-strict one silently drops detections you
                       can only get back with a full re-run.
     --preset predict  conf 0.08, imgsz 992, saves annotated images

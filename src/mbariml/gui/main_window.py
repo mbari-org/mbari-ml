@@ -68,6 +68,7 @@ from mbariml import db
 from mbariml.gui import annotation_service, query_service, sam3_service
 from mbariml.gui.detail_view import DetailView
 from mbariml.gui.mosaic_view import MosaicView, MosaicVisibilityFilters
+from mbariml.gui.range_slider import RangeSlider
 from mbariml.gui.rect_widget import RectWidget
 from mbariml.gui.roi_loading_coordinator import MosaicRoiLoadingCoordinator
 from mbariml.gui.roi_service import RoiService, crop_and_encode
@@ -278,10 +279,12 @@ class MainWindow(QMainWindow):
         # _on_colour_correct_toggled. Kept after it's turned off so turning it
         # back on reuses every measurement already made.
         self._colour_corrector = None
-        # 0.0 = no floor (every confidence value passes). Applied at the
-        # query level everywhere label_filter/exclude_verified are -- see
-        # query_service._build_where.
+        # The confidence range shown, both ends inclusive; 0.0-1.0 = no
+        # filter (every value passes, NULL included). Applied at the query
+        # level everywhere label_filter/exclude_verified are -- see
+        # query_service._confidence_conditions.
         self.min_confidence: float = 0.0
+        self.max_confidence: float = 1.0
         self._zoom_percent = ZOOM_DEFAULT
         self._brightness = BRIGHTNESS_DEFAULT
         self._contrast_percent = CONTRAST_DEFAULT
@@ -582,20 +585,18 @@ class MainWindow(QMainWindow):
         )
 
         confidence_layout = QHBoxLayout()
-        self.confidence_label = QLabel("Min confidence: 0.00")
+        self.confidence_label = QLabel(self._confidence_text(0, 100))
         confidence_layout.addWidget(self.confidence_label)
-        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
-        self.confidence_slider.setMinimum(0)
-        self.confidence_slider.setMaximum(100)  # 0-100 -> 0.00-1.00
-        self.confidence_slider.setValue(0)
-        self.confidence_slider.valueChanged.connect(self._on_confidence_slider_moved)
+        self.confidence_slider = RangeSlider(0, 100)  # 0-100 -> 0.00-1.00
+        self.confidence_slider.valuesChanged.connect(self._on_confidence_slider_moved)
         confidence_layout.addWidget(self.confidence_slider)
         show_confidence_button = QPushButton("Show")
         show_confidence_button.clicked.connect(self._on_confidence_filter_clicked)
         confidence_layout.addWidget(show_confidence_button)
         controls_layout.addLayout(confidence_layout)
         controls_layout.addWidget(
-            QLabel("View-only: hides ROIs below this YOLO detection confidence. Never changes stored data.")
+            QLabel("View-only: shows only ROIs whose YOLO detection confidence is in this range (drag either "
+                   "end, then Show). Never changes stored data.")
         )
 
         visibility_layout = QHBoxLayout()
@@ -708,7 +709,11 @@ class MainWindow(QMainWindow):
         total = len(self._rect_widgets)
         selected = len(self.selection_model.selected)
         filter_text = f" | filter: {self.label_filter}" if self.label_filter else ""
-        confidence_text = f" | min confidence: {self.min_confidence:.2f}" if self.min_confidence > 0 else ""
+        confidence_text = (
+            f" | confidence {self.min_confidence:.2f}-{self.max_confidence:.2f}"
+            if self.min_confidence > 0 or self.max_confidence < 1
+            else ""
+        )
         similarity_active = self.similarity_order is not None
         # Spelled out as "ranked M of T ROIs" rather than just naming the
         # reference: a similarity search always re-ranks the whole matching
@@ -762,11 +767,13 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_known_labels(self) -> None:
-        """Repopulate the relabel dropdown AND the search dropdown with
-        every label currently in use (alphabetically) -- called at startup
-        and after every label change, so a freshly-typed label shows up as
-        a pick-list option immediately in both. Doesn't restrict what you
-        can type into either; see ``query_service.fetch_known_labels``."""
+        """Repopulate the relabel dropdown (every label in use, new or
+        original -- see ``query_service.fetch_known_labels``) and the search
+        dropdown (every effective label, i.e. exactly what a search can
+        match -- see ``query_service.fetch_effective_labels``), both
+        alphabetical. Called at startup and after every label change, so a
+        freshly-typed label shows up as a pick-list option immediately.
+        Doesn't restrict what you can type into either."""
         labels = query_service.fetch_known_labels(self.conn)
 
         current_label_text = self.label_combo.currentText()
@@ -780,7 +787,7 @@ class MainWindow(QMainWindow):
         self.search_combo.blockSignals(True)
         self.search_combo.clear()
         self.search_combo.addItem("")  # "" = no filter/show everything
-        self.search_combo.addItems(labels)
+        self.search_combo.addItems(query_service.fetch_effective_labels(self.conn))
         self.search_combo.setCurrentText(current_search_text)
         self.search_combo.blockSignals(False)
 
@@ -830,6 +837,7 @@ class MainWindow(QMainWindow):
             exclude_verified=self.hide_verified,
             exclude_unverified=self.hide_unverified,
             min_confidence=self.min_confidence,
+            max_confidence=self.max_confidence,
         )
         worker.signals.result.connect(self._on_page_loaded)
         worker.signals.error.connect(self._on_page_load_error)
@@ -842,12 +850,13 @@ class MainWindow(QMainWindow):
         rows = query_service.fetch_page(cursor, **kwargs)
         # Total row count for "Page X/Y" and the jump-to-page range. In
         # similarity mode the ranking already covers every matching row
-        # (already filtered by exclude_verified/min_confidence -- see
+        # (already filtered by exclude_verified and the confidence range -- see
         # compute_similarity_order), so its length is the total for free --
         # no need for a second query.
         similarity_order = kwargs.get("similarity_order")
         label_filter = kwargs.get("label_filter")
         min_confidence = kwargs.get("min_confidence")
+        max_confidence = kwargs.get("max_confidence")
         if similarity_order is not None:
             total_rows = len(similarity_order)
         else:
@@ -857,13 +866,14 @@ class MainWindow(QMainWindow):
                 exclude_verified=kwargs.get("exclude_verified", False),
                 exclude_unverified=kwargs.get("exclude_unverified", False),
                 min_confidence=min_confidence,
+                max_confidence=max_confidence,
             )
         # Review-progress counter (see update_status_bar): deliberately
-        # scoped to label_filter/min_confidence only, not hide_(un)verified or
+        # scoped to label_filter and the confidence range only, not hide_(un)verified or
         # any active similarity sort -- see count_verified's docstring for
         # why.
         verified_count, unverified_count = query_service.count_verified(
-            cursor, label_filter=label_filter, min_confidence=min_confidence
+            cursor, label_filter=label_filter, min_confidence=min_confidence, max_confidence=max_confidence
         )
         return generation, rows, total_rows, verified_count, unverified_count
 
@@ -958,9 +968,9 @@ class MainWindow(QMainWindow):
         self.load_page()
 
     def _on_search(self) -> None:
-        """Filter the grid to ROIs whose curated OR original label matches
-        the selected/typed concept (see
-        ``query_service._label_filter_clause``), jump back to page 1, and
+        """Filter the grid to ROIs whose effective label -- new_label where
+        set, else the original label -- matches the selected/typed concept
+        (see ``query_service._build_where``), jump back to page 1, and
         clear any active similarity sort -- fetch_page's similarity-mode
         branch ignores label_filter entirely, so leaving a stale similarity
         ranking in place would make a brand-new search silently do nothing
@@ -1019,7 +1029,11 @@ class MainWindow(QMainWindow):
         for rect_widget in self._rect_widgets:
             rect_widget.set_display_adjustment(self._brightness, contrast)
 
-    def _on_confidence_slider_moved(self, value: int) -> None:
+    @staticmethod
+    def _confidence_text(low: int, high: int) -> str:
+        return f"Confidence: {low / 100:.2f}-{high / 100:.2f}"
+
+    def _on_confidence_slider_moved(self, low: int, high: int) -> None:
         """Live-update the label only -- actually narrowing the view is an
         explicit "Show" click, not tied to every intermediate drag/keyboard
         step. Unlike the zoom slider (purely client-side, cheap), this
@@ -1027,11 +1041,11 @@ class MainWindow(QMainWindow):
         keyboard-driven changes, so tying the filter to that would silently
         never apply when adjusted via arrow keys -- an explicit button
         sidesteps that regardless of input method."""
-        self.confidence_label.setText(f"Min confidence: {value / 100:.2f}")
+        self.confidence_label.setText(self._confidence_text(low, high))
 
     def _on_confidence_filter_clicked(self) -> None:
-        """Apply the slider's current position as a minimum-confidence
-        floor on what's SHOWN, and requery -- clearing any active
+        """Apply the slider's current range as the confidence range of what's
+        SHOWN (both ends inclusive), and requery -- clearing any active
         similarity sort, same as search/sort/hide-verified changes, since
         it also narrows the ranking pool.
 
@@ -1040,10 +1054,10 @@ class MainWindow(QMainWindow):
         query_service._build_where) -- nothing here ever UPDATEs the
         stored `confidence` column or any other row data.
         """
-        new_value = self.confidence_slider.value() / 100.0
-        if new_value == self.min_confidence:
+        low, high = (v / 100.0 for v in self.confidence_slider.values())
+        if (low, high) == (self.min_confidence, self.max_confidence):
             return
-        self.min_confidence = new_value
+        self.min_confidence, self.max_confidence = low, high
         self.similarity_order = None
         self.similarity_reference = None
         self.similarity_pool_total = None
@@ -1895,13 +1909,15 @@ class MainWindow(QMainWindow):
             label_filter = rect_widget.row.label or rect_widget.row.original_label
             label_mode = "effective"
         else:
+            # Within the current search, if any -- matched by the same
+            # effective-label rule as the search itself (see _build_where).
             label_filter = self.label_filter
-            label_mode = "new"
+            label_mode = "effective"
 
         # See load_page()'s comment: self.conn (not a cursor made from it on
         # this thread) is passed through, and a real bound method -- not a
         # lambda -- is connected so PySide correctly queues delivery onto
-        # the GUI thread. exclude_verified/exclude_unverified/min_confidence narrow the
+        # the GUI thread. exclude_verified/exclude_unverified/the confidence range narrow the
         # ranking pool itself (see compute_similarity_order's docstring for
         # why that has to happen here, not just as a display-time filter).
         worker = Worker(
@@ -1913,6 +1929,7 @@ class MainWindow(QMainWindow):
             self.hide_verified,
             self.hide_unverified,
             self.min_confidence,
+            self.max_confidence,
         )
         worker.signals.result.connect(self._on_similarity_computed)
         worker.signals.error.connect(self._on_similarity_error)
@@ -1928,6 +1945,7 @@ class MainWindow(QMainWindow):
         exclude_verified: bool,
         exclude_unverified: bool,
         min_confidence: float | None,
+        max_confidence: float | None,
     ):
         # .cursor() called here, i.e. on the worker thread that will use it.
         cursor = conn.cursor()
@@ -1939,6 +1957,7 @@ class MainWindow(QMainWindow):
             exclude_verified=exclude_verified,
             exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
+            max_confidence=max_confidence,
         )
         # Same pool, minus the embedding requirement -- so the GUI can say
         # "ranked M of T" and make it obvious whether the search really did
@@ -1950,6 +1969,7 @@ class MainWindow(QMainWindow):
             exclude_verified=exclude_verified,
             exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
+            max_confidence=max_confidence,
         )
         return roi_index, order, pool_total
 
