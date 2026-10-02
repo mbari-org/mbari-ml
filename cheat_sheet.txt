@@ -332,7 +332,7 @@ review (interactive GUI)
   The right panel shows the full source image with mouse-wheel zoom and
   click-drag pan, overlaying EVERY detection on that image -- not just the
   current page's rows. Drag a box's handles to resize/reposition it (saved
-  immediately, crop regenerated); the selected box shows red, the rest pale
+  immediately; crop, sharpness and embedding regenerated); the selected box shows red, the rest pale
   blue-grey; right-click a box for "Delete".
 
   "+ Add New ROI" (green, top of the controls panel) -- for a detection the
@@ -344,6 +344,24 @@ review (interactive GUI)
   moment you label it (confidence 1.0, verified set -- a human drew it), and
   its embedding is computed in the background using the same DINOv3 model
   `embed` uses, so it's immediately usable by similarity search/clustering.
+
+  "+ Add ROI with SAM3" (next to it; optional, needs --sam3-model, see
+  below) -- click an object on the image (inside an existing box is fine);
+  SAM3 draws its box (dashed yellow) and a popup opens at the click. Tab /
+  Shift-Tab steps through SAM3's nested boxes (part / object / object plus
+  surroundings), type or pick the label, Enter saves it like a hand-drawn
+  box; Esc or a click outside discards it. Stays on until clicked again or Esc.
+
+  "Tighten Boxes (SAM3)" -- SAM3 refits every unverified box on the shown
+  image; you see the new boxes dashed yellow and confirm before anything is
+  written. Boxes SAM3 leaves about the same, or disagrees on, are left alone.
+  Right-click any box (verified too) -> "Tighten with SAM3" for just that one.
+
+  SAM3 setup (optional -- without it these two buttons are greyed out and
+  nothing else changes):
+    pip install git+https://github.com/ultralytics/CLIP.git
+    download sam3.pt (gated: request access at huggingface.co/facebook/sam3)
+    mbariml review DB --sam3-model /path/to/sam3.pt   (or MBARIML_SAM3_MODEL)
 
   "Open Video" (next to Delete) -- for ROIs that came from `infer video`.
   Opens the SOURCE FOOTAGE at the exact moment this detection was made, using
@@ -894,9 +912,13 @@ mbariml review --help
 │ *    database_path      <str>  Path to the DuckDB database. [required]                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --label            <str>  Filter ROIs by label                                                   │
-│ --page-size        <int>  Number of ROIs to show per page. [default: 500]                        │
-│ --help                    Show this message and exit.                                            │
+│ --label             <str>  Filter ROIs by label                                                  │
+│ --page-size         <int>  Number of ROIs to show per page. [default: 500]                       │
+│ --sam3-model        <str>  Path to SAM3 weights (sam3.pt) to enable 'Add ROI with SAM3' and      │
+│                            'Tighten Boxes'. Optional; defaults to $MBARIML_SAM3_MODEL. Also      │
+│                            needs Ultralytics' CLIP: pip install                                  │
+│                            git+https://github.com/ultralytics/CLIP.git                           │
+│ --help                     Show this message and exit.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

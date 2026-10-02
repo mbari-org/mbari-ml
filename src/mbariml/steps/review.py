@@ -24,6 +24,13 @@ def review(
     database_path: str = typer.Argument(..., help="Path to the DuckDB database."),
     label: str = typer.Option(None, help="Filter ROIs by label"),
     page_size: int = typer.Option(500, help="Number of ROIs to show per page."),
+    sam3_model: str = typer.Option(
+        None,
+        "--sam3-model",
+        help="Path to SAM3 weights (sam3.pt) to enable 'Add ROI with SAM3' and 'Tighten Boxes'. "
+        "Optional; defaults to $MBARIML_SAM3_MODEL. Also needs Ultralytics' CLIP: "
+        "pip install git+https://github.com/ultralytics/CLIP.git",
+    ),
 ) -> None:
     """Launch the ROI review/labeling GUI."""
     # Imported lazily: PySide6 is only needed for this one interactive command.
@@ -32,7 +39,7 @@ def review(
     from mbariml.gui.main_window import MainWindow
 
     qt_app = QApplication(sys.argv)
-    main_window = MainWindow(database_path, label, page_size)
+    main_window = MainWindow(database_path, label, page_size, sam3_model=sam3_model)
     main_window.show()
     sys.exit(qt_app.exec())
 

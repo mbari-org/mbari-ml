@@ -6,7 +6,8 @@ License, see ``THIRD_PARTY_NOTICES.md``). Wheel-zoom and drag-pan are
 entirely default ``pyqtgraph.ViewBox`` behavior -- no custom mouse-event
 code needed here, matching the original, which has none either -- except for
 "draw mode" (see ``_DrawableViewBox``), added for the "Add New ROI" tool,
-which is new here (not present in vars-gridview).
+and "point mode", added for "Add ROI with SAM3" -- both new here (not present
+in vars-gridview) -- plus dashed preview boxes for SAM3's suggestions.
 
 Dropped relative to vars-gridview: the dirty-flag/deferred-save machinery
 and the dedicated background thread pool for image loading. This class
@@ -40,11 +41,20 @@ pg.setConfigOptions(imageAxisOrder="row-major")
 MIN_DRAWN_BOX_SIZE = 3
 
 
+# SAM3's suggested boxes, before anything is saved: dashed, in a colour no
+# saved box uses (see bounding_box.ACTIVE_COLOR/INACTIVE_COLOR).
+PREVIEW_COLOR = "#ffcc00"
+
+
 class _DrawableViewBox(pg.ViewBox):
     """A ``ViewBox`` that behaves exactly like the plain default (wheel-zoom,
     drag-to-pan) unless ``draw_mode`` is on, in which case a left-button drag
     draws a rubber-band rectangle instead of panning, and reports the
     finished rectangle -- in image-pixel coordinates -- via ``box_drawn``.
+
+    Separately, while ``point_clicked`` is set, a left-button *click* reports
+    its position in image pixels plus its screen position (to place a popup
+    at), and drags keep panning.
 
     Reuses ``ViewBox``'s own built-in ``RectMode`` scale-box mechanics
     (``updateScaleBox``/``rbScaleBox``, and the same
@@ -61,6 +71,15 @@ class _DrawableViewBox(pg.ViewBox):
         super().__init__(*args, **kwargs)
         self.draw_mode = False
         self.box_drawn: Callable[[float, float, float, float], None] | None = None
+        self.point_clicked: Callable[[float, float, QtCore.QPointF], None] | None = None
+
+    def mouseClickEvent(self, ev) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        if self.point_clicked is None or ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            super().mouseClickEvent(ev)
+            return
+        ev.accept()
+        p = self.mapToView(ev.pos())
+        self.point_clicked(p.x(), p.y(), ev.screenPos())
 
     def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: N802 (pyqtgraph's own naming)
         if not self.draw_mode or ev.button() != QtCore.Qt.MouseButton.LeftButton:
@@ -111,6 +130,8 @@ class DetailView(QtWidgets.QWidget):
         self._current_image_path: str | None = None
         self._image_size: tuple[int, int] | None = None  # (width, height)
         self._boxes: list[BoundingBox] = []
+        self._previews: list[QtWidgets.QGraphicsRectItem] = []
+        self._point_mode = False
 
     def show_image(self, image_path: str, image_bgr: np.ndarray) -> None:
         """Display *image_bgr*, auto-ranging only for a genuinely new image
@@ -128,9 +149,22 @@ class DetailView(QtWidgets.QWidget):
         self._current_image_path = image_path
         self._image_size = (width, height)
         if is_new_image:
+            self.clear_preview()  # suggestions belong to the image they were made on
             self._view_box.autoRange()
 
+    @property
+    def image_size(self) -> tuple[int, int] | None:
+        """``(width, height)`` of the image shown, or None."""
+        return self._image_size
+
+    def _update_menu(self) -> None:
+        # While drawing or clicking for SAM3, a right-click is meant for a
+        # box's own menu (Delete / Tighten); with handles hidden, pyqtgraph
+        # would otherwise also hand it to the ViewBox's built-in menu.
+        self._view_box.setMenuEnabled(not (self._view_box.draw_mode or self._point_mode))
+
     def clear(self) -> None:
+        self.clear_preview()
         self._clear_boxes()
         self._image_item.clear()
         self._current_image_path = None
@@ -152,6 +186,7 @@ class DetailView(QtWidgets.QWidget):
         """
         self._view_box.draw_mode = enabled
         self._view_box.box_drawn = on_box_drawn if enabled else None
+        self._update_menu()
         # Existing boxes step aside so a drag started inside one draws a new
         # box on top of/within it instead of moving it (see
         # BoundingBox.set_interactive); set_boxes() applies the same to boxes
@@ -162,6 +197,44 @@ class DetailView(QtWidgets.QWidget):
             QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor
         )
 
+    def set_point_mode(
+        self, enabled: bool, on_point_clicked: Callable[[float, float, QtCore.QPointF], None] | None = None
+    ) -> None:
+        """Turn "Add ROI with SAM3" clicking on/off. While on, a left-click
+        anywhere on the image -- inside an existing box too -- is reported via
+        *on_point_clicked* as ``(x, y, screen_pos)``, ``x``/``y`` in image
+        pixels; drags still pan, wheel still zooms. Existing boxes are click-
+        through and can't be dragged (see ``BoundingBox.set_click_through``),
+        so clicking an object inside a bigger box picks the object, and a
+        stray drag pans instead of moving a box."""
+        self._point_mode = enabled
+        self._view_box.point_clicked = on_point_clicked if enabled else None
+        self._update_menu()
+        for box in self._boxes:
+            box.set_interactive(not enabled and not self._view_box.draw_mode)
+            box.set_click_through(enabled)
+        self._graphics_view.setCursor(
+            QtCore.Qt.CursorShape.PointingHandCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor
+        )
+
+    def show_preview(self, boxes: list[tuple[float, float, float, float]]) -> None:
+        """Draw *boxes* (``(x_min, y_min, x_max, y_max)``, image pixels) as
+        dashed suggestions, replacing any shown before. Nothing is saved."""
+        self.clear_preview()
+        pen = pg.mkPen(PREVIEW_COLOR, width=2, style=QtCore.Qt.PenStyle.DashLine)
+        for x0, y0, x1, y1 in boxes:
+            item = QtWidgets.QGraphicsRectItem(QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
+            item.setPen(pen)
+            item.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            item.setZValue(1000)  # above the image and every saved box
+            self._view_box.addItem(item)
+            self._previews.append(item)
+
+    def clear_preview(self) -> None:
+        for item in self._previews:
+            self._view_box.removeItem(item)
+        self._previews = []
+
     def set_boxes(
         self,
         frame_rois: list[FrameRoi],
@@ -170,9 +243,12 @@ class DetailView(QtWidgets.QWidget):
         on_clicked: Callable[[int, object], None],
         on_changed: Callable[[int, float, float, float, float], None],
         on_delete: Callable[[int], None],
+        on_tighten: Callable[[int], None] | None = None,
     ) -> None:
         """Rebuild the box overlays for the currently-shown image -- one per
-        detection on that frame, regardless of which mosaic page it's on."""
+        detection on that frame, regardless of which mosaic page it's on.
+        *on_tighten*, when given (SAM3 is available), adds "Tighten with
+        SAM3" to each box's right-click menu."""
         self._clear_boxes()
         if self._image_size is None:
             return
@@ -188,9 +264,11 @@ class DetailView(QtWidgets.QWidget):
                 clicked_callback=on_clicked,
                 changed_callback=on_changed,
                 delete_callback=on_delete,
+                tighten_callback=on_tighten,
             )
-            if self._view_box.draw_mode:
+            if self._view_box.draw_mode or self._point_mode:
                 box.set_interactive(False)
+            box.set_click_through(self._point_mode)
             self._boxes.append(box)
 
     def update_active(self, active_roi_indices: set[int]) -> None:

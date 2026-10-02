@@ -1,0 +1,213 @@
+"""Optional SAM3 assistance for the review GUI: one-click boxes and box tightening.
+
+Uses the *interactive* half of Meta's Segment Anything 3 through Ultralytics'
+``SAM3Predictor`` -- point and box prompts on one image, SAM2-style, not
+SAM3's text/concept search:
+
+  a point     the object under the click; SAM3 offers ~3 nested masks
+              (a part, the object, the object plus its surroundings)
+  a box       a tight box around what that box contains
+
+SAM3 is entirely optional. Nothing here loads at startup: :func:`unavailable`
+only looks for files, and the model loads on first use, on a worker thread.
+If anything is missing or fails to load, review works exactly as without it
+and the SAM3 controls are disabled, with the reason as their tooltip.
+
+Setup (none of it is a pip dependency of mbariml):
+
+  pip install git+https://github.com/ultralytics/CLIP.git
+  download sam3.pt -- gated: request access at huggingface.co/facebook/sam3
+  mbariml review DB --sam3-model /path/to/sam3.pt   (or set MBARIML_SAM3_MODEL)
+
+Ultralytics' CLIP has to be checked for up front: when it's missing,
+Ultralytics tries to ``pip install`` it from GitHub in the middle of loading
+the model, and PyPI's unrelated ``clip`` package (a clipboard tool) imports
+fine and then fails confusingly.
+
+Measured on an M3 Ultra (MPS): ~6 s to load, ~0.3-0.45 s of image features per
+new image (cached for the image on screen), then ~15-50 ms per prompt.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from mbariml.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+MODEL_ENV_VAR = "MBARIML_SAM3_MODEL"
+CLIP_INSTALL = "pip install git+https://github.com/ultralytics/CLIP.git"
+
+Box = tuple[float, float, float, float]  # x_min, y_min, x_max, y_max in image pixels
+
+
+@dataclass
+class Candidate:
+    box: Box
+    score: float
+    kind: str  # 'point' | 'box'
+
+
+def resolve_model_path(model_path: str | None) -> str | None:
+    """The ``--sam3-model`` option, else ``$MBARIML_SAM3_MODEL``, else None."""
+    return model_path or os.environ.get(MODEL_ENV_VAR) or None
+
+
+def unavailable(model_path: str | None) -> str | None:
+    """Why SAM3 can't be used, or None if it looks usable. Cheap: no imports
+    of torch or Ultralytics, just file checks -- safe to call at startup."""
+    if not model_path:
+        return f"No SAM3 model: start review with --sam3-model /path/to/sam3.pt (or set {MODEL_ENV_VAR})."
+    if not Path(model_path).is_file():
+        return f"SAM3 model not found: {model_path}"
+    spec = importlib.util.find_spec("clip")
+    if spec is None:
+        return f"SAM3 needs Ultralytics' CLIP: {CLIP_INSTALL}"
+    locations = spec.submodule_search_locations or []
+    if not any((Path(loc) / "simple_tokenizer.py").is_file() for loc in locations):
+        return ("The installed 'clip' package isn't Ultralytics' CLIP (PyPI's 'clip' is an unrelated "
+                f"clipboard tool): pip uninstall clip, then {CLIP_INSTALL}")
+    return None
+
+
+def iou(a: Box, b: Box) -> float:
+    inter = _intersection(a, b)
+    union = _area(a) + _area(b) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _area(b: Box) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _intersection(a: Box, b: Box) -> float:
+    return (max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+            * max(0.0, min(a[3], b[3]) - max(a[1], b[1])))
+
+
+def judge_tightening(old: Box, new: Box) -> str:
+    """Classify SAM3's box for an existing one:
+
+    'tighter'    mostly inside the old box, and noticeably different from it
+    'unchanged'  already tight -- nothing worth writing
+    'disagrees'  SAM3 found something else: it reaches well outside the old
+                 box (the object was cut off, or SAM3 grabbed a neighbour),
+                 or it shrank to a small part of it
+    """
+    if _area(new) <= 0 or _area(old) <= 0:
+        return "disagrees"
+    if iou(old, new) >= 0.95:
+        return "unchanged"
+    inside = _intersection(old, new) / _area(new)
+    if inside < 0.85 or _area(new) < 0.15 * _area(old):
+        return "disagrees"
+    return "tighter"
+
+
+class Sam3:
+    """SAM3's interactive predictor, loaded once and shared; thread-safe.
+
+    The review GUI runs every call on a one-thread pool of its own (shared
+    with its DINOv3 embeddings), so the lock here only matters to other
+    callers.
+    """
+
+    def __init__(self, model_path: str) -> None:
+        self.model_path = model_path
+        self._lock = threading.Lock()
+        self._pr = None
+        self._feat_key: str | None = None
+        self._load_error: str | None = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._pr is not None
+
+    def load(self) -> None:
+        with self._lock:
+            self._load()
+
+    def _load(self) -> None:
+        if self._pr is not None:
+            return
+        if self._load_error is not None:  # don't spend seconds failing the same way again
+            raise RuntimeError(self._load_error)
+        try:
+            self._pr = self._build()
+        except Exception as exc:
+            self._load_error = f"{type(exc).__name__}: {exc}"
+            raise
+        self._feat_key = None
+
+    def _build(self):
+        import torch
+        from ultralytics.models.sam import SAM3Predictor
+
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Loading SAM3 from %s on %s", self.model_path, device)
+        pr = SAM3Predictor(overrides=dict(model=self.model_path, device=device, half=device != "cpu",
+                                          imgsz=1008, conf=0.0, verbose=False, save=False))
+        pr.setup_model(verbose=False)
+        # The first prompt compiles kernels (~1.5 s): pay it here, not on the first click.
+        dummy = np.zeros((256, 256, 3), np.uint8)
+        pr.set_image(dummy)
+        pr.inference_features(pr.features, dummy.shape[:2], bboxes=[[10, 10, 100, 100]])
+        return pr
+
+    def _features(self, key: str, image_bgr: np.ndarray):
+        if self._feat_key != key:
+            self._pr.set_image(image_bgr)
+            self._feat_key = key
+        return self._pr.features
+
+    def _run(self, feats, shape, **prompt) -> list[tuple[Box, float]]:
+        _masks, boxes = self._pr.inference_features(feats, shape[:2], **prompt)
+        if boxes is None or len(boxes) == 0:
+            return []
+        h, w = shape[:2]
+        out = []
+        for b in boxes.float().cpu().numpy():
+            x0, y0, x1, y1 = (float(np.clip(b[0], 0, w)), float(np.clip(b[1], 0, h)),
+                              float(np.clip(b[2] + 1, 0, w)), float(np.clip(b[3] + 1, 0, h)))
+            if x1 - x0 >= 4 and y1 - y0 >= 4:
+                out.append(((x0, y0, x1, y1), float(b[4])))
+        return out
+
+    def point_candidates(self, image_key: str, image_bgr: np.ndarray, x: float, y: float) -> list[Candidate]:
+        """SAM3's boxes for the object at (x, y), smallest first, near-duplicates
+        merged. ``image_key`` (the image path) lets features be reused."""
+        with self._lock:
+            self._load()
+            feats = self._features(image_key, image_bgr)
+            raw = [Candidate(b, s, "point") for b, s in
+                   self._run(feats, image_bgr.shape, points=[[float(x), float(y)]], labels=[1],
+                             multimask_output=True)]
+        kept: list[Candidate] = []
+        for c in sorted(raw, key=lambda c: -c.score):
+            if all(iou(c.box, k.box) < 0.92 for k in kept):
+                kept.append(c)
+        return sorted(kept, key=lambda c: _area(c.box))
+
+    def tighten(self, image_key: str, image_bgr: np.ndarray, boxes: list[Box]) -> list[Box | None]:
+        """A tight box around what each of ``boxes`` contains (one SAM3 box
+        prompt each, sharing one image's features), or None where SAM3 finds
+        nothing."""
+        out: list[Box | None] = []
+        with self._lock:
+            self._load()
+            feats = self._features(image_key, image_bgr)
+            for box in boxes:
+                found = self._run(feats, image_bgr.shape, bboxes=[list(map(float, box))])
+                out.append(max(found, key=lambda r: r[1])[0] if found else None)
+        return out
+
+
+__all__ = ["Sam3", "Candidate", "Box", "MODEL_ENV_VAR", "resolve_model_path", "unavailable", "judge_tightening",
+           "iou"]

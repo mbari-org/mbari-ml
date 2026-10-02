@@ -79,10 +79,13 @@ PREDICTIONS_DOCS: dict[str, tuple[str, str]] = {
         "there's no model prediction to preserve.",
     ),
     "embedding": (
-        "embed",
-        "DINOv3 embedding of the ROI crop. `NULL` until `mbariml embed` runs "
-        "(hand-drawn ROIs get one immediately, from the review GUI's "
-        "background worker). **Never mix embeddings from two different models "
+        "embed, review",
+        "DINOv3 embedding of the ROI crop. `NULL` until `mbariml embed` runs. "
+        "The review GUI computes it in a background worker for every box it "
+        "adds (hand-drawn or SAM3) and recomputes it whenever a box's geometry "
+        "changes (dragged, or tightened by SAM3) -- cleared to `NULL` at once, "
+        "so a stale vector is never used, and filled in moments later; "
+        "`mbariml embed` fills any that are still `NULL`. **Never mix embeddings from two different models "
         "in one database** — clustering and similarity search would compare "
         "vectors from different spaces; re-embed with `--force` instead.",
     ),
@@ -91,19 +94,21 @@ PREDICTIONS_DOCS: dict[str, tuple[str, str]] = {
         "The **curated** label. This is what `cluster` writes, what the review "
         "GUI edits, and what every export filters on — rows labeled `'noise'` "
         "are excluded from `export voc`/`yolo`/`id`. `NULL` until something "
-        "curates it, which is why display and `stats` fall back to "
+        "curates it, which is why display and `export stats` fall back to "
         "`COALESCE(new_label, label)`.",
     ),
     "roi": (
         "ingest, review",
         "The JPEG-encoded crop itself. `embed`, `cluster`, and the review "
         "mosaic all read this, which is why they never need the source image "
-        "on disk. Regenerated when a box is dragged in the review GUI.",
+        "on disk. Regenerated when a box is dragged or tightened in the "
+        "review GUI.",
     ),
     "sharpness": (
-        "ingest",
+        "ingest, review",
         "Variance of the Laplacian — a cheap blur score, computed at ingest "
-        "from the crop. Higher is sharper. Backs the review GUI's \"Sort by "
+        "from the crop, and recomputed by the review GUI when a box is added, "
+        "dragged or tightened. Higher is sharper. Backs the review GUI's \"Sort by "
         "Sharpness\", which surfaces unusable crops for deletion.",
     ),
     "verified": (

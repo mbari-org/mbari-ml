@@ -29,6 +29,14 @@ drag a box on the full-image panel, type a label, and repeat for as many
 boxes as needed before clicking the button again (or pressing Esc) to stop.
 See ``_DrawableViewBox`` in ``detail_view.py`` for the drawing mechanics and
 ``_on_new_box_drawn`` below for what happens on each finished box.
+
+Optional, when SAM3 is set up (see ``mbariml.gui.sam3_service``): "Add ROI
+with SAM3" -- click an object, SAM3 draws its box, pick the label in a popup
+at the click -- and "Tighten Boxes (SAM3)" for the shown image (or "Tighten
+with SAM3" on one box's right-click menu), previewed before anything is
+written. Without SAM3 those controls are greyed out and nothing else changes.
+Whenever a box is added or its geometry changes -- by hand or by SAM3 -- its
+embedding and sharpness are recomputed from the new crop.
 """
 
 from __future__ import annotations
@@ -36,9 +44,10 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QEvent, QThreadPool, Qt, QTimer, Slot
+from PySide6.QtCore import QEvent, QPoint, QThreadPool, Qt, QTimer, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QGraphicsView,
@@ -48,6 +57,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -55,13 +65,14 @@ from PySide6.QtWidgets import (
 )
 
 from mbariml import db
-from mbariml.gui import annotation_service, query_service
+from mbariml.gui import annotation_service, query_service, sam3_service
 from mbariml.gui.detail_view import DetailView
 from mbariml.gui.mosaic_view import MosaicView, MosaicVisibilityFilters
 from mbariml.gui.rect_widget import RectWidget
 from mbariml.gui.roi_loading_coordinator import MosaicRoiLoadingCoordinator
 from mbariml.gui.roi_service import RoiService, crop_and_encode
 from mbariml.gui.runnables import Worker
+from mbariml.gui.sam3_popup import Sam3BoxPopup
 from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, SelectionModel
 from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
@@ -218,7 +229,9 @@ DARK_STYLESHEET = f"""
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, database_path: str, label: str | None = None, page_size: int = 500) -> None:
+    def __init__(
+        self, database_path: str, label: str | None = None, page_size: int = 500, sam3_model: str | None = None
+    ) -> None:
         super().__init__()
         self.setWindowTitle("ROI Labeling App")
         self.setGeometry(100, 100, 2400, 1400)
@@ -292,8 +305,16 @@ class MainWindow(QMainWindow):
         # (and its `signals` QObject) while the pool is still running it on
         # another thread, which crashes (this was an actual segfault hit
         # during testing). Every Worker dispatched from this window is kept
-        # here for the window's lifetime; the memory cost is negligible.
+        # here until it finishes -- see _start_worker/_forget_worker.
         self._workers: list[Worker] = []
+        # GPU models (DINOv3 embeddings for new/edited boxes, SAM3) run on
+        # their own one-thread pool: one job at a time -- PyTorch makes no
+        # promise that two threads can share one MPS device safely -- and
+        # never tying up the global pool's threads, which thumbnail and page
+        # loads need, while a model loads (several seconds) or a queue drains.
+        self._gpu_pool = QThreadPool(self)
+        self._gpu_pool.setMaxThreadCount(1)
+        self._closing = False
 
         # Full-image detail view state: every detection on the currently
         # shown image (not just this page's rows -- see fetch_rois_for_image),
@@ -305,6 +326,27 @@ class MainWindow(QMainWindow):
 
         # "Add New ROI" tool state -- see _on_add_new_toggled/_on_new_box_drawn.
         self._add_new_active = False
+        self._last_new_label: str | None = None  # the label popup starts on it
+
+        # Optional SAM3 (see mbariml.gui.sam3_service). _sam3_unavailable is
+        # the reason it can't be used (shown as the controls' tooltip), or
+        # None; the model itself loads on first use, off the GUI thread.
+        sam3_path = sam3_service.resolve_model_path(sam3_model)
+        self._sam3_unavailable = sam3_service.unavailable(sam3_path)
+        self._sam3 = sam3_service.Sam3(sam3_path) if self._sam3_unavailable is None else None
+        self._sam3_add_active = False
+        # Request numbers, bumped by each new click / tighten (and by leaving
+        # the mode, an error, or closing): see the "SAM3 (optional)" section.
+        self._sam3_point_request = 0
+        self._sam3_tighten_request = 0
+        self._sam3_popup: Sam3BoxPopup | None = None
+
+        # roi_index -> generation of its latest embedding request: a box
+        # dragged twice in quick succession starts two workers, and the older
+        # result must not overwrite the newer one if it happens to land last.
+        self._embed_generation: dict[int, int] = {}
+        # (message, message once done, ROIs still embedding) -- see _show_embedding_status.
+        self._embed_status: tuple[str, str, set[int]] | None = None
 
         self._display_adjust_timer = QTimer(self)
         self._display_adjust_timer.setSingleShot(True)
@@ -349,6 +391,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Stop pending background loads and flush/close the DuckDB connection."""
+        self._closing = True  # results still in flight are ignored from here on
+        self._sam3_point_request += 1
+        self._sam3_tighten_request += 1
+        self._gpu_pool.clear()  # drop queued GPU jobs; a running one finishes on its own
+        if self._sam3_popup is not None:
+            self._sam3_popup.close()
         self._roi_loading_cancel_event.set()
         self._roi_loading.cancel_pending()
         if self._colour_corrector is not None:
@@ -364,7 +412,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         """Delete removes the selection (with confirmation); Escape stops
-        "Add New ROI" mode if it's active, otherwise clears the selection; V
+        "Add New ROI" or "Add ROI with SAM3" mode if one is active, otherwise clears the selection; V
         verifies the selection, Shift+V unverifies it; arrow keys
         navigate/extend the selection (handled in eventFilter)."""
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self.delete_selected_rois)
@@ -375,6 +423,8 @@ class MainWindow(QMainWindow):
     def _on_escape_pressed(self) -> None:
         if self._add_new_active:
             self.add_new_button.setChecked(False)  # triggers _on_add_new_toggled(False)
+        elif self._sam3_add_active:
+            self.sam3_add_button.setChecked(False)  # triggers _on_sam3_add_toggled(False)
         else:
             self.unselect_all()
 
@@ -410,15 +460,32 @@ class MainWindow(QMainWindow):
             "QPushButton:checked { background-color: #1f7a38; }"
         )
         self.add_new_button.toggled.connect(self._on_add_new_toggled)
-        add_new_layout.addWidget(self.add_new_button)
-        controls_layout.addLayout(add_new_layout)
-        controls_layout.addWidget(
-            QLabel(
-                "Missed a detection? Click Add New ROI, drag a box on the image panel above, "
-                "then type its label. Keep drawing more boxes, or click the button again "
-                "(or press Esc) when done."
-            )
+        self.sam3_add_button = QPushButton("+ Add ROI with SAM3")
+        self.sam3_add_button.setCheckable(True)
+        self.sam3_add_button.setStyleSheet(
+            "QPushButton { background-color: #1f8a9e; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #26a0b7; }"
+            "QPushButton:checked { background-color: #155f6d; }"
+            f"QPushButton:disabled {{ background-color: {_PANEL}; color: {_TEXT_DISABLED}; }}"
         )
+        self.sam3_add_button.toggled.connect(self._on_sam3_add_toggled)
+        self.sam3_tighten_button = QPushButton("Tighten Boxes (SAM3)")
+        self.sam3_tighten_button.clicked.connect(self._on_tighten_image_clicked)
+        for button in (self.add_new_button, self.sam3_add_button, self.sam3_tighten_button):
+            # Sized to their text, not stretched across the whole panel.
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            add_new_layout.addWidget(button)
+        add_new_layout.addStretch(1)
+        self._set_sam3_controls_enabled(self._sam3_unavailable)
+        controls_layout.addLayout(add_new_layout)
+        add_help = QLabel(
+            "Missed a detection? Add New ROI: drag a box on the image panel above, then type its label. "
+            "Add ROI with SAM3: click the object, Tab to pick the box size, type its label, Enter. "
+            "Both stay on for more boxes until clicked again (or Esc). "
+            "Tighten Boxes refits the shown image's unverified boxes; you preview them first."
+        )
+        add_help.setWordWrap(True)
+        controls_layout.addWidget(add_help)
 
         sort_layout = QHBoxLayout()
         sort_layout.addWidget(QLabel("Sort by:"))
@@ -766,8 +833,7 @@ class MainWindow(QMainWindow):
         )
         worker.signals.result.connect(self._on_page_loaded)
         worker.signals.error.connect(self._on_page_load_error)
-        self._workers.append(worker)  # see __init__ comment: must outlive the thread pool run
-        QThreadPool.globalInstance().start(worker)
+        self._start_worker(worker)
 
     @staticmethod
     def _fetch_page_worker(generation: int, conn, **kwargs) -> tuple[int, list, int, int, int]:
@@ -1151,6 +1217,7 @@ class MainWindow(QMainWindow):
             on_clicked=self._on_detail_box_clicked,
             on_changed=self._on_detail_box_changed,
             on_delete=self._on_detail_box_delete_requested,
+            on_tighten=self._on_tighten_box_requested if self._sam3 is not None else None,
         )
 
     def _find_rect_widget(self, roi_index: int) -> RectWidget | None:
@@ -1179,16 +1246,23 @@ class MainWindow(QMainWindow):
     def _on_detail_box_changed(
         self, roi_index: int, x_min: float, y_min: float, x_max: float, y_max: float
     ) -> None:
-        """A box was dragged/resized and released: persist immediately."""
+        """A box was dragged/resized and released (or tightened by SAM3):
+        persist immediately, with its crop and sharpness regenerated, then
+        recompute its embedding in the background -- the stored one described
+        the old crop (update_bbox clears it in the meantime)."""
         image = (
             self._roi_service.fetch_full_image(self._current_detail_image_path)
             if self._current_detail_image_path
             else None
         )
         roi_blob = crop_and_encode(image, x_min, y_min, x_max, y_max) if image is not None else None
+        roi_bgr = self._roi_service.decode_roi(roi_blob) if roi_blob is not None else None
+        sharpness = compute_sharpness(roi_bgr) if roi_bgr is not None else None
 
         try:
-            annotation_service.update_bbox(self.conn, roi_index, x_min, y_min, x_max, y_max, roi_blob)
+            annotation_service.update_bbox(
+                self.conn, roi_index, x_min, y_min, x_max, y_max, roi_blob, sharpness=sharpness
+            )
         except Exception:
             logger.exception("Error updating bounding box for ROI #%s", roi_index)
             self.status_label.setText(f"Failed to save bounding box for ROI #{roi_index} -- see log.")
@@ -1205,10 +1279,15 @@ class MainWindow(QMainWindow):
             rect_widget.row.x_min, rect_widget.row.y_min = x_min, y_min
             rect_widget.row.x_max, rect_widget.row.y_max = x_max, y_max
             rect_widget.row.roi_blob = roi_blob
+            if sharpness is not None and hasattr(rect_widget.row, "sharpness"):
+                rect_widget.row.sharpness = sharpness
             rect_widget.request_roi_refresh()  # redecode the tile thumbnail, threaded
 
         logger.info("Updated bounding box for ROI #%s", roi_index)
-        self.status_label.setText(f"Saved bounding box for ROI #{roi_index}.")
+        self._show_embedding_status(f"Saved bounding box for ROI #{roi_index}. Recomputing its embedding...",
+                                    f"Saved bounding box for ROI #{roi_index} and recomputed its embedding.",
+                                    [roi_index])
+        self._start_embedding(roi_index, roi_bgr)
 
     def _on_detail_box_delete_requested(self, roi_index: int) -> None:
         """A box's right-click "Delete" was chosen."""
@@ -1309,24 +1388,33 @@ class MainWindow(QMainWindow):
 
     # -- Add New ROI -----------------------------------------------------------
 
+    def _require_image_for(self, button: QPushButton) -> bool:
+        """The add modes draw on the image in the detail panel, so turning one
+        on with no image shown is refused with an explanatory message (and
+        the button un-checked) instead of silently doing nothing."""
+        if self._current_detail_image_path is not None:
+            return True
+        QMessageBox.information(
+            self,
+            "No Image Shown",
+            "Select an ROI first so its source image is shown in the panel above -- "
+            "new boxes are drawn on that image.",
+        )
+        button.blockSignals(True)
+        button.setChecked(False)
+        button.blockSignals(False)
+        return False
+
     def _on_add_new_toggled(self, checked: bool) -> None:
         """The green "Add New ROI" button: toggling it on arms drawing mode
         on the detail view (see DetailView.set_draw_mode); toggling it off
         (button click, or Esc via _on_escape_pressed) disarms it. Requires an
-        image already shown in the detail panel -- there's nothing to draw
-        on otherwise -- so turning it on with none shown is refused with an
-        explanatory message instead of silently doing nothing."""
-        if checked and self._current_detail_image_path is None:
-            QMessageBox.information(
-                self,
-                "No Image Shown",
-                "Select an ROI first so its source image is shown in the panel above -- "
-                "new boxes are drawn on that image.",
-            )
-            self.add_new_button.blockSignals(True)
-            self.add_new_button.setChecked(False)
-            self.add_new_button.blockSignals(False)
+        image already shown in the detail panel (see _require_image_for).
+        Exclusive with "Add ROI with SAM3": turning one on turns the other off."""
+        if checked and not self._require_image_for(self.add_new_button):
             return
+        if checked and self._sam3_add_active:
+            self.sam3_add_button.setChecked(False)  # triggers _on_sam3_add_toggled(False)
 
         self._add_new_active = checked
         self.add_new_button.setText("Done Adding (Esc)" if checked else "+ Add New ROI")
@@ -1340,14 +1428,8 @@ class MainWindow(QMainWindow):
 
     def _on_new_box_drawn(self, x_min: float, y_min: float, x_max: float, y_max: float) -> None:
         """A box was just rubber-banded on the detail view while "Add New
-        ROI" is active: prompt for a label, then persist it as a brand-new
-        ROI (annotation_service.insert_roi) -- cropping/encoding/sharpness
-        follow the exact same path a box *edit* already uses
-        (_on_detail_box_changed), just inserting instead of updating -- and
-        kick off its embedding in the background (see
-        _embed_new_roi_worker/_on_new_roi_embedded), so it's immediately
-        usable by similarity search/clustering instead of sitting with
-        embedding IS NULL until someone remembers to run `mbariml embed`.
+        ROI" is active: prompt for a label (starting on the last one used),
+        then save it (see _insert_new_roi).
 
         Cancelling the label prompt (Escape, or an empty label) discards the
         box entirely -- nothing is written to the database, and the
@@ -1359,16 +1441,28 @@ class MainWindow(QMainWindow):
         if image_path is None:
             return  # shouldn't happen -- draw mode requires an image (see _on_add_new_toggled)
 
-        known_labels = query_service.fetch_known_labels(self.conn)
+        known_labels = self._known_labels()
+        current = known_labels.index(self._last_new_label) if self._last_new_label in known_labels else 0
         label, ok = QInputDialog.getItem(
-            self, "New ROI", "Label for this box:", known_labels, 0, editable=True,
+            self, "New ROI", "Label for this box:", known_labels, current, editable=True,
         )
         label = label.strip() if ok else ""
         if not label:
             logger.info("New ROI discarded (no label entered).")
             self.status_label.setText("New ROI discarded (no label entered). Draw another, or click Done.")
             return
+        self._insert_new_roi(image_path, (x_min, y_min, x_max, y_max), label)
 
+    def _insert_new_roi(self, image_path: str, box: tuple[float, float, float, float], label: str) -> None:
+        """Persist a new box -- drawn by hand or by SAM3 -- as a brand-new ROI
+        (annotation_service.insert_roi: confidence 1.0, verified, since a
+        person placed and named it). Cropping/encoding/sharpness follow the
+        exact same path a box *edit* uses (_on_detail_box_changed), just
+        inserting instead of updating; its embedding follows in the
+        background (see _start_embedding), so it's immediately usable by
+        similarity search/clustering instead of sitting with embedding IS
+        NULL until someone remembers to run `mbariml embed`."""
+        x_min, y_min, x_max, y_max = box
         image = self._roi_service.fetch_full_image(image_path)
         roi_blob = crop_and_encode(image, x_min, y_min, x_max, y_max) if image is not None else None
         roi_bgr = self._roi_service.decode_roi(roi_blob) if roi_blob is not None else None
@@ -1388,6 +1482,7 @@ class MainWindow(QMainWindow):
             logger.exception("Error saving new ROI")
             self.status_label.setText("Failed to save new ROI -- see log.")
             return
+        self._last_new_label = label
 
         # Reflect it in the detail view immediately (synchronous -- it's the
         # panel this whole tool operates on); the grid tile and the total/
@@ -1404,19 +1499,50 @@ class MainWindow(QMainWindow):
         self.load_page()
 
         logger.info("Added new ROI #%s ('%s') on %s", roi_index, label, image_path)
-        self.status_label.setText(f'Added ROI #{roi_index} ("{label}"). Computing its embedding...')
+        self._show_embedding_status(f'Added ROI #{roi_index} ("{label}"). Computing its embedding...',
+                                    f'Added ROI #{roi_index} ("{label}") and computed its embedding.',
+                                    [roi_index])
+        self._start_embedding(roi_index, roi_bgr)
 
-        if roi_bgr is not None:
-            worker = Worker(self._embed_new_roi_worker, roi_index, roi_bgr)
-            worker.signals.result.connect(self._on_new_roi_embedded)
-            worker.signals.error.connect(self._on_new_roi_embed_error)
-            self._workers.append(worker)  # see __init__ comment: must outlive the thread pool run
-            QThreadPool.globalInstance().start(worker)
-        else:
-            logger.warning("New ROI #%s has no crop to embed (degenerate box); leaving embedding NULL.", roi_index)
+    # -- Background workers ------------------------------------------------------
+
+    def _start_worker(self, worker: Worker, pool: QThreadPool | None = None) -> None:
+        """Run *worker* on *pool* (default: the global pool), keeping it
+        referenced until it finishes -- see the ``_workers`` comment in
+        __init__ -- and no longer: a worker's arguments (an image, a crop)
+        would otherwise stay in memory for the whole session."""
+        worker.signals.finished.connect(self._forget_worker)
+        self._workers.append(worker)
+        (pool or QThreadPool.globalInstance()).start(worker)
+
+    @Slot()
+    def _forget_worker(self) -> None:
+        # Safe to drop here: by the time `finished` is delivered, the worker's
+        # run() has emitted its result/error, and its own executing frame --
+        # not this list -- is what keeps it alive until run() returns.
+        signals = self.sender()
+        self._workers = [w for w in self._workers if w.signals is not signals]
+
+    # -- Embeddings for new and edited boxes -------------------------------------
+
+    def _start_embedding(self, roi_index: int, roi_bgr) -> None:
+        """(Re)compute one ROI's embedding from its current crop, on the GPU
+        pool. Called for every new box and every geometry change."""
+        # Bumped even when there's nothing to embed, so an older embedding
+        # still in flight for this ROI -- of a crop it no longer has -- is
+        # dropped on arrival instead of saved.
+        generation = self._embed_generation.get(roi_index, 0) + 1
+        self._embed_generation[roi_index] = generation
+        if roi_bgr is None:
+            logger.warning("ROI #%s has no crop to embed (degenerate box); leaving embedding NULL.", roi_index)
+            return
+        worker = Worker(self._embed_roi_worker, roi_index, generation, roi_bgr)
+        worker.signals.result.connect(self._on_roi_embedded)
+        worker.signals.error.connect(self._on_roi_embed_error)
+        self._start_worker(worker, self._gpu_pool)
 
     @staticmethod
-    def _embed_new_roi_worker(roi_index: int, roi_bgr) -> tuple[int, list[float]]:
+    def _embed_roi_worker(roi_index: int, generation: int, roi_bgr) -> tuple[int, int, list[float]]:
         """Compute one embedding off the GUI thread -- the first call in a
         session loads (and caches) the DINOv3 model, which can take a while
         (weight download on a fresh machine, then loading it onto the
@@ -1424,27 +1550,335 @@ class MainWindow(QMainWindow):
         mbariml.steps.embed.embed_roi_bgr for the model/preprocessing
         itself, shared with `mbariml embed` so embeddings computed here are
         directly comparable to every other embedding in the database."""
-        return roi_index, embed_roi_bgr(roi_bgr)
+        return roi_index, generation, embed_roi_bgr(roi_bgr)
+
+    def _show_embedding_status(self, text: str, done_text: str, roi_indices) -> None:
+        """Show *text* while the embeddings of *roi_indices* are computed, then
+        *done_text* once they're all saved -- unless something else has
+        replaced the message in the meantime."""
+        self._embed_status = (text, done_text, set(roi_indices))
+        self.status_label.setText(text)
 
     @Slot(object)
-    def _on_new_roi_embedded(self, payload) -> None:
-        roi_index, embedding = payload
+    def _on_roi_embedded(self, payload) -> None:
+        if self._closing:
+            return
+        roi_index, generation, embedding = payload
+        if self._embed_generation.get(roi_index) != generation:
+            return  # the box changed again since; a newer embedding is on its way
         try:
             annotation_service.set_embedding(self.conn, roi_index, embedding)
         except Exception:
-            logger.exception("Error saving embedding for new ROI #%s", roi_index)
+            logger.exception("Error saving embedding for ROI #%s", roi_index)
             self.status_label.setText(f"ROI #{roi_index} saved, but its embedding failed to save -- see log.")
             return
-        logger.info("Computed and saved embedding for new ROI #%s", roi_index)
-        self.status_label.setText(f"ROI #{roi_index} embedded. Draw another, or click Done.")
+        logger.info("Computed and saved embedding for ROI #%s", roi_index)
+        if self._embed_status is not None and roi_index in self._embed_status[2]:
+            text, done_text, pending = self._embed_status
+            pending.discard(roi_index)
+            if not pending:
+                self._embed_status = None
+                if self.status_label.text() == text:
+                    self.status_label.setText(done_text)
 
     @Slot(tuple)
-    def _on_new_roi_embed_error(self, err: tuple) -> None:
-        logger.error("Failed to compute embedding for new ROI: %s", err[1])
+    def _on_roi_embed_error(self, err: tuple) -> None:
+        if self._closing:
+            return
+        logger.error("Failed to compute an embedding: %s\n%s", err[1], err[2])
+        self._embed_status = None
         self.status_label.setText(
-            "New ROI saved, but computing its embedding failed -- see log. "
+            "Box saved, but computing its embedding failed -- see log. "
             "Run `mbariml embed` later to fill it in."
         )
+
+    # -- SAM3 (optional) -----------------------------------------------------------
+    #
+    # Every SAM3 call runs on the one-thread GPU pool (see __init__), so calls
+    # queue rather than block pool threads. Point clicks and tightening each
+    # carry a request number; a request superseded before it runs is skipped
+    # without inference, and a result that arrives after the user has moved
+    # on is dropped.
+
+    def _set_sam3_controls_enabled(self, reason: str | None) -> None:
+        """Enable the SAM3 controls, or grey them out with *reason* -- why
+        SAM3 can't be used -- as their tooltip."""
+        for button in (self.sam3_add_button, self.sam3_tighten_button):
+            button.setEnabled(reason is None)
+        self.sam3_add_button.setToolTip(
+            reason or "Click an object on the image: SAM3 draws its box. Tab picks the size, type the label, Enter."
+        )
+        self.sam3_tighten_button.setToolTip(
+            reason or "SAM3 refits every unverified box on the shown image. You see its boxes before anything is saved."
+        )
+
+    def _run_sam3(self, fn, on_result, *args) -> None:
+        worker = Worker(fn, *args)
+        worker.signals.result.connect(on_result)
+        worker.signals.error.connect(self._on_sam3_error)
+        self._start_worker(worker, self._gpu_pool)
+
+    def _known_labels(self) -> list[str]:
+        """Every label in use, from the relabel dropdown -- kept current by
+        _refresh_known_labels after every label change, so no query needed."""
+        return [self.label_combo.itemText(i) for i in range(self.label_combo.count())]
+
+    @Slot(tuple)
+    def _on_sam3_error(self, err: tuple) -> None:
+        """A SAM3 call failed. If the model never loaded, SAM3 is off for the
+        rest of the session -- controls greyed out, the reason as their
+        tooltip -- and review carries on exactly as without it."""
+        if self._closing:
+            return
+        logger.error("SAM3 failed: %s\n%s", err[1], err[2])
+        # Supersede everything still queued, so it's skipped, not retried.
+        self._sam3_point_request += 1
+        self._sam3_tighten_request += 1
+        self._detail_view.clear_preview()
+        if self._sam3 is not None and not self._sam3.loaded:
+            reason = f"SAM3 could not be loaded: {err[0].__name__}: {err[1]}"
+            self._sam3 = None
+            self._sam3_unavailable = reason
+            if self._sam3_add_active:
+                self.sam3_add_button.setChecked(False)
+            self._set_sam3_controls_enabled(reason)
+            self._rebuild_detail_boxes()  # drops "Tighten with SAM3" from the box menus
+            QMessageBox.warning(self, "SAM3 Unavailable", f"{reason}\n\nReview works as usual without it.")
+        else:
+            self.sam3_tighten_button.setEnabled(self._sam3 is not None)
+            self.status_label.setText(f"SAM3 failed: {err[1]} -- see log.")
+
+    def _on_sam3_add_toggled(self, checked: bool) -> None:
+        """"Add ROI with SAM3": while on, a click on the image asks SAM3 for
+        the object's box (see _on_sam3_point_clicked). Exclusive with "Add
+        New ROI". The model loads the first time this is turned on."""
+        if checked and not self._require_image_for(self.sam3_add_button):
+            return
+        if checked and self._add_new_active:
+            self.add_new_button.setChecked(False)  # triggers _on_add_new_toggled(False)
+
+        self._sam3_add_active = checked
+        self._sam3_point_request += 1
+        self.sam3_add_button.setText("Done Adding (Esc)" if checked else "+ Add ROI with SAM3")
+        self._detail_view.set_point_mode(checked, self._on_sam3_point_clicked if checked else None)
+        if not checked:
+            self._detail_view.clear_preview()
+            self.update_status_bar()
+        elif self._sam3.loaded:
+            self.status_label.setText("Click an object on the image panel above.")
+        else:
+            self.status_label.setText("Loading SAM3 (first use, about 10 s) -- you can click an object already.")
+            self._run_sam3(self._sam3.load, self._on_sam3_loaded)
+
+    @Slot(object)
+    def _on_sam3_loaded(self, _result) -> None:
+        if self._sam3_add_active and self.status_label.text().startswith("Loading SAM3"):
+            self.status_label.setText("SAM3 ready: click an object on the image panel above.")
+
+    def _on_sam3_point_clicked(self, x: float, y: float, screen_pos) -> None:
+        image_path = self._current_detail_image_path
+        if image_path is None or self._sam3 is None or self._sam3_popup is not None:
+            return
+        size = self._detail_view.image_size
+        if size is None or not (0 <= x < size[0] and 0 <= y < size[1]):
+            self.status_label.setText("Click on the image itself.")
+            return
+        self._sam3_point_request += 1
+        request = self._sam3_point_request
+        if self._sam3.loaded:
+            self.status_label.setText("SAM3 is finding the object...")
+        self._run_sam3(self._sam3_point_worker, self._on_sam3_point_result,
+                       self._sam3, self._roi_service, lambda: request == self._sam3_point_request,
+                       request, image_path, x, y, screen_pos.toPoint())
+
+    @staticmethod
+    def _sam3_point_worker(sam3, roi_service, is_current, request, image_path, x, y, screen_pos):
+        if not is_current():
+            return None  # superseded while queued: skip the inference
+        image = roi_service.fetch_full_image(image_path)  # cached: it's the image on screen
+        if image is None:
+            raise RuntimeError(f"Could not read {image_path}")
+        return request, image_path, sam3.point_candidates(image_path, image, x, y), screen_pos
+
+    @Slot(object)
+    def _on_sam3_point_result(self, payload) -> None:
+        if payload is None or self._closing:
+            return
+        request, image_path, candidates, screen_pos = payload
+        if (request != self._sam3_point_request or not self._sam3_add_active
+                or image_path != self._current_detail_image_path):
+            return  # the user moved on while SAM3 was working
+        if not candidates:
+            self.status_label.setText("SAM3 found nothing there -- try nearer the object's middle.")
+            return
+        self.status_label.setText("Pick the box (Tab) and its label, then Enter.")
+        self._sam3_popup = Sam3BoxPopup(
+            self,
+            candidates,
+            self._known_labels(),
+            self._last_new_label,
+            on_preview=lambda box: self._detail_view.show_preview([box]),
+            on_accept=lambda box, label: self._on_sam3_box_accepted(image_path, box, label),
+            on_cancel=self._on_sam3_box_cancelled,
+        )
+        self._sam3_popup.popup_at(screen_pos)
+
+    def _on_sam3_box_accepted(self, image_path: str, box, label: str) -> None:
+        self._sam3_popup = None
+        self._detail_view.clear_preview()
+        if image_path != self._current_detail_image_path:
+            return
+        self._insert_new_roi(image_path, box, label)
+
+    def _on_sam3_box_cancelled(self) -> None:
+        self._sam3_popup = None
+        self._detail_view.clear_preview()
+        if self._sam3_add_active and not self._closing:
+            self.status_label.setText("Nothing added. Click another object, or Esc when done.")
+
+    def _verified_roi_indices(self, roi_indices: list[int]) -> set[int]:
+        if not roi_indices:
+            return set()
+        placeholders = ",".join("?" * len(roi_indices))
+        return {r[0] for r in self.conn.execute(
+            f"SELECT roi_index FROM predictions WHERE verified AND roi_index IN ({placeholders})", roi_indices
+        ).fetchall()}
+
+    def _on_tighten_image_clicked(self) -> None:
+        """"Tighten Boxes (SAM3)": refit every unverified box on the shown
+        image. Verified boxes were accepted by a person as they are, so
+        they're left alone here (one can still be tightened on purpose from
+        its right-click menu)."""
+        if self._current_detail_image_path is None:
+            QMessageBox.information(self, "No Image Shown",
+                                    "Select an ROI first so its source image is shown in the panel above.")
+            return
+        rois = list(self._frame_rois)
+        verified = self._verified_roi_indices([r.roi_index for r in rois])
+        targets = [r for r in rois if r.roi_index not in verified]
+        notes = []
+        if verified:
+            notes.append(f"{len(verified)} verified")
+        if self._frame_roi_total > len(rois):
+            notes.append(f"{self._frame_roi_total - len(rois)} not shown (over {MAX_DETAIL_BOXES} on this image)")
+        if not targets:
+            self.status_label.setText("Nothing to tighten" + (f": {'; '.join(notes)}." if notes else "."))
+            return
+        self._start_tightening(targets, notes=notes, single=False)
+
+    def _on_tighten_box_requested(self, roi_index: int) -> None:
+        """A box's right-click "Tighten with SAM3": that box only, verified or not."""
+        roi = next((r for r in self._frame_rois if r.roi_index == roi_index), None)
+        if roi is not None:
+            self._start_tightening([roi], notes=[], single=True)
+
+    def _start_tightening(self, rois: list, *, notes: list[str], single: bool) -> None:
+        image_path = self._current_detail_image_path
+        if self._sam3 is None or image_path is None:
+            return
+        if self._add_new_active:
+            self.add_new_button.setChecked(False)
+        if self._sam3_add_active:
+            self.sam3_add_button.setChecked(False)
+        self._sam3_tighten_request += 1
+        request = self._sam3_tighten_request
+        self.sam3_tighten_button.setEnabled(False)  # until this request finishes
+        loading = "" if self._sam3.loaded else " (loading SAM3 first, about 10 s)"
+        self.status_label.setText(f"SAM3 is refitting {len(rois)} box(es){loading}...")
+        self._run_sam3(self._sam3_tighten_worker, self._on_sam3_tighten_result,
+                       self._sam3, self._roi_service, lambda: request == self._sam3_tighten_request,
+                       request, image_path, [r.roi_index for r in rois],
+                       [(r.x_min, r.y_min, r.x_max, r.y_max) for r in rois], notes, single)
+
+    @staticmethod
+    def _sam3_tighten_worker(sam3, roi_service, is_current, request, image_path, roi_indices, old_boxes,
+                             notes, single):
+        if not is_current():
+            return None  # superseded while queued: skip the inference
+        image = roi_service.fetch_full_image(image_path)
+        if image is None:
+            raise RuntimeError(f"Could not read {image_path}")
+        new_boxes = sam3.tighten(image_path, image, old_boxes)
+        return request, image_path, roi_indices, old_boxes, new_boxes, notes, single
+
+    @Slot(object)
+    def _on_sam3_tighten_result(self, payload) -> None:
+        """Show SAM3's boxes as a dashed preview and ask before writing any.
+
+        For a whole image, only boxes SAM3 actually tightened are offered:
+        not ones already tight, and not ones where SAM3's box reaches well
+        outside the current one or shrinks to a small part of it (see
+        sam3_service.judge_tightening) -- SAM3 found something else there.
+        For one box tightened on purpose, that case is offered too, with a
+        warning, since the person asking can see it. A box moved or deleted
+        while SAM3 was working is left as it now is."""
+        if payload is None or self._closing:
+            return
+        request, image_path, roi_indices, old_boxes, new_boxes, notes, single = payload
+        if request != self._sam3_tighten_request:
+            return  # a newer tighten is running; it re-enables the button
+        self.sam3_tighten_button.setEnabled(self._sam3 is not None)
+        if image_path != self._current_detail_image_path:
+            return
+
+        current = {f.roi_index: (f.x_min, f.y_min, f.x_max, f.y_max) for f in self._frame_rois}
+        proposals: dict[int, tuple[float, float, float, float]] = {}
+        unchanged = disagrees = nothing = edited = 0
+        warn = False
+        for roi_index, old, new in zip(roi_indices, old_boxes, new_boxes):
+            if current.get(roi_index) != old:
+                edited += 1
+                continue
+            if new is None:
+                nothing += 1
+                continue
+            verdict = sam3_service.judge_tightening(old, new)
+            if verdict == "tighter" or (single and verdict == "disagrees"):
+                proposals[roi_index] = new
+                warn = warn or verdict == "disagrees"
+            elif verdict == "unchanged":
+                unchanged += 1
+            else:
+                disagrees += 1
+        notes = list(notes)
+        if unchanged:
+            notes.insert(0, f"{unchanged} already tight")
+        if disagrees:
+            notes.insert(0, f"{disagrees} where SAM3 found something else")
+        if nothing:
+            notes.insert(0, f"{nothing} where SAM3 found nothing")
+        if edited:
+            notes.insert(0, f"{edited} moved or deleted while SAM3 was working")
+        if not proposals:
+            self.status_label.setText("Nothing to tighten" + (f": {'; '.join(notes)}." if notes else "."))
+            return
+
+        self._detail_view.show_preview(list(proposals.values()))
+        text = f"Replace {len(proposals)} box(es) with SAM3's (dashed yellow)?"
+        if warn:
+            text += "\n\nSAM3's box reaches well outside the current one, or is much smaller -- check it's the right object."
+        if notes:
+            text += f"\n\nLeft as they are: {'; '.join(notes)}."
+        dialog = QMessageBox(QMessageBox.Icon.Question, "Tighten Boxes", text,
+                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self)
+        dialog.setDefaultButton(QMessageBox.StandardButton.Yes)
+        # Beside the image panel, not centred over it, so the preview stays
+        # visible -- kept on the panel's screen.
+        dialog.adjustSize()
+        corner = self._detail_view.mapToGlobal(QPoint(0, 0))
+        screen = (self._detail_view.screen() or QApplication.primaryScreen()).availableGeometry()
+        dialog.move(max(screen.left(), corner.x() - dialog.width() - 12), max(screen.top(), corner.y() + 40))
+        answer = dialog.exec()
+        self._detail_view.clear_preview()
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status_label.setText("Tightening cancelled -- nothing changed.")
+            return
+        for roi_index, (x_min, y_min, x_max, y_max) in proposals.items():
+            self._on_detail_box_changed(roi_index, x_min, y_min, x_max, y_max)
+        self._rebuild_detail_boxes()  # the overlays still show the old geometry
+        n = len(proposals)
+        self._show_embedding_status(f"Tightened {n} box(es); recomputing their embeddings...",
+                                    f"Tightened {n} box(es) and recomputed their embeddings.", proposals)
 
     def _on_similarity_sort_requested(self, rect_widget: RectWidget, same_label_only: bool) -> None:
         """Right-click menu action: re-rank every ROI (optionally restricted to
@@ -1481,8 +1915,7 @@ class MainWindow(QMainWindow):
         )
         worker.signals.result.connect(self._on_similarity_computed)
         worker.signals.error.connect(self._on_similarity_error)
-        self._workers.append(worker)  # see __init__ comment: must outlive the thread pool run
-        QThreadPool.globalInstance().start(worker)
+        self._start_worker(worker)
         self.status_label.setText(f"Sorting by similarity to ROI #{roi_index}...")
 
     @staticmethod

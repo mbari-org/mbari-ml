@@ -45,11 +45,14 @@ class BoundingBox(pg.RectROI):
         clicked_callback: Callable[[int, object], None],
         changed_callback: Callable[[int, float, float, float, float], None],
         delete_callback: Callable[[int], None],
+        tighten_callback: Callable[[int], None] | None = None,
     ) -> None:
         self.frame_roi = frame_roi
         self._clicked_callback = clicked_callback
         self._changed_callback = changed_callback
         self._delete_callback = delete_callback
+        self._tighten_callback = tighten_callback
+        self._click_through = False
 
         pos = (frame_roi.x_min, frame_roi.y_min)
         size = (
@@ -104,6 +107,23 @@ class BoundingBox(pg.RectROI):
         self.translatable = interactive
         for handle in self.getHandles():
             handle.setVisible(interactive)
+
+    def set_click_through(self, click_through: bool) -> None:
+        """Let left-clicks pass through to whatever is underneath (True).
+
+        On while "Add ROI with SAM3" is on, so clicking an object that sits
+        inside an existing box reaches the image (and SAM3) instead of
+        selecting the box. pyqtgraph offers a click to each item under the
+        cursor in turn until one accepts it, so ignoring it is enough.
+        Right-click (the context menu) is unaffected.
+        """
+        self._click_through = click_through
+
+    def mouseClickEvent(self, ev) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        if self._click_through and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        super().mouseClickEvent(ev)
 
     def mouseDragEvent(self, ev) -> None:  # noqa: N802 (pyqtgraph's own naming)
         # Ignored before pyqtgraph's own handler runs: that one calls
@@ -191,6 +211,7 @@ class BoundingBox(pg.RectROI):
         self._clicked_callback = None
         self._changed_callback = None
         self._delete_callback = None
+        self._tighten_callback = None
         self.view.removeItem(self.text_item)
         self.view.removeItem(self)
 
@@ -203,6 +224,9 @@ class BoundingBox(pg.RectROI):
 
     def contextMenuEvent(self, event) -> None:
         menu = QtWidgets.QMenu()
+        if self._tighten_callback is not None:
+            tighten_action = menu.addAction("Tighten with SAM3")
+            tighten_action.triggered.connect(lambda: self._tighten_callback(self.frame_roi.roi_index))
         delete_action = menu.addAction("Delete")
         delete_action.triggered.connect(lambda: self._delete_callback(self.frame_roi.roi_index))
         menu.exec(event.screenPos())

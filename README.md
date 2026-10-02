@@ -42,6 +42,22 @@ changes (a new dependency, mainly). (`requirements.txt` is also kept, fixed,
 for anyone who just wants `pip install -r requirements.txt` — see "What
 changed" below for why it needed fixing.)
 
+**Optional: SAM3 in the review GUI.** `mbariml review` can use Meta's SAM3
+to draw a box from one click and to tighten loose boxes (see "Using the
+review GUI well"). Nothing else needs it, and review works exactly the same
+without it — the SAM3 buttons are just greyed out, with the reason as their
+tooltip. To turn it on:
+
+```bash
+pip install git+https://github.com/ultralytics/CLIP.git   # not on PyPI; PyPI's `clip` is an unrelated tool
+# download sam3.pt -- gated: request access at https://huggingface.co/facebook/sam3
+mbariml review DB_PATH --sam3-model /path/to/sam3.pt      # or: export MBARIML_SAM3_MODEL=/path/to/sam3.pt
+```
+
+It needs a GPU (CUDA or Apple MPS) to be pleasant: on an M3 Ultra it loads in
+about 6 s on first use, then takes ~0.3–0.45 s per new image and ~15–50 ms per
+click.
+
 ## Start anywhere
 
 Every command reads/writes the **same database schema** and just operates on
@@ -375,6 +391,32 @@ while preserving the human labels.
   top of or inside one (a fish in front of a rock, a part within a whole);
   they become editable again when you click Done or press Escape.
   Wheel-zoom and right-click "Delete" keep working throughout.
+- **Add ROI with SAM3** (next to Add New ROI; needs SAM3, see Setup): click
+  an object on the full-image panel -- inside an existing box is fine -- and
+  SAM3 draws a box around it, shown dashed yellow, with a small popup at the
+  click. SAM3 usually offers up to three nested boxes (a part, the object,
+  the object plus surroundings): **Tab** / **Shift-Tab** steps through them,
+  starting on SAM3's highest-scoring one. Type or pick the label (it starts
+  on the last one you used) and press **Enter** to save it, exactly like a
+  hand-drawn box -- confidence `1.0`, `verified` set, embedding computed in
+  the background. **Escape**, or clicking outside the popup, discards it. It
+  stays on for more objects until you click the button again or press
+  Escape; dragging pans. The two add modes are exclusive.
+- **Tighten Boxes (SAM3)**: SAM3 refits every *unverified* box on the shown
+  image, using each box as its prompt. You see the new boxes dashed yellow
+  and confirm before anything is written. Only real tightening is offered:
+  boxes SAM3 leaves about the same, or where its box reaches well outside the
+  current one or shrinks to a small part of it (it found something else
+  there), are left alone and counted in the prompt. Verified boxes are
+  skipped; to tighten one anyway, right-click it and choose **Tighten with
+  SAM3**, which does just that box (and does show a box SAM3 disagrees on,
+  with a warning). On SeaClear, SAM3's boxes were usually tighter than the
+  hand-drawn ones but occasionally cut off a thin or faint end -- a cable's
+  far end, a fish's tail -- which is why every change is previewed.
+- **Any change to a box's geometry recomputes its embedding** -- dragging it,
+  tightening it -- along with its crop and sharpness. The stored embedding
+  described the old crop, so it is cleared at once and recomputed in the
+  background; if that ever fails, `mbariml embed` fills it in.
 
 Labeling and deleting no longer rebuild the entire page of thumbnails (the
 original did, on every single click, which is why review used to feel slow) —

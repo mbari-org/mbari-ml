@@ -11,6 +11,51 @@ recognizable.
 
 ---
 
+## Unreleased — optional SAM3 in review; box edits recompute embeddings
+
+**Review: "Add ROI with SAM3" and "Tighten Boxes (SAM3)"**, both optional.
+With `--sam3-model PATH` (or `$MBARIML_SAM3_MODEL`) and Ultralytics' CLIP
+installed, a click on an object gets its box from SAM3 (Tab steps through
+SAM3's nested boxes; the label is picked in a popup at the click), and
+"Tighten Boxes" refits the shown image's unverified boxes -- previewed,
+confirmed before writing, and only where SAM3 actually tightened the box. A
+box's right-click menu gains "Tighten with SAM3" for one box, verified or not.
+SAM3 loads on first use, off the GUI thread. If it's not set up, or fails to
+load, the buttons are greyed out with the reason as their tooltip and review
+behaves exactly as before. "Add New ROI" is now sized to its label instead of
+spanning the panel, and its label prompt starts on the last label used.
+
+Measured on SeaClear (80 verified boxes, M3 Ultra): boxes loosened by 15% per
+side came back at a median IoU of 0.78 with the original (from 0.59); 82% got
+closer. SAM3 also offers to shrink most boxes people drew -- usually rightly,
+since hand-drawn boxes carry margin, but now and then it cuts off a thin or
+faint end (a cable's far end, a fish's tail). Hence the preview, and why
+verified boxes are skipped unless asked for one at a time.
+
+**Every box geometry change now recomputes the embedding and sharpness.**
+Dragging a box used to regenerate its crop but keep the embedding of the old
+crop, so similarity search and clustering placed it by what it used to
+contain. `update_bbox` now clears the embedding and updates sharpness; the GUI
+recomputes the embedding in the background (`mbariml embed` fills it in if
+that fails). A box edited twice in quick succession keeps the later crop's
+embedding.
+
+**Review's background work no longer accumulates.** Every worker the window
+started was kept for the whole session; now each is released when it
+finishes. Before, that held only small query results, but SAM3 jobs carry
+full-resolution frames. GPU work (DINOv3 for new and edited boxes, SAM3) runs
+on its own one-thread pool, so a model loading or a queue of embeddings never
+holds up thumbnail and page loads. SAM3 requests superseded while queued are
+skipped, and a failed SAM3 load is not retried by every queued request.
+
+**Smaller review fixes.** Tightening leaves alone a box moved or deleted
+while SAM3 was working. A click outside the image isn't sent to SAM3. While
+an add mode is on, right-clicking a box shows only the box's own menu.
+`docs/SCHEMA.md` notes that review recomputes `embedding` and `sharpness`, and
+its generator now says `export stats`, as the committed document already did.
+
+---
+
 ## 0.22.1 — `export yolo --conf` treats verified boxes as 100%; label matching in review
 
 **Review: "Find similar with same label" and the "New Label" sort now use the

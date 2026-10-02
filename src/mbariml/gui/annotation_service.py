@@ -121,10 +121,11 @@ def insert_roi(
 def set_embedding(conn: duckdb.DuckDBPyConnection, roi_index: int, embedding: list[float]) -> None:
     """Store a freshly-computed embedding for one ROI.
 
-    Used by the "Add New ROI" tool once its background embedding worker
-    finishes (see ``MainWindow._on_new_roi_embedded``) -- a hand-drawn box
-    would otherwise sit with ``embedding IS NULL`` (invisible to similarity
-    search/clustering) until someone remembers to run ``mbariml embed``.
+    Used by the review GUI once its background embedding worker finishes
+    (see ``MainWindow._on_roi_embedded``), for a new box or one whose
+    geometry just changed -- either would otherwise sit with
+    ``embedding IS NULL`` (invisible to similarity search/clustering) until
+    someone remembers to run ``mbariml embed``.
     A plain single-row UPDATE, same reasoning as :func:`update_bbox`: this
     happens one ROI at a time as each box is drawn, not in a batch worth
     ``mbariml.db.bulk_update``'s staged-bulk-UPDATE treatment (what
@@ -141,8 +142,16 @@ def update_bbox(
     x_max: float,
     y_max: float,
     roi_blob: bytes | None,
+    sharpness: float | None = None,
 ) -> None:
     """Persist an edited box's geometry and its regenerated ROI crop.
+
+    Also clears the row's embedding: it described the old crop, so similarity
+    search and clustering would otherwise keep placing the box by what it
+    used to contain. The review GUI recomputes it right after, in the
+    background (see ``MainWindow._start_embedding``); if that ever fails,
+    ``mbariml embed`` fills it in, since it only embeds rows that are NULL.
+    ``sharpness`` is updated when given -- it too is measured on the crop.
 
     Box edits happen one at a time (a single drag-release in the detail
     view), so unlike :func:`apply_label` this is a plain single-row UPDATE
@@ -152,10 +161,11 @@ def update_bbox(
     conn.execute(
         """
         UPDATE predictions
-        SET x_min = ?, y_min = ?, x_max = ?, y_max = ?, roi = ?
+        SET x_min = ?, y_min = ?, x_max = ?, y_max = ?, roi = ?,
+            sharpness = COALESCE(?, sharpness), embedding = NULL
         WHERE roi_index = ?
         """,
-        (x_min, y_min, x_max, y_max, roi_blob, roi_index),
+        (x_min, y_min, x_max, y_max, roi_blob, sharpness, roi_index),
     )
 
 

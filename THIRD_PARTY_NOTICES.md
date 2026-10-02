@@ -27,6 +27,15 @@ DuckDB (MIT), timm (Apache-2.0), torchvision (BSD), pandas (BSD), OpenCV
 **PySide6 is LGPL-3.0/GPL**, used here as an ordinary pip-installed dynamic
 import, which is what the LGPL contemplates.
 
+## SAM3 (optional)
+
+The review GUI can use Meta's Segment Anything 3 through Ultralytics, when
+the user supplies the weights (`--sam3-model`). mbariml neither bundles nor
+downloads them: `sam3.pt` is distributed by Meta, gated on Hugging Face
+(`facebook/sam3`), under Meta's own SAM License rather than an OSI licence --
+read its terms before using SAM3's output in a product. Ultralytics' CLIP,
+which Ultralytics' SAM3 code needs, is installed separately from GitHub (MIT).
+
 ## vars-gridview
 
 The mosaic rendering/threading engine in `src/mbariml/gui/` (`mosaic_view.py`,
