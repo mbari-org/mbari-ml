@@ -895,6 +895,7 @@ class MainWindow(QMainWindow):
                 self._roi_service,
                 clicked_slot=self._on_rect_clicked,
                 similarity_sort_slot=self._on_similarity_sort_requested,
+                delete_slot=self._on_tile_delete_requested,
                 zoom=zoom,
                 brightness=self._brightness,
                 contrast=self._contrast_percent / 100.0,
@@ -2076,16 +2077,28 @@ class MainWindow(QMainWindow):
 
     def delete_selected_rois(self) -> None:
         """Delete the selected ROIs from the database, after confirmation."""
-        selected = self.selection_model.selected
+        self._delete_rois(list(self.selection_model.selected), "selected ")
+
+    def _on_tile_delete_requested(self, rect_widget: RectWidget) -> None:
+        """A tile's right-click "Delete": the whole selection if that tile is
+        part of it (as in a file browser), otherwise just that tile."""
+        if rect_widget in self.selection_model.selected:
+            self.delete_selected_rois()
+        else:
+            self._delete_rois([rect_widget], "")
+
+    def _delete_rois(self, selected: list[RectWidget], what: str) -> None:
+        """Delete these tiles' ROIs from the database, after confirmation."""
         if not selected:
             logger.info("No ROIs selected.")
             return
 
         count = len(selected)
+        noun = f"ROI #{selected[0].roi_index}" if count == 1 and not what else f"{count} {what}ROI(s)"
         confirmed = QMessageBox.question(
             self,
             "Delete ROIs",
-            f"Permanently delete {count} selected ROI(s)? This cannot be undone.",
+            f"Permanently delete {noun}? This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

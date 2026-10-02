@@ -11,6 +11,30 @@ recognizable.
 
 ---
 
+## 0.24.0 — delete from a tile's right-click menu; no more Magic Mouse zoom jumps
+
+**Review: Delete on a grid tile's right-click menu.** Right-clicking a tile
+now offers "Delete..." for just that ROI, or "Delete selected..." when the
+tile is part of the selection, which deletes the whole selection, as in a
+file browser. Both confirm first, naming what will go, exactly like the
+Delete key.
+
+**Clicking the full image in review could zoom it dramatically with a Magic
+Mouse.** Two pyqtgraph defaults combined with how a Magic Mouse reports
+input. Every scroll event zoomed, and a Magic Mouse scrolls whenever a finger
+slides on its surface -- the slight slide of a click included -- and keeps
+sending momentum scroll after the finger lifts. And a right-button drag zoomed
+2% per pixel moved, while a Magic Mouse's right half clicks as a right button
+(Secondary Click): measured, a 25 px slide during a right-click zoomed 1.6x.
+
+The panel now ignores momentum scroll, scroll while a button is held or within
+0.3 s of a press or release, and sideways swipes; no single scroll event zooms
+more than one wheel notch (a real notch zooms exactly as before); and
+right-drag no longer zooms. Left-drag panning and right-click menus are
+unchanged.
+
+---
+
 ## 0.23.0 — optional SAM3 in review; box edits recompute embeddings
 
 **Review: "Add ROI with SAM3" and "Tighten Boxes (SAM3)"**, both optional.

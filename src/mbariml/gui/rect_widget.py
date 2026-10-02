@@ -53,6 +53,7 @@ class RectWidget(QtWidgets.QGraphicsWidget):
     roiRefreshed = Signal(object)  # self
     clicked = Signal(object, object)  # self, event
     similaritySort = Signal(object, bool)  # self, same_label_only
+    deleteRequested = Signal(object)  # self
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         clicked_slot: Callable,
         similarity_sort_slot: Callable,
         parent=None,
+        delete_slot: Callable | None = None,
         zoom: float = 1.0,
         preload_roi: bool = False,
         brightness: int = 0,
@@ -102,6 +104,9 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         self._similarity_sort_slot = similarity_sort_slot
         self.clicked.connect(self._clicked_slot)
         self.similaritySort.connect(self._similarity_sort_slot)
+        self._delete_slot = delete_slot
+        if delete_slot is not None:
+            self.deleteRequested.connect(delete_slot)
 
         self._roi_refresh_generation = 0
         self._roi_batch_generation = 0
@@ -148,9 +153,9 @@ class RectWidget(QtWidgets.QGraphicsWidget):
     def cleanup(self) -> None:
         """Break the reference cycle back to the owning window.
 
-        ``self._clicked_slot``/``self._similarity_sort_slot`` are bound
-        methods of ``MainWindow``, and the ``clicked``/``similaritySort``
-        signal connections themselves also hold a reference to those bound
+        ``self._clicked_slot``/``self._similarity_sort_slot``/
+        ``self._delete_slot`` are bound methods of ``MainWindow``, and the
+        ``clicked``/``similaritySort``/``deleteRequested`` signal connections themselves also hold a reference to those bound
         methods -- so every tile forms a cycle (window -> tile -> bound
         method -> window) that plain refcounting can never break. Cycles
         like that only get collected by Python's *cyclic* GC, which runs at
@@ -171,8 +176,13 @@ class RectWidget(QtWidgets.QGraphicsWidget):
             self.similaritySort.disconnect()
         except (RuntimeError, TypeError):
             pass
+        try:
+            self.deleteRequested.disconnect()
+        except (RuntimeError, TypeError):
+            pass
         self._clicked_slot = None
         self._similarity_sort_slot = None
+        self._delete_slot = None
 
     # -- ROI loading ----------------------------------------------------------
 
@@ -559,6 +569,13 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         # (preferring new_label) to filter by, so either one being present is
         # enough for this to do something.
         similarity_sort_same_label.setDisabled(not (self.row.label or self.row.original_label))
+
+        if self._delete_slot is not None:
+            menu.addSeparator()
+            # A tile that's part of the selection deletes the whole selection,
+            # as in a file browser; MainWindow confirms first, naming the count.
+            delete = menu.addAction("Delete selected..." if self.is_selected else "Delete...")
+            delete.triggered.connect(lambda: self.deleteRequested.emit(self))
 
         menu.exec(event.screenPos())
 

@@ -3,8 +3,9 @@
 Adapted from MBARI vars-gridview's pyqtgraph-based detail pane
 (``BoxHandler``/``DetailPaneCoordinator`` in ``ui/coordinators/``; MIT
 License, see ``THIRD_PARTY_NOTICES.md``). Wheel-zoom and drag-pan are
-entirely default ``pyqtgraph.ViewBox`` behavior -- no custom mouse-event
-code needed here, matching the original, which has none either -- except for
+``pyqtgraph.ViewBox``'s own, except that wheel-zoom ignores the accidental
+scrolling a Magic Mouse or trackpad produces and right-drag doesn't zoom
+(see ``_DrawableViewBox.wheelEvent``), plus
 "draw mode" (see ``_DrawableViewBox``), added for the "Add New ROI" tool,
 and "point mode", added for "Add ROI with SAM3" -- both new here (not present
 in vars-gridview) -- plus dashed preview boxes for SAM3's suggestions.
@@ -20,6 +21,7 @@ batch.
 from __future__ import annotations
 
 import gc
+import time
 from collections.abc import Callable
 
 import cv2
@@ -39,6 +41,29 @@ pg.setConfigOptions(imageAxisOrder="row-major")
 # accidental click/jitter -- same idea as BoundingBox's own 1px minimum size
 # guard in bounding_box.py.
 MIN_DRAWN_BOX_SIZE = 3
+
+
+# A Magic Mouse (or trackpad) scrolls whenever a finger moves on its surface --
+# including the slight slide of a finger while clicking -- and keeps sending
+# "momentum" scroll after the finger lifts; and its right half clicks as a
+# right button when Secondary Click is on. pyqtgraph turns every scroll into
+# zoom, and a right-button drag into zoom at 2% per pixel moved, so a click on
+# the image could jump the zoom dramatically. See _DrawableViewBox.wheelEvent.
+CLICK_SCROLL_GUARD_S = 0.3  # scroll this soon after a press/release is the click's, not a zoom
+MAX_WHEEL_DELTA = 120  # one wheel notch (2% zoom steps x 15): the most one event may zoom
+
+
+class _ClampedWheelEvent:
+    """A wheel event whose ``delta()`` is capped; everything else delegates."""
+
+    def __init__(self, ev, delta: int) -> None:
+        self._ev, self._delta = ev, delta
+
+    def delta(self) -> int:
+        return self._delta
+
+    def __getattr__(self, name):
+        return getattr(self._ev, name)
 
 
 # SAM3's suggested boxes, before anything is saved: dashed, in a colour no
@@ -72,6 +97,25 @@ class _DrawableViewBox(pg.ViewBox):
         self.draw_mode = False
         self.box_drawn: Callable[[float, float, float, float], None] | None = None
         self.point_clicked: Callable[[float, float, QtCore.QPointF], None] | None = None
+        self.last_button_time = 0.0  # time.monotonic() of the last press/release (see DetailView.eventFilter)
+
+    def wheelEvent(self, ev, axis=None) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        """Wheel-zoom, minus the scrolling nobody meant as zoom: momentum
+        scroll after a finger lifts, scroll while a button is held or just
+        after a click, and sideways swipes. A real wheel notch zooms exactly
+        as before; a single event never zooms more than one notch's worth."""
+        if (
+            ev.phase() == QtCore.Qt.ScrollPhase.ScrollMomentum
+            or ev.buttons() != QtCore.Qt.MouseButton.NoButton
+            or ev.orientation() == QtCore.Qt.Orientation.Horizontal
+            or time.monotonic() - self.last_button_time < CLICK_SCROLL_GUARD_S
+        ):
+            ev.accept()  # swallowed, not passed on to scroll anything else
+            return
+        delta = ev.delta()
+        if abs(delta) > MAX_WHEEL_DELTA:
+            ev = _ClampedWheelEvent(ev, MAX_WHEEL_DELTA if delta > 0 else -MAX_WHEEL_DELTA)
+        super().wheelEvent(ev, axis=axis)
 
     def mouseClickEvent(self, ev) -> None:  # noqa: N802 (pyqtgraph's own naming)
         if self.point_clicked is None or ev.button() != QtCore.Qt.MouseButton.LeftButton:
@@ -82,6 +126,11 @@ class _DrawableViewBox(pg.ViewBox):
         self.point_clicked(p.x(), p.y(), ev.screenPos())
 
     def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: N802 (pyqtgraph's own naming)
+        if ev.button() == QtCore.Qt.MouseButton.RightButton:
+            # pyqtgraph zooms on a right-drag; a Magic Mouse right-click with
+            # the slightest slide became a big zoom. Wheel zoom is the zoom.
+            ev.accept()
+            return
         if not self.draw_mode or ev.button() != QtCore.Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis=axis)
             return
@@ -116,6 +165,8 @@ class DetailView(QtWidgets.QWidget):
         self._view_box.setAspectLocked()
         self._view_box.invertY(True)  # match image pixel coords (y grows downward)
         self._graphics_view.setCentralItem(self._view_box)
+        # Press/release times for the wheel guard (see _DrawableViewBox.wheelEvent).
+        self._graphics_view.viewport().installEventFilter(self)
 
         self._image_item = pg.ImageItem(autoDownsample=True)
         self._view_box.addItem(self._image_item)
@@ -151,6 +202,11 @@ class DetailView(QtWidgets.QWidget):
         if is_new_image:
             self.clear_preview()  # suggestions belong to the image they were made on
             self._view_box.autoRange()
+
+    def eventFilter(self, source, event) -> bool:  # noqa: N802 (Qt's own naming)
+        if event.type() in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.MouseButtonRelease):
+            self._view_box.last_button_time = time.monotonic()
+        return False  # observe only
 
     @property
     def image_size(self) -> tuple[int, int] | None:

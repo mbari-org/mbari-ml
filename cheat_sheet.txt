@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.23.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.24.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -309,7 +309,10 @@ review (interactive GUI)
   In the grid: click to select, Shift-click for a range, Ctrl/Cmd-click to
   add; arrow keys navigate/extend. Type a label into the relabel field (free
   text, or pick from the dropdown of labels already in use) and press Enter,
-  or click Label, to apply it to the selection. Right-click an ROI to rank
+  or click Label, to apply it to the selection. Right-click an ROI ->
+  "Delete..." deletes just that ROI, or "Delete selected..." the whole
+  selection if it's part of it (confirmed first, like the Delete key).
+  Right-click an ROI -> "Find similar" to rank
   EVERY ROI in the database by embedding similarity to it -- the whole
   dataset, not the page you're on; the most similar rows are then pulled
   onto page 1 from wherever they were. Needs `embed` to have run, and the
@@ -330,7 +333,9 @@ review (interactive GUI)
   ROIs are never modified); "Reset" puts brightness/contrast back to neutral.
 
   The right panel shows the full source image with mouse-wheel zoom and
-  click-drag pan, overlaying EVERY detection on that image -- not just the
+  click-drag pan (accidental Magic Mouse/trackpad scrolling -- momentum,
+  scroll during or just after a click, sideways swipes -- is ignored, and
+  right-drag doesn't zoom), overlaying EVERY detection on that image -- not just the
   current page's rows. Drag a box's handles to resize/reposition it (saved
   immediately; crop, sharpness and embedding regenerated); the selected box shows red, the rest pale
   blue-grey; right-click a box for "Delete".
@@ -588,7 +593,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.23.0. Run `mbariml <command> --help`
+Captured verbatim against v0.24.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help

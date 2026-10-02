@@ -310,9 +310,11 @@ while preserving the human labels.
   of labels already in use) and press **Enter**, or click **Label**, to
   apply it to the current selection.
 - **Delete** removes the current selection (asks for confirmation first —
-  it's permanent).
+  it's permanent). So does **right-click → Delete selected...** on a tile
+  that's part of the selection; on a tile that isn't, **right-click →
+  Delete...** removes just that one (also confirmed first).
 - **Escape** clears the selection.
-- **Right-click** a thumbnail to rank **every ROI in the database** by
+- **Right-click** a thumbnail → **Find similar** to rank **every ROI in the database** by
   embedding similarity to that one (most similar first), respecting the
   current `--label` filter, "Hide verified"/"Hide unverified" and the
   min-confidence floor if set. This is a whole-dataset re-ranking, not a re-ordering of the page
@@ -417,6 +419,15 @@ while preserving the human labels.
   tightening it -- along with its crop and sharpness. The stored embedding
   described the old crop, so it is cleared at once and recomputed in the
   background; if that ever fails, `mbariml embed` fills it in.
+- **Zooming and panning the full image**: the mouse wheel zooms around the
+  pointer, one step per wheel notch; dragging empty image pans. Scrolling
+  nobody meant as zoom is ignored -- a Magic Mouse or trackpad scrolls
+  whenever a finger slides on it, clicks included, and keeps "coasting" after
+  the finger lifts. So the panel ignores momentum scroll, scroll while a
+  button is held or within 0.3 s of a click, and sideways swipes, and no
+  single scroll event zooms more than one notch. Right-drag doesn't zoom
+  either (pyqtgraph's default zoomed 2% per pixel moved, so a Magic Mouse
+  right-click with a slight slide made the zoom jump).
 
 Labeling and deleting no longer rebuild the entire page of thumbnails (the
 original did, on every single click, which is why review used to feel slow) —
