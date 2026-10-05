@@ -1,4 +1,4 @@
-"""Emit: export curated labels to Pascal VOC XML annotation files.
+"""Export: export curated labels to Pascal VOC XML annotation files.
 
 Selects every VERIFIED localization and names it ``new_label`` where the
 reviewer retyped it, the original detector ``label`` where they confirmed

@@ -1,7 +1,7 @@
 """`export html`: generate a paginated HTML gallery of images and their
 labeled crops -- a quick visual QA pass in a browser.
 
-One of the Emit-stage exports, alongside `export voc`/`export yolo`/
+One of the Export-stage commands, alongside `export voc`/`export yolo`/
 `export id`.
 """
 

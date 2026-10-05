@@ -45,7 +45,7 @@ by construction -- which is exactly the pairing YOLO resolves by swapping
 Images are located via the path recorded at detection time, the same as
 ``export voc``/``export html`` -- no separate image_dir argument needed.
 
-One of the Emit-stage exports, alongside ``export voc``/``export id``/
+One of the Export-stage commands, alongside ``export voc``/``export id``/
 ``export html``.
 """
 

@@ -1,4 +1,4 @@
-"""Enrich: generate embeddings for the ROI blobs stored at ingest.
+"""Enrich: generate embeddings for the ROI blobs stored by infer/import.
 
 Uses DINOv3 (ViT-Large/16, general-purpose ``lvd1689m`` weights) -- swapped
 in from DINOv2 since it was found to be substantially more accurate in
