@@ -11,6 +11,46 @@ recognizable.
 
 ---
 
+## 0.26.0 — import existing YOLO and Pascal VOC datasets; five stages, not four phases
+
+**New: `mbariml import yolo` and `mbariml import voc`**, the new first
+stage, Import. Bring an existing
+labeled dataset in as ordinary rows, ROI crops and sharpness included, so
+review, embed, cluster and every export work on it exactly as on detector
+output -- the reverse of `export yolo`/`export voc`.
+
+```bash
+mbariml import yolo IMAGES_DIR LABELS_DIR NAMES_FILE OUTPUT_DIR
+mbariml import voc  IMAGES_DIR XML_DIR OUTPUT_DIR
+```
+
+- Imported boxes are **verified** by default: a training set is ground
+  truth, and exports select only verified rows. `--unverified` for another
+  model's predictions.
+- Label files pair with images by relative path, then by unique filename.
+  VOC uses `<filename>`, with `<folder>` to break a tie, never `<path>`.
+- YOLO label files are all checked against the names file before anything is
+  written. A 6th confidence column and segmentation polygons are accepted.
+- Confidence is kept where the file has one, including the `<confidence>`
+  `export voc` writes, so a VOC export imports back without loss. Checked by
+  round-tripping a YOLO dataset through import → `export voc` → `import voc`
+  → `export yolo`: identical boxes, labels and confidences.
+- Appends to an existing database. Images already in it are skipped, so
+  re-running an import doesn't duplicate boxes (`--no-skip-existing` to
+  override).
+
+The names-file reader `export yolo --names-file` used moved to
+`mbariml.yolo_utils.read_names_file`, so both directions read it the same way.
+
+**"Phases" are now "stages"**, the term the paper uses, and there are five:
+Import, Ingest, Enrich, Curate, Emit. README, cheat sheet and docstrings all
+use it; entries below keep the wording they were written with. To keep the
+word unambiguous, `mbariml run`'s `--from`/`--to` units (`ingest`, `embed`,
+`cluster`, `export`) are now called **steps** in its help and the docs; the
+flags and their values are unchanged.
+
+---
+
 ## 0.25.0 — confidence range slider; search matches the new label, else the original; SAM3 tightens loose boxes further
 
 **Review: the confidence slider has two handles.** "Min confidence" is now a

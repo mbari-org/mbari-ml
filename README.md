@@ -6,10 +6,11 @@
 Turn raw survey imagery **or video** into a curated, labeled DuckDB database,
 then out again as training data. Described in
 [arXiv:2609.25500](https://arxiv.org/abs/2609.25500) (see
-[Citing this work](#citing-this-work)). Four phases:
+[Citing this work](#citing-this-work)). Five stages:
 
-| Phase | Commands | What it does |
+| Stage | Commands | What it does |
 |---|---|---|
+| **Import** | `import yolo`, `import voc` | an existing labeled dataset into a database |
 | **Ingest** | `infer images`, `infer video` | pixels + detections into a database |
 | **Enrich** | `embed`, `cluster`, `refine` | embeddings and grouping |
 | **Curate** | `review`, `remap-labels` | human review and relabeling |
@@ -63,10 +64,11 @@ click.
 Every command reads/writes the **same database schema** and just operates on
 whatever database you point it at — there's no hidden state, and no command
 needs any specific earlier one to have run, only a database that already has
-what it needs (`embed` needs ROI blobs, `cluster` needs embeddings). So both
-ingest commands are standalone entry points:
+what it needs (`embed` needs ROI blobs, `cluster` needs embeddings). So the
+import and ingest commands are all standalone entry points:
 
 ```bash
+mbariml import yolo  dataset/images dataset/labels dataset/names.txt /data/results/
 mbariml infer images runs/train/best.pt /data/new_survey/  /data/results/
 mbariml infer video  runs/train/best.pt /data/dive_video/  /data/results/
 ```
@@ -82,8 +84,10 @@ mbariml export html /data/results/yolo_predictions.duckdb /data/results/html
 
 All commands:
 
-| Command | Phase | What it does |
+| Command | Stage | What it does |
 |---|---|---|
+| `mbariml import yolo`  | Import | Import an existing YOLO dataset (images + labels + names file) (see below) |
+| `mbariml import voc`   | Import | Import an existing Pascal VOC dataset (images + XML) (see below) |
 | `mbariml infer images` | Ingest | Detect on a directory of images; crop ROIs into a database (see below) |
 | `mbariml infer video`  | Ingest | Detect on video, by tracking or frame striding (see below) |
 | `mbariml embed`        | Enrich | Compute a DINOv3 embedding for every ROI |
@@ -100,7 +104,50 @@ All commands:
 | `mbariml run`          | — | Chain ingest → embed → cluster → export |
 
 Run `mbariml <command> --help` for the full option list (`mbariml infer
---help` / `mbariml export --help` for the groups).
+--help` / `mbariml import --help` / `mbariml export --help` for the groups).
+
+### Import: an existing labeled dataset
+
+```bash
+mbariml import yolo dataset/images dataset/labels dataset/names.txt /data/results/
+mbariml import voc  dataset/images dataset/Annotations             /data/results/
+```
+
+The reverse of `export yolo`/`export voc`: no model, just labels someone
+already drew. Every box becomes an ordinary row in
+`/data/results/yolo_predictions.duckdb`, ROI crop and sharpness included, so
+from there it is exactly like detector output: `review` can edit, relabel,
+delete and add boxes on those images, `embed`/`cluster` pick it up, and every
+export writes it back out. Point it at an existing database's directory and
+it appends, so a legacy training set and a new survey's detections can live
+in one database.
+
+- **Imported boxes are verified by default.** A training set is human-labeled
+  ground truth, and exports select only verified rows -- imported unverified,
+  it would export back out as nothing. Pass `--unverified` when the labels
+  are some other model's predictions that still need review.
+- **Pairing labels with images.** By relative path first
+  (`labels/train/a.txt` ↔ `images/train/a.jpg`), then by bare filename when
+  that is unique. VOC uses each XML's `<filename>` (with `<folder>` breaking
+  a tie), never its `<path>`, which is only right on the machine that wrote
+  it. A label file whose image can't be found, or matches more than one, is
+  skipped and counted.
+- **YOLO names file**: `names.txt` (one per line) or an Ultralytics dataset
+  `.yaml`. Every label file is checked against it before anything is written,
+  so the wrong names file fails at once rather than mislabeling every box.
+  A 6th column (`save_conf` confidence) and segmentation polygons (imported
+  as their bounding box) are accepted too.
+- **Confidence** comes from the file where it has one (the YOLO 6th column,
+  or the `<confidence>` that `export voc` writes), else 1.0, as for a box
+  drawn in review.
+- **Re-running is safe**: images already in the database are skipped
+  (`--no-skip-existing` to add their boxes anyway).
+- YOLO background images (an empty label file, or no label file at all) have
+  no boxes, so there is nothing to store for them; they are counted, not
+  imported.
+
+Then `mbariml embed` as usual to make the imported ROIs searchable and
+clusterable.
 
 ### Ingest: images
 
@@ -924,7 +971,7 @@ identical after ingest:
 mbariml run best.pt /data/dive_video/ /data/results/ --media video
 ```
 
-Use `--from`/`--to` with **named stages** (`ingest`, `embed`, `cluster`,
+Use `--from`/`--to` with **named steps** (`ingest`, `embed`, `cluster`,
 `export`) to run only part of it — e.g. to resume after reviewing in the GUI
 and just re-export:
 
@@ -932,7 +979,7 @@ and just re-export:
 mbariml run best.pt /data/survey_images/ /data/results/ --from export
 ```
 
-The export stage runs both `export voc` and `export html`; if you only want
+The export step runs both `export voc` and `export html`; if you only want
 one, run it directly rather than through `run`. `review`, `query`,
 `remap-labels`, `export stats`, `export yolo`, and `export id` aren't in the chain —
 they're interactive, or they don't belong in the middle of a batch run.

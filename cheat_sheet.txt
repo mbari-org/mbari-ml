@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.25.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.26.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -21,13 +21,14 @@ Because that's an *editable* install, editing any .py file takes effect the
 next time you run `mbariml` -- no reinstall needed. Re-run `pip install -e .`
 only when pyproject.toml changes (a new dependency, mainly).
 
-FOUR PHASES (not numbered steps)
----------------------------------
+FIVE STAGES (not numbered steps)
+--------------------------------
 Numbered steps were dropped in v0.11.0. They'd been renumbered three times as
 commands merged and moved, each renumbering rippling through every docstring
 and both docs, for a sequence that was never actually linear. What the
-pipeline really is:
+pipeline really is -- the five stages, as named in the paper:
 
+    IMPORT   import {yolo,voc}                existing labeled dataset -> database
     INGEST   infer images | infer video       pixels + detections -> database
     ENRICH   embed | cluster | refine         embeddings and grouping
     CURATE   review | remap-labels            human review and relabeling
@@ -36,9 +37,9 @@ pipeline really is:
 
 Every command reads and writes the SAME database schema (see mbariml.db), so
 any command's output is usable by any other that needs what it has. That's
-what lets you start anywhere: point `infer video` at new footage and go
-straight to `review` on its output, or run `embed`/`cluster` over a database
-any ingest command produced.
+what lets you start anywhere: import an existing training set, or point
+`infer video` at new footage, and go straight to `review` on the result, or
+run `embed`/`cluster` over a database any import or ingest command produced.
 
 HOW TO READ A TYPER COMMAND (read this once)
 ---------------------------------------------
@@ -46,7 +47,7 @@ Every command has the shape:
     mbariml <command> [ARGUMENTS] [OPTIONS]
 
 Some commands are grouped: `mbariml infer images`, `mbariml export voc`.
-`infer` and `export` aren't runnable themselves -- they just group their
+`infer`, `import` and `export` aren't runnable themselves -- they just group their
 subcommands. Run `mbariml infer --help` to see a group, `mbariml infer video
 --help` for one subcommand's own arguments/options.
 
@@ -60,6 +61,45 @@ subcommands. Run `mbariml infer --help` to see a group, `mbariml infer video
 - `--help` works on every command. Always available, always accurate.
 - Nothing here silently does nothing: a bad path or value raises immediately,
   and unexpected failures print a full traceback and exit non-zero.
+
+
+==============================================================================
+IMPORT -- bring an existing labeled dataset into a database
+==============================================================================
+
+import yolo | import voc
+  Bring an existing labeled dataset in -- no model, just labels someone
+  already drew. The reverse of `export yolo` / `export voc`.
+
+    mbariml import yolo dataset/images dataset/labels dataset/names.txt /data/results/
+    mbariml import voc  dataset/images dataset/Annotations             /data/results/
+
+  Every box becomes an ordinary row (ROI crop and sharpness included), so
+  review can edit/relabel/delete/add boxes, embed/cluster pick it up, and
+  every export writes it back out. Appends to an existing database in that
+  directory, same as the infer commands -- so a legacy
+  training set and a new survey's detections can share one database.
+
+  Imported boxes are VERIFIED by default -- a training set is ground truth,
+  and exports select only verified rows. --unverified for another model's
+  predictions that still need review.
+
+  Pairing: by relative path (labels/train/a.txt <-> images/train/a.jpg),
+  then by filename if unique. VOC uses <filename> (+ <folder> to break a
+  tie), never <path>. Unpaired files are skipped and counted.
+
+  YOLO names file: names.txt or a dataset .yaml. Checked against every label
+  file BEFORE anything is written. Also accepts a 6th confidence column and
+  segmentation polygons (imported as their bounding box).
+
+  Confidence: from the file if it has one (YOLO 6th column, VOC
+  <confidence> as `export voc` writes), else 1.0.
+
+  Re-running is safe: images already in the database are skipped
+  (--no-skip-existing to add anyway). --limit N for a quick test.
+  Empty label files (background images) have nothing to store.
+
+  Then: mbariml embed /data/results/yolo_predictions.duckdb
 
 
 ==============================================================================
@@ -577,12 +617,12 @@ Video works too -- the chain is identical after ingest:
 
     mbariml run models/best.pt /data/dive_video/ /data/results/ --media video
 
-Start or stop partway with --from/--to (named stages: ingest, embed, cluster,
+Start or stop partway with --from/--to (named steps: ingest, embed, cluster,
 export) -- e.g. to resume after reviewing in the GUI and just re-export:
 
     mbariml run models/best.pt /data/survey_images/ /data/results/ --from export
 
-Reaching the export stage runs both `export voc` and `export html`. Want just
+Reaching the export step runs both `export voc` and `export html`. Want just
 one? Run it directly rather than through `run`.
 
 --random/--seed (ingest image sampling) and --approx-n-clusters/--noise-level
@@ -599,7 +639,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.25.0. Run `mbariml <command> --help`
+Captured verbatim against v0.26.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -626,10 +666,109 @@ mbariml --help
 │ query         Run SQL against DB_PATH and print the result as a table.                           │
 │ review        Launch the interactive ROI review/labeling GUI.                                    │
 │ run           Run the scriptable chain (ingest -> embed -> cluster -> export: voc + html).       │
+│ import        Import an existing labeled dataset (YOLO or Pascal VOC) into a curation database.  │
 │ infer         Run a model over imagery or video, storing detections + ROI crops in a database.   │
 │ export        Export curated labels to a downstream annotation format, an HTML gallery, or       │
 │               summary stats.                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml import --help
+
+                                                                                                    
+ Usage: mbariml import [OPTIONS] COMMAND [ARGS]...                                                  
+                                                                                                    
+ Import an existing labeled dataset (YOLO or Pascal VOC) into a curation database.                  
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ yolo  Import a YOLO dataset's images and labels into OUTPUT_DIR/yolo_predictions.duckdb.         │
+│ voc   Import a Pascal VOC dataset's images and XML annotations into                              │
+│       OUTPUT_DIR/yolo_predictions.duckdb.                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml import yolo --help
+
+                                                                                                    
+ Usage: mbariml import yolo [OPTIONS] {images_dir} {labels_dir} {names_file}                        
+                            {output_dir}                                                            
+                                                                                                    
+ Import a YOLO dataset's images and labels into OUTPUT_DIR/yolo_predictions.duckdb.                 
+                                                                                                    
+ Every box becomes an ordinary localization with its ROI crop stored, so                            
+ review, embed, cluster and every export work on it exactly as on                                   
+ detector output. Images with an empty label file (YOLO's background                                
+ images) have nothing to store and are counted, not imported.                                       
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    images_dir      <str>  Directory of images (searched recursively). [required]               │
+│ *    labels_dir      <str>  Directory of YOLO label .txt files, one per image (searched          │
+│                             recursively).                                                        │
+│                             [required]                                                           │
+│ *    names_file      <str>  Class names in class-index order: a names.txt (one per line) or an   │
+│                             Ultralytics dataset .yaml.                                           │
+│                             [required]                                                           │
+│ *    output_dir      <str>  Directory for yolo_predictions.duckdb -- created if new, appended to │
+│                             if it already exists.                                                │
+│                             [required]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --verified         --unverified                 Mark imported boxes verified (human-labeled      │
+│                                                 ground truth -- what exports select) or          │
+│                                                 unverified (e.g. another model's predictions, to │
+│                                                 review first).                                   │
+│                                                 [default: verified]                              │
+│ --skip-existing    --no-skip-existing           Skip images already in the database, so          │
+│                                                 re-running an import doesn't duplicate its       │
+│                                                 boxes.                                           │
+│                                                 [default: skip-existing]                         │
+│ --limit                                  <int>  Import only the first N label files (for a quick │
+│                                                 test run).                                       │
+│ --help                                          Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml import voc --help
+
+                                                                                                    
+ Usage: mbariml import voc [OPTIONS] {images_dir} {xml_dir} {output_dir}                            
+                                                                                                    
+ Import a Pascal VOC dataset's images and XML annotations into OUTPUT_DIR/yolo_predictions.duckdb.  
+                                                                                                    
+ Every box becomes an ordinary localization with its ROI crop stored, so                            
+ review, embed, cluster and every export work on it exactly as on                                   
+ detector output.                                                                                   
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    images_dir      <str>  Directory of images (searched recursively). [required]               │
+│ *    xml_dir         <str>  Directory of Pascal VOC .xml files, one per image (searched          │
+│                             recursively).                                                        │
+│                             [required]                                                           │
+│ *    output_dir      <str>  Directory for yolo_predictions.duckdb -- created if new, appended to │
+│                             if it already exists.                                                │
+│                             [required]                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --verified         --unverified                 Mark imported boxes verified (human-labeled      │
+│                                                 ground truth -- what exports select) or          │
+│                                                 unverified (e.g. another model's predictions, to │
+│                                                 review first).                                   │
+│                                                 [default: verified]                              │
+│ --skip-existing    --no-skip-existing           Skip images already in the database, so          │
+│                                                 re-running an import doesn't duplicate its       │
+│                                                 boxes.                                           │
+│                                                 [default: skip-existing]                         │
+│ --limit                                  <int>  Import only the first N XML files (for a quick   │
+│                                                 test run).                                       │
+│ --help                                          Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml infer --help
@@ -648,6 +787,7 @@ mbariml infer --help
 │ video   Run YOLO over video and store detections (with ROI crops and extracted                   │
 │         frames) in OUTPUT_DIR/yolo_predictions.duckdb.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml infer images --help
@@ -705,6 +845,7 @@ mbariml infer images --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml infer video --help
 
                                                                                                     
@@ -759,6 +900,7 @@ mbariml infer video --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml embed --help
 
                                                                                                     
@@ -791,6 +933,7 @@ mbariml embed --help
 │                                          [default: no-force]                                     │
 │ --help                                   Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml cluster --help
@@ -869,6 +1012,7 @@ mbariml cluster --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml refine --help
 
                                                                                                     
@@ -912,6 +1056,7 @@ mbariml refine --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml review --help
 
                                                                                                     
@@ -933,6 +1078,7 @@ mbariml review --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml remap-labels --help
 
                                                                                                     
@@ -947,6 +1093,7 @@ mbariml remap-labels --help
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml export --help
@@ -968,6 +1115,7 @@ mbariml export --help
 │ stats  Print label counts and per-image detection stats; optionally write an                     │
 │        image x label count matrix CSV for downstream ecological analysis.                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml export voc --help
@@ -994,7 +1142,9 @@ mbariml export voc --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml export yolo --help
+
                                                                                                     
  Usage: mbariml export yolo [OPTIONS] {db_path} {output_dir}                                        
                                                                                                     
@@ -1069,6 +1219,7 @@ mbariml export yolo --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml export id --help
 
                                                                                                     
@@ -1105,6 +1256,7 @@ mbariml export id --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml export html --help
 
                                                                                                     
@@ -1130,6 +1282,7 @@ mbariml export html --help
 │                                                   [default: verified-only]                       │
 │ --help                                            Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 mbariml export stats --help
@@ -1168,6 +1321,7 @@ mbariml export stats --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml query --help
 
                                                                                                     
@@ -1188,6 +1342,7 @@ mbariml query --help
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
+
 mbariml run --help
 
                                                                                                     
@@ -1195,26 +1350,26 @@ mbariml run --help
                                                                                                     
  Run the scriptable chain (ingest -> embed -> cluster -> export: voc + html).                       
                                                                                                     
- Every stage reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running                         
+ Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running                          
  with --from past ingest resumes against whatever is already in that                                
  database -- nothing upstream is re-run or overwritten.                                             
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    model_path      <str>  Path to the YOLO model (used by the ingest stage). [required]        │
+│ *    model_path      <str>  Path to the YOLO model (used by the ingest step). [required]         │
 │ *    input_path      <str>  Directory of images, or a video file/directory (see --media).        │
 │                             [required]                                                           │
-│ *    output_dir      <str>  Directory for the database and all stage outputs. [required]         │
+│ *    output_dir      <str>  Directory for the database and all step outputs. [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --media                               <str>    What INPUT_PATH holds: 'images' or 'video'.       │
 │                                                [default: images]                                 │
-│ --from                                <str>    First stage to run: one of ['ingest', 'embed',    │
+│ --from                                <str>    First step to run: one of ['ingest', 'embed',     │
 │                                                'cluster', 'export'].                             │
 │                                                [default: ingest]                                 │
-│ --to                                  <str>    Last stage to run (inclusive): one of ['ingest',  │
+│ --to                                  <str>    Last step to run (inclusive): one of ['ingest',   │
 │                                                'embed', 'cluster', 'export'].                    │
 │                                                [default: export]                                 │
-│ --limit                               <int>    Limit passed through to stages that support it,   │
+│ --limit                               <int>    Limit passed through to steps that support it,    │
 │                                                for a quick test run.                             │
 │ --random               --no-random             With --limit, sample images randomly at ingest    │
 │                                                instead of taking the first N in sorted order.    │

@@ -45,7 +45,7 @@ by construction -- which is exactly the pairing YOLO resolves by swapping
 Images are located via the path recorded at detection time, the same as
 ``export voc``/``export html`` -- no separate image_dir argument needed.
 
-One of the Emit-phase exports, alongside ``export voc``/``export id``/
+One of the Emit-stage exports, alongside ``export voc``/``export id``/
 ``export html``.
 """
 
@@ -56,13 +56,13 @@ from pathlib import Path
 
 import cv2
 import typer
-import yaml  # PyYAML, already installed as an Ultralytics dependency
 from tqdm import tqdm
 
 from mbariml import db
 from mbariml.export_common import write_image_manifest_and_script
 from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
+from mbariml.yolo_utils import read_names_file
 
 app = typer.Typer(help="Export curated labels to YOLO-format label files, plus a names file.")
 logger = get_logger(__name__)
@@ -86,26 +86,6 @@ def _fetch_curated(conn, *, include_unverified: bool = False) -> list[tuple]:
         {db.curated_where(require_verified=not include_unverified)}
         """
     ).fetchall()
-
-
-def _read_names_file(names_file: Path) -> list[str]:
-    """Class names, in class-index order, from an existing dataset's
-    ``names.txt`` (one per line) or Ultralytics dataset YAML (``names:`` as a
-    list, or as the ``{index: name}`` mapping Ultralytics also accepts)."""
-    if names_file.suffix.lower() in (".yaml", ".yml"):
-        names = (yaml.safe_load(names_file.read_text()) or {}).get("names")
-        if isinstance(names, dict):
-            names = [names[i] for i in sorted(names)]
-        if not isinstance(names, list):
-            raise typer.BadParameter(f"--names-file {names_file}: no `names:` list or mapping found")
-        names = [str(name).strip() for name in names]
-    else:
-        names = [line.strip() for line in names_file.read_text().splitlines() if line.strip()]
-
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        raise typer.BadParameter(f"--names-file {names_file} lists these names more than once: {duplicates}")
-    return names
 
 
 def _class_names(labels: set[str], fixed_names: list[str] | None) -> list[str]:
@@ -549,7 +529,7 @@ def export_yolo(
         names_file_path = Path(names_file)
         if not names_file_path.exists():
             raise typer.BadParameter(f"--names-file not found: {names_file_path}")
-        fixed_names = _read_names_file(names_file_path)
+        fixed_names = read_names_file(names_file_path)
         logger.info("Class order from %s (%d name(s))", names_file_path, len(fixed_names))
 
     with db.connect(db_path, must_exist=True) as conn:
