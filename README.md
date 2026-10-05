@@ -11,10 +11,10 @@ then out again as training data. Described in
 | Stage | Commands | What it does |
 |---|---|---|
 | **Import** | `import yolo`, `import voc` | an existing labeled dataset into a database |
-| **Ingest** | `infer images`, `infer video` | pixels + detections into a database |
+| **Generate** | `infer images`, `infer video` | pixels + detections into a database |
 | **Enrich** | `embed`, `cluster`, `refine` | embeddings and grouping |
 | **Curate** | `review`, `remap-labels` | human review and relabeling |
-| **Emit** | `export {voc,yolo,id,html,stats}`, `query` | annotations, galleries, numbers |
+| **Export** | `export {voc,yolo,id,html,stats}`, `query` | annotations, galleries, numbers |
 
 ![The mbariml review GUI](docs/review_gui.png)
 
@@ -65,7 +65,7 @@ Every command reads/writes the **same database schema** and just operates on
 whatever database you point it at — there's no hidden state, and no command
 needs any specific earlier one to have run, only a database that already has
 what it needs (`embed` needs ROI blobs, `cluster` needs embeddings). So the
-import and ingest commands are all standalone entry points:
+Import and Generate commands are all standalone entry points:
 
 ```bash
 mbariml import yolo  dataset/images dataset/labels dataset/names.txt /data/results/
@@ -88,19 +88,19 @@ All commands:
 |---|---|---|
 | `mbariml import yolo`  | Import | Import an existing YOLO dataset (images + labels + names file) (see below) |
 | `mbariml import voc`   | Import | Import an existing Pascal VOC dataset (images + XML) (see below) |
-| `mbariml infer images` | Ingest | Detect on a directory of images; crop ROIs into a database (see below) |
-| `mbariml infer video`  | Ingest | Detect on video, by tracking or frame striding (see below) |
+| `mbariml infer images` | Generate | Detect on a directory of images; crop ROIs into a database (see below) |
+| `mbariml infer video`  | Generate | Detect on video, by tracking or frame striding (see below) |
 | `mbariml embed`        | Enrich | Compute a DINOv3 embedding for every ROI |
 | `mbariml cluster`      | Enrich | Cluster embeddings with EVoC, name clusters, export review grids (see below) |
 | `mbariml refine`       | Enrich | Re-cluster one label's ROIs into finer sub-clusters |
 | `mbariml review`       | Curate | Interactive GUI for labeling/deleting/adding ROIs |
 | `mbariml remap-labels` | Curate | Bulk-rename `new_label` values from a CSV |
-| `mbariml export voc`   | Emit | Pascal VOC XML |
-| `mbariml export yolo`  | Emit | YOLO label files + names.txt + train/val/test splits (see below) |
-| `mbariml export id`    | Emit | `*.id` sidecar next to each source image (see below) |
-| `mbariml export html`  | Emit | Paginated HTML gallery of images + crops |
-| `mbariml export stats` | Emit | Label counts, boxes-per-image stats, image × label matrix (see below) |
-| `mbariml query`        | Emit | Ad hoc SQL against a database |
+| `mbariml export voc`   | Export | Pascal VOC XML |
+| `mbariml export yolo`  | Export | YOLO label files + names.txt + train/val/test splits (see below) |
+| `mbariml export id`    | Export | `*.id` sidecar next to each source image (see below) |
+| `mbariml export html`  | Export | Paginated HTML gallery of images + crops |
+| `mbariml export stats` | Export | Label counts, boxes-per-image stats, image × label matrix (see below) |
+| `mbariml query`        | Export | Ad hoc SQL against a database |
 | `mbariml run`          | — | Chain ingest → embed → cluster → export |
 
 Run `mbariml <command> --help` for the full option list (`mbariml infer
@@ -149,7 +149,7 @@ in one database.
 Then `mbariml embed` as usual to make the imported ROIs searchable and
 clusterable.
 
-### Ingest: images
+### Generate: images
 
 `infer images` is the merge of what used to be two nearly-identical commands,
 `detect` and `infer-images` (v0.11.0). They wrote the same schema and cropped
@@ -168,7 +168,7 @@ intent distinction survives as `--preset`:
 
 Any individual option overrides its preset.
 
-### Ingest: video
+### Generate: video
 
 ```bash
 mbariml infer video models/best.pt /data/dive_video/ /data/results/
@@ -232,7 +232,7 @@ The trail back to the footage is kept as provenance columns (`video_path`,
 `frame_number`, `frame_time_s`, `track_id`, `track_length`) — what the review
 GUI's **Open Video** button uses.
 
-**One database or several?** Either. Ingest commands allocate ids from the
+**One database or several?** Either. Generate commands allocate ids from the
 database's own counter, so a second run *appends* rather than colliding —
 several videos, or images and video together, can share one database and be
 clustered/reviewed as one set. Verified: 5 image rows + 4 video rows in one
@@ -855,7 +855,7 @@ see [Output filenames](#output-filenames). Each file's header records the
 full source path regardless.
 
 Each file has a commented header — generator + version, who ran the export,
-the model that produced the detections (recorded automatically by the ingest
+the model that produced the detections (recorded automatically by the `infer`
 command, or override with `--model`), the **full path** of the source image,
 its pixel dimensions, the identification count, and a legend for the columns
 — followed by one **CSV row** per identification:
@@ -988,9 +988,9 @@ they're interactive, or they don't belong in the middle of a batch run.
 
 | Symptom | Cause / fix |
 |---|---|
-| Ingest finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
+| `infer` finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
 | `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Copy the tracker YAML, lower `track_high_thresh` / `new_track_thresh`, and pass it with `--tracker`. Lowering `--conf` alone will not help. |
-| An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded at ingest (absolute since v0.11.0); re-ingest if the imagery has been relocated. |
+| An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded when rows are added (absolute since v0.11.0); re-run `infer` or `import` if the imagery has been relocated. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
 | Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
 | Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a confidence range also narrow the pool by design. |

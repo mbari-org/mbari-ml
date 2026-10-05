@@ -1,4 +1,4 @@
-"""Emit: ad hoc SQL queries against a curation database.
+"""Export: ad hoc SQL queries against a curation database.
 
 The original ``8_query.py`` wasn't really a script -- it was a notebook-style
 file with a hardcoded absolute path to one specific database on its

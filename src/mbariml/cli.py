@@ -6,16 +6,16 @@ times as commands merged and moved, and every renumbering meant touching
 every docstring and both docs, for a sequence that was never actually linear):
 
     Import   import yolo | import voc        existing labeled dataset -> database
-    Ingest   infer images | infer video      pixels + detections -> database
+    Generate infer images | infer video      pixels + detections -> database
     Enrich   embed | cluster | refine        add embeddings and grouping
     Curate   review | remap-labels           human review and relabeling
-    Emit     export {voc,yolo,id,html} | stats | query
+    Export   export {voc,yolo,id,html,stats} | query
 
 Every command reads and writes the SAME database schema (see ``mbariml.db``),
 so any command's output is usable by any other that needs what it has. That's
 what lets you start anywhere: import an existing training set, or point
 ``infer video`` at new footage, and go straight to ``review`` on the result,
-or run ``embed``/``cluster`` over a database built by any import or ingest
+or run ``embed``/``cluster`` over a database built by any Import or Generate
 command.
 
 ``mbariml run`` chains the scriptable part of that (ingest -> embed -> cluster
@@ -62,7 +62,7 @@ import_app.command("yolo")(import_yolo.import_yolo)
 import_app.command("voc")(import_voc.import_voc)
 app.add_typer(import_app, name="import")
 
-# Ingest: `mbariml infer {images,video}`. These were three separate commands
+# Generate: `mbariml infer {images,video}`. These were three separate commands
 # before v0.11.0 -- `detect` and `infer-images` did the same job with
 # different defaults (see infer_images.py's docstring for the merge), and
 # video had no home at all.
@@ -71,7 +71,7 @@ infer_app.command("images")(infer_images.infer_images)
 infer_app.command("video")(infer_video.infer_video)
 app.add_typer(infer_app, name="infer")
 
-# Enrich / Curate / Emit.
+# Enrich / Curate / Export.
 app.command("embed")(embed_step.embed)
 app.command("cluster")(cluster_step.cluster)
 app.command("refine")(refine_step.refine)
@@ -117,7 +117,7 @@ def review(
 
 
 # The scriptable chain, in order. "Steps", not "stages": the stages are the
-# pipeline's five (Import, Ingest, Enrich, Curate, Emit -- see the module
+# pipeline's five (Import, Generate, Enrich, Curate, Export -- see the module
 # docstring), and these chain steps cut across them. Named rather than
 # numbered so adding or merging a command never renumbers anything again.
 _CHAIN_STEPS = ["ingest", "embed", "cluster", "export"]

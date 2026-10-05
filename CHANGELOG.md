@@ -11,6 +11,16 @@ recognizable.
 
 ---
 
+## 0.26.1 — stages renamed: Import, Generate, Enrich, Curate, Export
+
+**Two stages have new names:** Ingest is now **Generate**, and Emit is now
+**Export**. The five stages are Import, Generate, Enrich, Curate, Export.
+The README, the cheat sheet and the docstrings use the new names everywhere
+they name a stage. Docs only. No command, flag or `--help` text changed,
+and `mbariml run --from`/`--to` still takes `ingest` as its first step.
+
+---
+
 ## 0.26.0 — import existing YOLO and Pascal VOC datasets; five stages, not four phases
 
 **New: `mbariml import yolo` and `mbariml import voc`**, the new first

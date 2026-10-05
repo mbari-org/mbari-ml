@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.26.0). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.26.1). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -29,17 +29,17 @@ and both docs, for a sequence that was never actually linear. What the
 pipeline really is -- the five stages, as named in the paper:
 
     IMPORT   import {yolo,voc}                existing labeled dataset -> database
-    INGEST   infer images | infer video       pixels + detections -> database
+    GENERATE infer images | infer video       pixels + detections -> database
     ENRICH   embed | cluster | refine         embeddings and grouping
     CURATE   review | remap-labels            human review and relabeling
-    EMIT     export {voc,yolo,id,html,stats}  annotations, galleries, numbers
+    EXPORT   export {voc,yolo,id,html,stats}  annotations, galleries, numbers
              query
 
 Every command reads and writes the SAME database schema (see mbariml.db), so
 any command's output is usable by any other that needs what it has. That's
 what lets you start anywhere: import an existing training set, or point
 `infer video` at new footage, and go straight to `review` on the result, or
-run `embed`/`cluster` over a database any import or ingest command produced.
+run `embed`/`cluster` over a database any Import or Generate command produced.
 
 HOW TO READ A TYPER COMMAND (read this once)
 ---------------------------------------------
@@ -103,7 +103,7 @@ import yolo | import voc
 
 
 ==============================================================================
-INGEST -- get pixels and detections into a database
+GENERATE -- get pixels and detections into a database
 ==============================================================================
 
 infer images
@@ -199,7 +199,7 @@ infer video
   what the review GUI's "Open Video" button uses. Only frames that produced a
   detection are extracted, so tracking mode writes roughly one JPEG per track.
 
-  Same database or separate? Either. Ingest commands allocate ids from the
+  Same database or separate? Either. Generate commands allocate ids from the
   database's own counter, so a second run appends instead of colliding --
   several videos, or images and video, can share one database and be
   clustered/reviewed together. Verified directly: 5 image rows + 4 video rows
@@ -440,7 +440,7 @@ remap-labels
 
 
 ==============================================================================
-EMIT -- annotations, galleries, numbers
+EXPORT -- annotations, galleries, numbers
 ==============================================================================
 
 export voc | yolo | id | html | stats
@@ -493,7 +493,7 @@ export voc | yolo | id | html | stats
   yolo` take it too (opt-in; yolo e.g. to bootstrap a dataset from model
   output); only voc does not.
   All
-  four locate images via the path recorded at ingest -- no image_dir argument
+  four locate images via the path recorded in the database -- no image_dir argument
   -- and name output files after the source image's own filename, adding a
   <parent_dir>_ prefix ONLY to names that would otherwise collide (and
   logging when they do), so two dives sharing a filename never silently
@@ -588,7 +588,7 @@ query
 
 Image manifest + copy_images.py (written by `export voc` / `export yolo`)
   Both write annotation files, not image copies -- the source images already
-  exist wherever ingest found them. Each also writes image_manifest.csv
+  exist wherever infer/import found them. Each also writes image_manifest.csv
   (source_path -> dest_filename, the image's own name unless it collides)
   and a standalone
   copy_images.py. Run that later to pull the actual images down:
@@ -639,7 +639,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.26.0. Run `mbariml <command> --help`
+Captured verbatim against v0.26.1. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
