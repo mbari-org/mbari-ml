@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbariml"
-version = "0.26.1"
+version = "0.27.0"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "YOLO detection -> embedding -> clustering -> curation pipeline for deep sea imagery."
@@ -24,7 +24,13 @@ dependencies = [
     "evoc>=0.3",
     "PySide6>=6.11",
     "pyqtgraph>=0.13",  # wheel-zoom/pan + draggable-box widgets for `mbariml review`
+    "huggingface_hub>=0.34",  # `mbariml sam3 download`, and review finding sam3.pt in its cache
 ]
+
+[project.optional-dependencies]
+# Optional SAM3 in the review GUI: Ultralytics' CLIP, which isn't on PyPI (PyPI's
+# `clip` is an unrelated clipboard tool). The model itself: `mbariml sam3 download`.
+sam3 = ["clip @ git+https://github.com/ultralytics/CLIP.git"]
 
 [project.scripts]
 mbariml = "mbariml.cli:app"

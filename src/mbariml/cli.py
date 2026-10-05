@@ -47,6 +47,7 @@ from mbariml.steps import (
     query as query_step,
     refine as refine_step,
     remap_labels as remap_labels_step,
+    sam3 as sam3_step,
     stats as stats_step,
 )
 
@@ -105,8 +106,8 @@ def review(
         None,
         "--sam3-model",
         help="Path to SAM3 weights (sam3.pt) to enable 'Add ROI with SAM3' and 'Tighten Boxes'. "
-        "Optional; defaults to $MBARIML_SAM3_MODEL. Also needs Ultralytics' CLIP: "
-        "pip install git+https://github.com/ultralytics/CLIP.git",
+        "Optional; defaults to $MBARIML_SAM3_MODEL, else the copy `mbariml sam3 download` fetched. "
+        "Also needs Ultralytics' CLIP: pip install -e \".\\[sam3]\". `mbariml sam3 check` says what's missing.",
     ),
 ) -> None:
     """Launch the interactive ROI review/labeling GUI."""
@@ -114,6 +115,14 @@ def review(
     from mbariml.steps.review import review as _review
 
     _review(database_path, label, page_size, sam3_model)
+
+
+# Setup, not a stage: `mbariml sam3 {download,check}` fetches and checks the
+# optional SAM3 model review can use. See mbariml.gui.sam3_service.
+sam3_app = typer.Typer(help="Download and check the optional SAM3 model the review GUI can use.")
+sam3_app.command("download")(sam3_step.download)
+sam3_app.command("check")(sam3_step.check)
+app.add_typer(sam3_app, name="sam3")
 
 
 # The scriptable chain, in order. "Steps", not "stages": the stages are the

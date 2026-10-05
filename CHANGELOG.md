@@ -11,6 +11,41 @@ recognizable.
 
 ---
 
+## 0.27.0 — SAM3 setup in two commands: `pip install -e ".[sam3]"` and `mbariml sam3 download`
+
+**SAM3 in review now takes two setup commands, and no flag after that.**
+Before, you installed Ultralytics' CLIP from GitHub by hand, downloaded
+`sam3.pt` yourself, and passed `--sam3-model` or set `MBARIML_SAM3_MODEL`
+every time. Upgrading Python dropped CLIP without any warning, and nothing
+remembered where the model was.
+
+```bash
+pip install -e ".[sam3]"   # new `sam3` extra: Ultralytics' CLIP
+hf auth login              # facebook/sam3 is gated: request access first
+mbariml sam3 download      # sam3.pt into the Hugging Face cache
+mbariml review DB          # finds it there
+```
+
+- **`mbariml sam3 download`** fetches `sam3.pt` (~3.4 GB) from
+  `facebook/sam3` into the Hugging Face cache. Running it again reuses the
+  existing download. Without access or a login, it says how to get them.
+- **Review finds the model by itself.** It looks at `--sam3-model`, then
+  `$MBARIML_SAM3_MODEL`, then the Hugging Face cache. The cache lookup only
+  reads the disk, never the network. A `sam3.pt` kept elsewhere still works
+  through the flag or the variable.
+- **`mbariml sam3 check`** prints the model review would use and where it
+  was found. If SAM3 isn't usable, it prints why (no model, or CLIP missing
+  or the wrong `clip`) and exits 1. It doesn't load the model.
+- **The `sam3` extra** installs `clip @ git+https://github.com/ultralytics/CLIP.git`.
+  This works because mbariml is installed from its checkout, not PyPI.
+  Reinstalling with `.[sam3]` after a Python upgrade brings CLIP back.
+
+`huggingface_hub` is now a direct dependency (it already came in with
+`timm`). `requirements.txt` gains it, and also `pyqtgraph`, which the review GUI needs
+and which was missing from that file.
+
+---
+
 ## 0.26.1 — stages renamed: Import, Generate, Enrich, Curate, Export
 
 **Two stages have new names:** Ingest is now **Generate**, and Emit is now

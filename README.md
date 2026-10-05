@@ -47,13 +47,19 @@ changed" below for why it needed fixing.)
 to draw a box from one click and to tighten loose boxes (see "Using the
 review GUI well"). Nothing else needs it, and review works exactly the same
 without it — the SAM3 buttons are just greyed out, with the reason as their
-tooltip. To turn it on:
+tooltip. To turn it on, once:
 
 ```bash
-pip install git+https://github.com/ultralytics/CLIP.git   # not on PyPI; PyPI's `clip` is an unrelated tool
-# download sam3.pt -- gated: request access at https://huggingface.co/facebook/sam3
-mbariml review DB_PATH --sam3-model /path/to/sam3.pt      # or: export MBARIML_SAM3_MODEL=/path/to/sam3.pt
+pip install -e ".[sam3]"   # adds Ultralytics' CLIP (not on PyPI; PyPI's `clip` is an unrelated tool)
+hf auth login              # after requesting access at https://huggingface.co/facebook/sam3 (gated)
+mbariml sam3 download      # sam3.pt (~3.4 GB) into the Hugging Face cache
+mbariml review DB_PATH     # finds it there; no flag or env var needed
 ```
+
+`mbariml sam3 check` says which model review will use, or what's missing.
+Review looks for the model in this order: `--sam3-model /path/to/sam3.pt`,
+then `$MBARIML_SAM3_MODEL`, then the Hugging Face cache. So a `sam3.pt` you
+already have elsewhere works without downloading it again.
 
 It needs a GPU (CUDA or Apple MPS) to be pleasant: on an M3 Ultra it loads in
 about 6 s on first use, then takes ~0.3–0.45 s per new image and ~15–50 ms per
@@ -102,9 +108,12 @@ All commands:
 | `mbariml export stats` | Export | Label counts, boxes-per-image stats, image × label matrix (see below) |
 | `mbariml query`        | Export | Ad hoc SQL against a database |
 | `mbariml run`          | — | Chain ingest → embed → cluster → export |
+| `mbariml sam3 download` | — | Fetch the optional SAM3 model for review (see Setup) |
+| `mbariml sam3 check`   | — | Show which SAM3 model review would use, or what's missing |
 
 Run `mbariml <command> --help` for the full option list (`mbariml infer
---help` / `mbariml import --help` / `mbariml export --help` for the groups).
+--help` / `mbariml import --help` / `mbariml export --help` / `mbariml sam3
+--help` for the groups).
 
 ### Import: an existing labeled dataset
 

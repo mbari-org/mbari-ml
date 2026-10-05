@@ -28,8 +28,8 @@ def review(
         None,
         "--sam3-model",
         help="Path to SAM3 weights (sam3.pt) to enable 'Add ROI with SAM3' and 'Tighten Boxes'. "
-        "Optional; defaults to $MBARIML_SAM3_MODEL. Also needs Ultralytics' CLIP: "
-        "pip install git+https://github.com/ultralytics/CLIP.git",
+        "Optional; defaults to $MBARIML_SAM3_MODEL, else the copy `mbariml sam3 download` fetched. "
+        "Also needs Ultralytics' CLIP: pip install -e \".\\[sam3]\". `mbariml sam3 check` says what's missing.",
     ),
 ) -> None:
     """Launch the ROI review/labeling GUI."""

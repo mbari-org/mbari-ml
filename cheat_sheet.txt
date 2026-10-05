@@ -4,7 +4,7 @@ Described in: Lundsten, Barnard & Caress (2026), "mbariml: a curation pipeline
 for turning deep-sea imagery and video into object-detection training data",
 arXiv:2609.25500 -- https://arxiv.org/abs/2609.25500
 
-Regenerated for the unified `mbariml` CLI (v0.26.1). The full, authoritative
+Regenerated for the unified `mbariml` CLI (v0.27.0). The full, authoritative
 --help output for every command is captured verbatim at the bottom of this
 file -- if this walkthrough and --help ever disagree, trust --help (it's
 generated straight from the code, not hand-maintained).
@@ -47,7 +47,7 @@ Every command has the shape:
     mbariml <command> [ARGUMENTS] [OPTIONS]
 
 Some commands are grouped: `mbariml infer images`, `mbariml export voc`.
-`infer`, `import` and `export` aren't runnable themselves -- they just group their
+`infer`, `import`, `export` and `sam3` aren't runnable themselves -- they just group their
 subcommands. Run `mbariml infer --help` to see a group, `mbariml infer video
 --help` for one subcommand's own arguments/options.
 
@@ -396,7 +396,7 @@ review (interactive GUI)
   its embedding is computed in the background using the same DINOv3 model
   `embed` uses, so it's immediately usable by similarity search/clustering.
 
-  "+ Add ROI with SAM3" (next to it; optional, needs --sam3-model, see
+  "+ Add ROI with SAM3" (next to it; optional, needs SAM3 set up, see
   below) -- click an object on the image (inside an existing box is fine);
   SAM3 draws its box (dashed yellow) and a popup opens at the click. Tab /
   Shift-Tab steps through SAM3's nested boxes (part / object / object plus
@@ -408,11 +408,16 @@ review (interactive GUI)
   written. Boxes SAM3 leaves about the same, or disagrees on, are left alone.
   Right-click any box (verified too) -> "Tighten with SAM3" for just that one.
 
-  SAM3 setup (optional -- without it these two buttons are greyed out and
-  nothing else changes):
-    pip install git+https://github.com/ultralytics/CLIP.git
-    download sam3.pt (gated: request access at huggingface.co/facebook/sam3)
-    mbariml review DB --sam3-model /path/to/sam3.pt   (or MBARIML_SAM3_MODEL)
+  SAM3 setup, once (optional -- without it these two buttons are greyed out
+  and nothing else changes):
+    pip install -e ".[sam3]"   Ultralytics' CLIP (not on PyPI)
+    hf auth login              after requesting access at
+                               huggingface.co/facebook/sam3 (gated)
+    mbariml sam3 download      sam3.pt (~3.4 GB) into the Hugging Face cache
+    mbariml review DB          finds it there by itself
+  `mbariml sam3 check` says which model review will use, or what's missing.
+  Order looked in: --sam3-model, then $MBARIML_SAM3_MODEL, then the Hugging
+  Face cache -- so a sam3.pt you already have works without re-downloading.
 
   "Open Video" (next to Delete) -- for ROIs that came from `infer video`.
   Opens the SOURCE FOOTAGE at the exact moment this detection was made, using
@@ -639,7 +644,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.26.1. Run `mbariml <command> --help`
+Captured verbatim against v0.27.0. Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -670,6 +675,7 @@ mbariml --help
 │ infer         Run a model over imagery or video, storing detections + ROI crops in a database.   │
 │ export        Export curated labels to a downstream annotation format, an HTML gallery, or       │
 │               summary stats.                                                                     │
+│ sam3          Download and check the optional SAM3 model the review GUI can use.                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -1071,9 +1077,9 @@ mbariml review --help
 │ --label             <str>  Filter ROIs by label                                                  │
 │ --page-size         <int>  Number of ROIs to show per page. [default: 500]                       │
 │ --sam3-model        <str>  Path to SAM3 weights (sam3.pt) to enable 'Add ROI with SAM3' and      │
-│                            'Tighten Boxes'. Optional; defaults to $MBARIML_SAM3_MODEL. Also      │
-│                            needs Ultralytics' CLIP: pip install                                  │
-│                            git+https://github.com/ultralytics/CLIP.git                           │
+│                            'Tighten Boxes'. Optional; defaults to $MBARIML_SAM3_MODEL, else the  │
+│                            copy `mbariml sam3 download` fetched. Also needs Ultralytics' CLIP:   │
+│                            pip install -e ".[sam3]". `mbariml sam3 check` says what's missing.   │
 │ --help                     Show this message and exit.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -1383,4 +1389,57 @@ mbariml run --help
 │                                                --help`.                                          │
 │                                                [default: 0.2]                                    │
 │ --help                                         Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml sam3 --help
+
+                                                                                                    
+ Usage: mbariml sam3 [OPTIONS] COMMAND [ARGS]...                                                    
+                                                                                                    
+ Download and check the optional SAM3 model the review GUI can use.                                 
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ download  Download SAM3 (sam3.pt, ~3.4 GB) from Hugging Face for the review GUI.                 │
+│ check     Show which SAM3 model `mbariml review` would use, or what's missing.                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml sam3 download --help
+
+                                                                                                    
+ Usage: mbariml sam3 download [OPTIONS]                                                             
+                                                                                                    
+ Download SAM3 (sam3.pt, ~3.4 GB) from Hugging Face for the review GUI.                             
+                                                                                                    
+ The repo is gated: request access at https://huggingface.co/facebook/sam3,                         
+ then log in once with `hf auth login` (or set HF_TOKEN). The file goes to                          
+ the Hugging Face cache, where `mbariml review` finds it by itself. Run it                          
+ again any time: an existing download is reused, not fetched again.                                 
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+mbariml sam3 check --help
+
+                                                                                                    
+ Usage: mbariml sam3 check [OPTIONS]                                                                
+                                                                                                    
+ Show which SAM3 model `mbariml review` would use, or what's missing.                               
+                                                                                                    
+ Looks where review looks: --sam3-model, then $MBARIML_SAM3_MODEL, then the                         
+ Hugging Face cache (from `mbariml sam3 download`). Only checks files and                           
+ packages; does not load the model. Exits 1 if SAM3 isn't usable.                                   
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --sam3-model        <str>  Check this sam3.pt instead of the one review would find by itself.    │
+│ --help                     Show this message and exit.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
