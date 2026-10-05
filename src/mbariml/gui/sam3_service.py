@@ -13,11 +13,18 @@ only looks for files, and the model loads on first use, on a worker thread.
 If anything is missing or fails to load, review works exactly as without it
 and the SAM3 controls are disabled, with the reason as their tooltip.
 
-Setup (none of it is a pip dependency of mbariml):
+Setup, once:
 
-  pip install git+https://github.com/ultralytics/CLIP.git
-  download sam3.pt -- gated: request access at huggingface.co/facebook/sam3
-  mbariml review DB --sam3-model /path/to/sam3.pt   (or set MBARIML_SAM3_MODEL)
+  pip install -e ".[sam3]"   the `sam3` extra: Ultralytics' CLIP, not on PyPI
+  mbariml sam3 download      sam3.pt into the Hugging Face cache. Gated:
+                             request access at huggingface.co/facebook/sam3,
+                             then `hf auth login`
+  mbariml review DB          finds it there by itself
+
+:func:`resolve_model_path` picks the model: ``--sam3-model``, else
+``$MBARIML_SAM3_MODEL``, else ``sam3.pt`` in the local Hugging Face cache (a
+file lookup, no network). ``mbariml sam3 check`` reports which one it found,
+or what is missing.
 
 Ultralytics' CLIP has to be checked for up front: when it's missing,
 Ultralytics tries to ``pip install`` it from GitHub in the middle of loading
@@ -43,7 +50,9 @@ from mbariml.logging_utils import get_logger
 logger = get_logger(__name__)
 
 MODEL_ENV_VAR = "MBARIML_SAM3_MODEL"
-CLIP_INSTALL = "pip install git+https://github.com/ultralytics/CLIP.git"
+CLIP_INSTALL = "pip install -e \".[sam3]\" (from the mbari-ml checkout), or pip install git+https://github.com/ultralytics/CLIP.git"
+HF_REPO = "facebook/sam3"
+HF_FILENAME = "sam3.pt"
 
 Box = tuple[float, float, float, float]  # x_min, y_min, x_max, y_max in image pixels
 
@@ -58,15 +67,44 @@ class Candidate:
 
 
 def resolve_model_path(model_path: str | None) -> str | None:
-    """The ``--sam3-model`` option, else ``$MBARIML_SAM3_MODEL``, else None."""
-    return model_path or os.environ.get(MODEL_ENV_VAR) or None
+    """The ``--sam3-model`` option, else ``$MBARIML_SAM3_MODEL``, else the copy
+    ``mbariml sam3 download`` put in the Hugging Face cache, else None."""
+    return model_path or os.environ.get(MODEL_ENV_VAR) or cached_model_path()
+
+
+def cached_model_path() -> str | None:
+    """``sam3.pt`` from the local Hugging Face cache, if it was downloaded.
+    Only looks on disk -- never touches the network."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+    path = try_to_load_from_cache(HF_REPO, HF_FILENAME)
+    return path if isinstance(path, str) else None  # else None or a "known missing" sentinel
+
+
+def download_model() -> str:
+    """Download ``sam3.pt`` into the Hugging Face cache (or find it already
+    there) and return its path. Raises RuntimeError with what to do when the
+    repo's gate hasn't been passed."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    try:
+        return hf_hub_download(HF_REPO, HF_FILENAME)
+    except (GatedRepoError, RepositoryNotFoundError) as exc:
+        raise RuntimeError(
+            f"{HF_REPO} is gated. Request access at https://huggingface.co/{HF_REPO}, wait for approval, "
+            f"then log in with `hf auth login` (or set HF_TOKEN) and run this again.\n({type(exc).__name__}: {exc})"
+        ) from exc
 
 
 def unavailable(model_path: str | None) -> str | None:
     """Why SAM3 can't be used, or None if it looks usable. Cheap: no imports
     of torch or Ultralytics, just file checks -- safe to call at startup."""
     if not model_path:
-        return f"No SAM3 model: start review with --sam3-model /path/to/sam3.pt (or set {MODEL_ENV_VAR})."
+        return (f"No SAM3 model: run `mbariml sam3 download` once, or start review with "
+                f"--sam3-model /path/to/sam3.pt (or set {MODEL_ENV_VAR}).")
     if not Path(model_path).is_file():
         return f"SAM3 model not found: {model_path}"
     spec = importlib.util.find_spec("clip")
@@ -228,5 +266,5 @@ class Sam3:
                 out.append(current)
         return out
 
-__all__ = ["Sam3", "Candidate", "Box", "MODEL_ENV_VAR", "resolve_model_path", "unavailable", "judge_tightening",
-           "iou"]
+__all__ = ["Sam3", "Candidate", "Box", "MODEL_ENV_VAR", "HF_REPO", "HF_FILENAME", "resolve_model_path",
+           "cached_model_path", "download_model", "unavailable", "judge_tightening", "iou"]

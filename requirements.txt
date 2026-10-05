@@ -21,3 +21,5 @@ pandas>=2.0
 tqdm>=4.67
 evoc>=0.3
 PySide6>=6.11
+pyqtgraph>=0.13
+huggingface_hub>=0.34
