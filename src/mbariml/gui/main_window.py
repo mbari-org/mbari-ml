@@ -485,7 +485,7 @@ class MainWindow(QMainWindow):
             "Missed a detection? Add New ROI: drag a box on the image panel above, then type its label. "
             "Add ROI with SAM3: click the object, Tab to pick the box size, type its label, Enter. "
             "Both stay on for more boxes until clicked again (or Esc). "
-            "Tighten Boxes refits the shown image's unverified boxes; you preview them first."
+            "Tighten Boxes refits every box on the shown image; you preview them first."
         )
         add_help.setWordWrap(True)
         controls_layout.addWidget(add_help)
@@ -1624,7 +1624,7 @@ class MainWindow(QMainWindow):
             reason or "Click an object on the image: SAM3 draws its box. Tab picks the size, type the label, Enter."
         )
         self.sam3_tighten_button.setToolTip(
-            reason or "SAM3 refits every unverified box on the shown image. You see its boxes before anything is saved."
+            reason or "SAM3 refits every box on the shown image. You see its boxes before anything is saved."
         )
 
     def _run_sam3(self, fn, on_result, *args) -> None:
@@ -1751,35 +1751,23 @@ class MainWindow(QMainWindow):
         if self._sam3_add_active and not self._closing:
             self.status_label.setText("Nothing added. Click another object, or Esc when done.")
 
-    def _verified_roi_indices(self, roi_indices: list[int]) -> set[int]:
-        if not roi_indices:
-            return set()
-        placeholders = ",".join("?" * len(roi_indices))
-        return {r[0] for r in self.conn.execute(
-            f"SELECT roi_index FROM predictions WHERE verified AND roi_index IN ({placeholders})", roi_indices
-        ).fetchall()}
-
     def _on_tighten_image_clicked(self) -> None:
-        """"Tighten Boxes (SAM3)": refit every unverified box on the shown
-        image. Verified boxes were accepted by a person as they are, so
-        they're left alone here (one can still be tightened on purpose from
-        its right-click menu)."""
+        """"Tighten Boxes (SAM3)": refit every box on the shown image,
+        verified or not. It used to skip verified boxes, which made it do
+        nothing on an imported dataset (imports are verified by default);
+        the preview and Yes/No before anything is written is the safeguard."""
         if self._current_detail_image_path is None:
             QMessageBox.information(self, "No Image Shown",
                                     "Select an ROI first so its source image is shown in the panel above.")
             return
         rois = list(self._frame_rois)
-        verified = self._verified_roi_indices([r.roi_index for r in rois])
-        targets = [r for r in rois if r.roi_index not in verified]
         notes = []
-        if verified:
-            notes.append(f"{len(verified)} verified")
         if self._frame_roi_total > len(rois):
             notes.append(f"{self._frame_roi_total - len(rois)} not shown (over {MAX_DETAIL_BOXES} on this image)")
-        if not targets:
-            self.status_label.setText("Nothing to tighten" + (f": {'; '.join(notes)}." if notes else "."))
+        if not rois:
+            self.status_label.setText("Nothing to tighten: no boxes on this image.")
             return
-        self._start_tightening(targets, notes=notes, single=False)
+        self._start_tightening(rois, notes=notes, single=False)
 
     def _on_tighten_box_requested(self, roi_index: int) -> None:
         """A box's right-click "Tighten with SAM3": that box only, verified or not."""

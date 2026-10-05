@@ -43,6 +43,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from mbariml.logging_utils import get_logger
@@ -56,7 +57,8 @@ HF_FILENAME = "sam3.pt"
 
 Box = tuple[float, float, float, float]  # x_min, y_min, x_max, y_max in image pixels
 
-TIGHTEN_ROUNDS = 5  # box prompts per box at most -- see Sam3.tighten
+TIGHTEN_ROUNDS = 4  # prompts per box at most -- see Sam3.tighten
+TIGHTEN_MARGIN = 0.05  # how far past the original box (per side, as a fraction) a tightened box may reach
 
 
 @dataclass
@@ -239,32 +241,66 @@ class Sam3:
         """A tight box around what each of ``boxes`` contains, or None where
         SAM3 finds nothing. All boxes share one image's features.
 
-        SAM3's box prompt stays close to the box it's given: a loose box
-        comes back only partly tightened. So the result is fed back in as the
-        next prompt until it stops changing (IoU > 0.97 with the box it was
-        prompted with), at most TIGHTEN_ROUNDS prompts. Measured on 150 verified
-        SeaClear boxes loosened by 30% per side, the median IoU with the
-        original box went from 0.58 (one prompt) to 0.75 (up to five; ~4
-        prompts on average); at 15%, 0.86 to 0.89. Boxes that were already
-        tight barely move either way (0.94 vs 0.92), and stop after ~2."""
+        Each prompt is the box *plus* a positive click at its centre, and the
+        new box is measured from SAM3's most confident mask, cut to the
+        original box (plus TIGHTEN_MARGIN) and with stray specks dropped (see
+        _tight_box). The result is fed back in as the next prompt until it
+        stops changing (IoU > 0.97), at most TIGHTEN_ROUNDS prompts.
+
+        A box prompt alone stays close to the box it's given, and its mask
+        often spills onto the seabed around the object, so the box SAM3
+        returned could even grow or drift sideways. Measured on 60 imported
+        Cyprus litter boxes: median area after tightening 0.63 of the
+        original with the box prompt alone, 0.45 now; boxes judged
+        "disagrees" (reaching outside, or shrinking to a small part) went
+        from 14 to 2. ~0.6 s per box on an M3 Ultra, image features included."""
         out: list[Box | None] = []
         with self._lock:
             self._load()
             feats = self._features(image_key, image_bgr)
             for box in boxes:
+                original = tuple(map(float, box))
                 current: Box | None = None
-                prompt = tuple(map(float, box))
+                prompt = original
                 for _ in range(TIGHTEN_ROUNDS):
-                    found = self._run(feats, image_bgr.shape, bboxes=[list(prompt)])
-                    if not found:
+                    new = self._tight_box(feats, image_bgr.shape, prompt, original)
+                    if new is None:
                         break
-                    new = max(found, key=lambda r: r[1])[0]
                     settled = iou(new, prompt) > 0.97  # SAM3 handed back the box it was given
                     current = prompt = new
                     if settled:
                         break
                 out.append(current)
         return out
+
+    def _tight_box(self, feats, shape, prompt: Box, original: Box) -> Box | None:
+        """One tightening prompt: ``prompt`` plus a click at its centre. The
+        box around SAM3's best mask, counting only mask pixels within
+        ``original`` (+ TIGHTEN_MARGIN), and only connected pieces at least a
+        tenth the size of the biggest -- a few stray pixels anywhere would
+        otherwise stretch the box to reach them."""
+        cx, cy = (prompt[0] + prompt[2]) / 2, (prompt[1] + prompt[3]) / 2
+        masks, boxes = self._pr.inference_features(feats, shape[:2], bboxes=[list(prompt)], points=[[cx, cy]],
+                                                   labels=[1], multimask_output=True)
+        if masks is None or len(masks) == 0:
+            return None
+        mask = masks[int(boxes[:, 4].argmax())].cpu().numpy()
+        h, w = shape[:2]
+        x0, y0, x1, y1 = original
+        mx, my = TIGHTEN_MARGIN * (x1 - x0), TIGHTEN_MARGIN * (y1 - y0)
+        left, top = int(max(0, x0 - mx)), int(max(0, y0 - my))
+        right, bottom = int(min(w, x1 + mx + 1)), int(min(h, y1 + my + 1))
+        window = mask[top:bottom, left:right].astype(np.uint8)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(window, connectivity=8)
+        if n <= 1:
+            return None
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep = [i + 1 for i, a in enumerate(areas) if a >= 0.1 * areas.max()]
+        ys, xs = np.nonzero(np.isin(labels, keep))
+        bx0, by0, bx1, by1 = left + xs.min(), top + ys.min(), left + xs.max() + 1, top + ys.max() + 1
+        if bx1 - bx0 < 4 or by1 - by0 < 4:
+            return None
+        return float(bx0), float(by0), float(bx1), float(by1)
 
 __all__ = ["Sam3", "Candidate", "Box", "MODEL_ENV_VAR", "HF_REPO", "HF_FILENAME", "resolve_model_path",
            "cached_model_path", "download_model", "unavailable", "judge_tightening", "iou"]

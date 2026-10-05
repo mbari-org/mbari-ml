@@ -473,16 +473,18 @@ while preserving the human labels.
   the background. **Escape**, or clicking outside the popup, discards it. It
   stays on for more objects until you click the button again or press
   Escape; dragging pans. The two add modes are exclusive.
-- **Tighten Boxes (SAM3)**: SAM3 refits every *unverified* box on the shown
-  image, using each box as its prompt -- and then SAM3's own box as the
-  next prompt, until it stops shrinking (up to 5 prompts per box). You see the new boxes dashed yellow
-  and confirm before anything is written. Only real tightening is offered:
-  boxes SAM3 leaves about the same, or where its box reaches well outside the
-  current one or shrinks to a small part of it (it found something else
-  there), are left alone and counted in the prompt. Verified boxes are
-  skipped; to tighten one anyway, right-click it and choose **Tighten with
-  SAM3**, which does just that box (and does show a box SAM3 disagrees on,
-  with a warning). On SeaClear, SAM3's boxes were usually tighter than the
+- **Tighten Boxes (SAM3)**: SAM3 refits every box on the shown image,
+  verified or not. Each prompt is the box plus a click at its centre, and
+  the new box is measured from SAM3's mask, kept within the old box and
+  ignoring stray specks of mask. SAM3's box is then the next prompt, until
+  it stops shrinking (up to 4 prompts per box). You see the new boxes dashed
+  yellow and confirm before anything is written. Only real tightening is
+  offered: boxes SAM3 leaves about the same, or shrinks to a small part of
+  (it found something else there), are left alone and counted in the
+  prompt. Right-click a box and choose **Tighten with SAM3** to do just that
+  box (it does show a box SAM3 disagrees on, with a warning). On 60
+  imported Cyprus litter boxes, tightening left a median 0.45 of the
+  original area. On SeaClear, SAM3's boxes were usually tighter than the
   hand-drawn ones but occasionally cut off a thin or faint end -- a cable's
   far end, a fish's tail -- which is why every change is previewed.
 - **Any change to a box's geometry recomputes its embedding** -- dragging it,

@@ -11,6 +11,34 @@ recognizable.
 
 ---
 
+## 0.28.0 — Tighten Boxes works on verified boxes; SAM3 tightening is much tighter
+
+**"Tighten Boxes (SAM3)" now refits every box on the shown image, verified
+or not.** It used to skip verified boxes. `import yolo`/`import voc` mark
+every box verified by default, so on an imported dataset the button did
+nothing except show "Nothing to tighten: N verified" in the status line.
+The dashed preview and the Yes/No before anything is written are the
+safeguard now.
+
+**SAM3 tightening is tighter, and it no longer drifts.** Each prompt is the
+box plus a positive click at its centre, not the box alone. The new box is
+measured from SAM3's most confident mask, counting only mask pixels inside
+the original box (plus 5% per side) and ignoring stray specks. That result
+is the next prompt, up to 4 prompts per box. With the box alone, the mask
+often spilled onto the seabed around the object, so boxes stayed loose,
+grew, or slid sideways. Measured on 60 imported Cyprus litter boxes:
+
+| | before | now |
+|---|---|---|
+| median area after tightening, vs the original | 0.63 | 0.45 |
+| judged "SAM3 found something else" (left alone) | 14 | 2 |
+
+About 0.6 s per box on an M3 Ultra either way, image features included.
+Taking SAM3's smallest mask rather than its most confident was tighter
+still, but it cut off parts of objects (a tire's rim, a bottle's cap).
+
+---
+
 ## 0.27.0 — SAM3 setup in two commands: `pip install -e ".[sam3]"` and `mbariml sam3 download`
 
 **SAM3 in review now takes two setup commands, and no flag after that.**
