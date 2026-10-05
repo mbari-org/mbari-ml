@@ -1,10 +1,11 @@
 """Unified CLI for the mbariml pipeline.
 
-The pipeline is four phases, not a numbered list of steps (the numbering was
-dropped in v0.11.0 -- it had been renumbered three times as commands merged
-and moved, and every renumbering meant touching every docstring and both
-docs, for a sequence that was never actually linear):
+The pipeline is five stages (as named in the paper), not a numbered list of
+steps (the numbering was dropped in v0.11.0 -- it had been renumbered three
+times as commands merged and moved, and every renumbering meant touching
+every docstring and both docs, for a sequence that was never actually linear):
 
+    Import   import yolo | import voc        existing labeled dataset -> database
     Ingest   infer images | infer video      pixels + detections -> database
     Enrich   embed | cluster | refine        add embeddings and grouping
     Curate   review | remap-labels           human review and relabeling
@@ -12,13 +13,14 @@ docs, for a sequence that was never actually linear):
 
 Every command reads and writes the SAME database schema (see ``mbariml.db``),
 so any command's output is usable by any other that needs what it has. That's
-what lets you start anywhere: point ``infer video`` at new footage and go
-straight to ``review`` on its output without ever touching the image path, or
-run ``embed``/``cluster`` over a database built by any ingest command.
+what lets you start anywhere: import an existing training set, or point
+``infer video`` at new footage, and go straight to ``review`` on the result,
+or run ``embed``/``cluster`` over a database built by any import or ingest
+command.
 
 ``mbariml run`` chains the scriptable part of that (ingest -> embed -> cluster
 -> export) for convenience, over images or video, and can start or stop
-anywhere in the chain via ``--from``/``--to``. The interactive review GUI, ad
+at any step of the chain via ``--from``/``--to``. The interactive review GUI, ad
 hoc queries, label remapping, and stats aren't in the chain -- they're not
 batch operations, or they don't belong in the middle of one.
 """
@@ -38,6 +40,8 @@ from mbariml.steps import (
     export_ids,
     export_voc,
     export_yolo,
+    import_voc,
+    import_yolo,
     infer_images,
     infer_video,
     query as query_step,
@@ -49,6 +53,14 @@ from mbariml.steps import (
 logger = get_logger(__name__)
 
 app = typer.Typer(help="mbariml: detection -> embedding -> clustering -> curation pipeline for imagery and video.")
+
+# Import: `mbariml import {yolo,voc}` brings an existing labeled dataset in
+# as ordinary rows (ROI crops and all), the reverse of the matching `export`
+# subcommands. Registered first, as the first stage. See mbariml.import_common.
+import_app = typer.Typer(help="Import an existing labeled dataset (YOLO or Pascal VOC) into a curation database.")
+import_app.command("yolo")(import_yolo.import_yolo)
+import_app.command("voc")(import_voc.import_voc)
+app.add_typer(import_app, name="import")
 
 # Ingest: `mbariml infer {images,video}`. These were three separate commands
 # before v0.11.0 -- `detect` and `infer-images` did the same job with
@@ -104,24 +116,26 @@ def review(
     _review(database_path, label, page_size, sam3_model)
 
 
-# The scriptable chain, in order. Named rather than numbered so adding or
-# merging a command never renumbers anything again.
-_CHAIN_STAGES = ["ingest", "embed", "cluster", "export"]
+# The scriptable chain, in order. "Steps", not "stages": the stages are the
+# pipeline's five (Import, Ingest, Enrich, Curate, Emit -- see the module
+# docstring), and these chain steps cut across them. Named rather than
+# numbered so adding or merging a command never renumbers anything again.
+_CHAIN_STEPS = ["ingest", "embed", "cluster", "export"]
 
 
 @app.command("run")
 def run(
-    model_path: str = typer.Argument(..., help="Path to the YOLO model (used by the ingest stage)."),
+    model_path: str = typer.Argument(..., help="Path to the YOLO model (used by the ingest step)."),
     input_path: str = typer.Argument(..., help="Directory of images, or a video file/directory (see --media)."),
-    output_dir: str = typer.Argument(..., help="Directory for the database and all stage outputs."),
+    output_dir: str = typer.Argument(..., help="Directory for the database and all step outputs."),
     media: str = typer.Option("images", help="What INPUT_PATH holds: 'images' or 'video'."),
-    from_stage: str = typer.Option(
-        "ingest", "--from", help=f"First stage to run: one of {_CHAIN_STAGES}."
+    from_step: str = typer.Option(
+        "ingest", "--from", help=f"First step to run: one of {_CHAIN_STEPS}."
     ),
-    to_stage: str = typer.Option(
-        "export", "--to", help=f"Last stage to run (inclusive): one of {_CHAIN_STAGES}."
+    to_step: str = typer.Option(
+        "export", "--to", help=f"Last step to run (inclusive): one of {_CHAIN_STEPS}."
     ),
-    limit: Optional[int] = typer.Option(None, help="Limit passed through to stages that support it, for a quick test run."),
+    limit: Optional[int] = typer.Option(None, help="Limit passed through to steps that support it, for a quick test run."),
     random_sample: bool = typer.Option(
         False, "--random/--no-random", help="With --limit, sample images randomly at ingest instead of taking the first N in sorted order."
     ),
@@ -133,13 +147,13 @@ def run(
 ) -> None:
     """Run the scriptable chain (ingest -> embed -> cluster -> export: voc + html).
 
-    Every stage reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
+    Every step reads/writes OUTPUT_DIR/yolo_predictions.duckdb, so re-running
     with --from past ingest resumes against whatever is already in that
     database -- nothing upstream is re-run or overwritten.
     """
-    if from_stage not in _CHAIN_STAGES or to_stage not in _CHAIN_STAGES:
-        raise typer.BadParameter(f"--from/--to must each be one of {_CHAIN_STAGES}")
-    if _CHAIN_STAGES.index(from_stage) > _CHAIN_STAGES.index(to_stage):
+    if from_step not in _CHAIN_STEPS or to_step not in _CHAIN_STEPS:
+        raise typer.BadParameter(f"--from/--to must each be one of {_CHAIN_STEPS}")
+    if _CHAIN_STEPS.index(from_step) > _CHAIN_STEPS.index(to_step):
         raise typer.BadParameter("--from must come at or before --to")
     if media not in ("images", "video"):
         raise typer.BadParameter("--media must be 'images' or 'video'")
@@ -147,11 +161,11 @@ def run(
     output_dir_path = Path(output_dir)
     db_path = output_dir_path / "yolo_predictions.duckdb"
 
-    begin, end = _CHAIN_STAGES.index(from_stage), _CHAIN_STAGES.index(to_stage)
-    stages = _CHAIN_STAGES[begin : end + 1]
-    logger.info("Running stages: %s", " -> ".join(stages))
+    begin, end = _CHAIN_STEPS.index(from_step), _CHAIN_STEPS.index(to_step)
+    steps = _CHAIN_STEPS[begin : end + 1]
+    logger.info("Running steps: %s", " -> ".join(steps))
 
-    # NOTE: these stage functions are decorated with @app.command(), so their
+    # NOTE: these step functions are decorated with @app.command(), so their
     # non-required parameters default to raw typer.Option(...)/typer.Argument(...)
     # sentinel objects -- those only get resolved to real values when Click
     # parses a CLI invocation. Calling the functions directly (as we do here)
@@ -159,16 +173,16 @@ def run(
     # explicitly with a concrete value, or the sentinel object itself would
     # leak through as e.g. `conf=<typer.models.OptionInfo ...>` and break the
     # underlying library call.
-    for stage in stages:
-        logger.info("=== %s ===", stage)
-        if stage == "ingest" and media == "images":
+    for step in steps:
+        logger.info("=== %s ===", step)
+        if step == "ingest" and media == "images":
             infer_images.infer_images(
                 model_path, input_path, str(output_dir_path), preset="curate",
                 limit=limit, random_sample=random_sample, seed=seed,
                 batch_size=50, conf=None, iou=None, max_det=500, imgsz=None,
                 device="auto", save_annotated=None, export_csv=False,
             )
-        elif stage == "ingest":
+        elif step == "ingest":
             infer_video.infer_video(
                 model_path, input_path, str(output_dir_path), mode="track",
                 stride=infer_video.DEFAULT_STRIDE, tracker=infer_video.DEFAULT_TRACKER,
@@ -176,9 +190,9 @@ def run(
                 preset="curate", limit=limit, batch_size=16,
                 conf=None, iou=None, max_det=500, imgsz=None, device="auto",
             )
-        elif stage == "embed":
+        elif step == "embed":
             embed_step.embed(str(db_path), limit=limit, batch_size=32, decode_workers=0, flush_size=2000, force=False)
-        elif stage == "cluster":
+        elif step == "cluster":
             # Only the two most impactful EVoC knobs are exposed here for
             # convenience; base_min_cluster_size/n_neighbors/min_samples keep
             # cluster's own tuned defaults -- run `mbariml cluster` directly
@@ -189,7 +203,7 @@ def run(
                 base_min_cluster_size=2, n_neighbors=40, min_samples=5, seed=seed,
                 naming="auto", label_source="original",
             )
-        elif stage == "export":
+        elif step == "export":
             export_voc.export_voc(str(db_path), str(output_dir_path))
             export_html.generate_html(str(db_path), str(output_dir_path / "html"), items_per_page=250)
 

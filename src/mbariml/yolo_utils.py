@@ -11,9 +11,40 @@ with a clear, actionable message (or auto-picks the best available device).
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import typer
+
 from mbariml.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def read_names_file(names_file: Path) -> list[str]:
+    """Class names, in class-index order, from a dataset's ``names.txt`` (one
+    per line) or Ultralytics dataset YAML (``names:`` as a list, or as the
+    ``{index: name}`` mapping Ultralytics also accepts).
+
+    Shared by ``export yolo --names-file`` (keep an existing dataset's class
+    order) and ``import yolo`` (turn class indices back into names), so the
+    two sides of the round trip read the same file the same way.
+    """
+    if names_file.suffix.lower() in (".yaml", ".yml"):
+        import yaml  # PyYAML, already installed as an Ultralytics dependency
+
+        names = (yaml.safe_load(names_file.read_text()) or {}).get("names")
+        if isinstance(names, dict):
+            names = [names[i] for i in sorted(names)]
+        if not isinstance(names, list):
+            raise typer.BadParameter(f"{names_file}: no `names:` list or mapping found")
+        names = [str(name).strip() for name in names]
+    else:
+        names = [line.strip() for line in names_file.read_text().splitlines() if line.strip()]
+
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise typer.BadParameter(f"{names_file} lists these names more than once: {duplicates}")
+    return names
 
 
 def resolve_device(requested: str = "auto") -> str:
