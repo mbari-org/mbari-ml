@@ -21,11 +21,11 @@ training example, so it's now your choice rather than fixed in the code.
 Measured on 684 benthic tracks (curate preset, MBARI VARS YOLO26s), picking
 the most confident frame within each third:
 
-| `--track-third` | picks touching the frame edge | mean confidence percentile within the track |
+| `--track-third` | picks touching the frame edge | median confidence of the pick |
 |---|---|---|
-| `first` | 20.5% | 88 |
-| `middle` (default) | 9.2% | 91 |
-| `last` | 37.9% | 94 |
+| `first` | 20.5% | 0.042 |
+| `middle` (default) | 9.2% | 0.042 |
+| `last` | 37.9% | 0.065 |
 
 Confidence peaked most often in the last third (371 of 684 tracks), which
 also held the most edge-clipped boxes (23.1% of observations, against 7.5% in
