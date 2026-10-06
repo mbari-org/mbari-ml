@@ -1,0 +1,15 @@
+# mbariml's tracker for `infer video --preset predict` (detection conf 0.08).
+# Selected by `--tracker auto`, the default. See mbariml.steps.infer_video.
+#
+# Same shape as curate.yaml, with thresholds raised to the predict preset's
+# conf: a detection that passes --conf can extend a track, and one a little
+# above it (0.1) can start one. Ultralytics' stock ByteTrack starts tracks
+# only at 0.25, three times this preset's threshold.
+
+tracker_type: bytetrack
+track_high_thresh: 0.1
+track_low_thresh: 0.08
+new_track_thresh: 0.08
+track_buffer: 300
+match_thresh: 0.8
+fuse_score: False

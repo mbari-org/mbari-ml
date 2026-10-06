@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbariml"
-version = "0.28.0"
+version = "0.29.0"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "YOLO detection -> embedding -> clustering -> curation pipeline for deep sea imagery."
@@ -40,3 +40,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "mbariml.gui" = ["*.svg"]  # the review GUI's checkbox checkmark
+"mbariml" = ["trackers/*.yaml"]  # `infer video --tracker auto`

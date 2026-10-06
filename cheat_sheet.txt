@@ -145,23 +145,29 @@ infer video
     This is what you want for building curation/training data out of video.
     A sponge in view for 300 frames is one animal, not 300 training examples
     -- 300 near-identical crops would swamp clustering and be tedious to
-    review. Measured on a real ten-second benthic clip: 711 detections
-    collapsed to 7 tracks, so 7 ROIs.
+    review. Measured on five one-minute benthic clips: 272,126 tracked
+    detections collapsed to 1,163 tracks, so 1,163 ROIs.
 
       mbariml infer video models/best.pt /data/dive_video/ /data/results/
 
-    --tracker    Ultralytics tracker config. Default `tracktrack.yaml` (the
-                 CVPR 2025 tracker Ultralytics ships). Other shipped names:
+    --tracker    Tracker config. Default `auto`: mbariml's own ByteTrack
+                 config for the preset (src/mbariml/trackers/), whose
+                 thresholds let the preset's detections start tracks --
+                 curate: start 0.01, continue 0.005; predict: start 0.1,
+                 continue 0.08; both keep a lost track 300 frames.
+                 Or an Ultralytics shipped name (tracktrack.yaml,
                  botsort.yaml, bytetrack.yaml, ocsort.yaml, deepocsort.yaml,
-                 fasttrack.yaml -- or a path to your own YAML:
+                 fasttrack.yaml), or a path to your own YAML:
 
       mbariml infer video models/best.pt clip.mp4 /data/results/ \
           --tracker /path/to/my_tracker_settings.yaml
 
                  IMPORTANT: how many tracks you get is governed by the
                  TRACKER's thresholds (track_high_thresh, new_track_thresh),
-                 not just --conf. Lowering --conf alone will not produce more
-                 tracks; copy the tracker YAML and lower its thresholds.
+                 not by --conf. Ultralytics' own configs start tracks only at
+                 0.25-0.7, so with --conf 0.005 they can find no tracks at
+                 all (0 on a 10 s benthic clip, vs 36 with auto). infer video
+                 warns when a tracker's start threshold is over 2x --conf.
 
     --track-roi  Which frame of a track becomes its ROI:
                    best-conf-central [DEFAULT] most confident frame of the
@@ -874,11 +880,15 @@ mbariml infer video --help
 │                                    frame and treats each as an independent image.                │
 │                                    [default: track]                                              │
 │ --stride                  <int>    stride mode only: sample every Nth frame. [default: 30]       │
-│ --tracker                 <str>    track mode only: Ultralytics tracker config -- a shipped name │
-│                                    (tracktrack.yaml, botsort.yaml, bytetrack.yaml, ocsort.yaml,  │
-│                                    deepocsort.yaml, fasttrack.yaml) or a path to your own YAML   │
-│                                    of tracking hyperparameters.                                  │
-│                                    [default: tracktrack.yaml]                                    │
+│ --tracker                 <str>    track mode only: tracker config. 'auto' (default) uses        │
+│                                    mbariml's ByteTrack config for the preset, with thresholds    │
+│                                    low enough to start tracks from the preset's detections.      │
+│                                    Otherwise an Ultralytics shipped name (tracktrack.yaml,       │
+│                                    botsort.yaml, bytetrack.yaml, ocsort.yaml, deepocsort.yaml,   │
+│                                    fasttrack.yaml) or a path to your own YAML; those start       │
+│                                    tracks only at their own thresholds (0.25-0.7), whatever      │
+│                                    --conf is.                                                    │
+│                                    [default: auto]                                               │
 │ --track-roi               <str>    track mode only: which frame of a track becomes its ROI.      │
 │                                    'best-conf-central' (default) takes the most confident frame  │
 │                                    from the track's middle third, avoiding the entry/exit frames │

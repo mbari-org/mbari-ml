@@ -57,6 +57,7 @@ from typing import Optional
 
 import cv2
 import typer
+import yaml  # PyYAML, already installed as an Ultralytics dependency
 from tqdm import tqdm
 
 from mbariml import db, video
@@ -68,8 +69,24 @@ from mbariml.yolo_utils import load_model, resolve_device
 app = typer.Typer(help="Run a YOLO model over video (strided frames, or tracking).")
 logger = get_logger(__name__)
 
-DEFAULT_TRACKER = "tracktrack.yaml"
 DEFAULT_STRIDE = 30
+
+# `--tracker auto` (the default) uses mbariml's own tracker config for the
+# preset, shipped in mbariml/trackers/. A tracker has confidence thresholds of
+# its own, and Ultralytics' configs start a track only at 0.25 (ByteTrack) to
+# 0.7 (TrackTrack, which used to be the default here) -- so with the curate
+# preset's conf of 0.005 they discarded nearly every detection before it could
+# become a track, and on low-contrast benthic footage often produced no tracks
+# at all. Lowering --conf could never fix that. See trackers/curate.yaml.
+AUTO_TRACKER = "auto"
+_TRACKERS_DIR = Path(__file__).resolve().parent.parent / "trackers"
+PRESET_TRACKERS = {"curate": _TRACKERS_DIR / "curate.yaml", "predict": _TRACKERS_DIR / "predict.yaml"}
+
+# A tracker whose start threshold is more than this many times --conf is
+# warned about: detections between the two can extend a track but never
+# start one. 2x leaves room for the deliberate gap mbariml's own configs keep
+# (curate: 0.01 vs 0.005; predict: 0.1 vs 0.08).
+TRACKER_START_WARN_RATIO = 2.0
 
 # How to pick the one frame that represents a track. Defaults to
 # best-conf-central because a track's first and last frames are when the
@@ -140,6 +157,46 @@ def _candidate_observations(track: _Track, policy: str) -> list[_Observation]:
     if policy == "sharpest-central":
         return _central_slice(observations)
     raise typer.BadParameter(f"--track-roi must be one of {list(TRACK_ROI_POLICIES)}")
+
+
+def _resolve_tracker(tracker: str, preset: str) -> str:
+    """The tracker config to hand Ultralytics: the preset's own for "auto",
+    otherwise whatever was passed (a shipped name or a path)."""
+    if tracker == AUTO_TRACKER:
+        return str(PRESET_TRACKERS[preset])
+    return tracker
+
+
+def _tracker_start_threshold(tracker: str) -> Optional[float]:
+    """The lowest confidence at which *tracker* can start a track, or None if
+    its config can't be read.
+
+    Every Ultralytics tracker starts tracks only from first-association
+    detections (score >= ``track_high_thresh``) that clear
+    ``new_track_thresh``, so a detection has to clear both.
+    """
+    path = Path(tracker)
+    if not path.exists():
+        from ultralytics.utils import ROOT  # a shipped name, e.g. "bytetrack.yaml"
+
+        path = ROOT / "cfg" / "trackers" / tracker
+    try:
+        cfg = yaml.safe_load(path.read_text())
+        return max(float(cfg["track_high_thresh"]), float(cfg["new_track_thresh"]))
+    except Exception:  # noqa: BLE001 -- only feeds a warning; Ultralytics reports a real problem itself
+        return None
+
+
+def _warn_if_tracker_misses_detections(tracker: str, conf: float) -> None:
+    start = _tracker_start_threshold(tracker)
+    if start is not None and start > conf * TRACKER_START_WARN_RATIO:
+        logger.warning(
+            "Tracker %s starts a track only at confidence >= %.3g, but --conf is %.3g: detections "
+            "in between can extend a track but never start one, so faint objects may produce no "
+            "tracks at all. Use --tracker auto, or a copy of this config with lower "
+            "track_high_thresh/new_track_thresh.",
+            Path(tracker).name, start, conf,
+        )
 
 
 def _insert_video_rows(conn, rows: list[tuple]) -> None:
@@ -405,10 +462,12 @@ def infer_video(
     ),
     stride: int = typer.Option(DEFAULT_STRIDE, help="stride mode only: sample every Nth frame."),
     tracker: str = typer.Option(
-        DEFAULT_TRACKER,
-        help="track mode only: Ultralytics tracker config -- a shipped name (tracktrack.yaml, "
-        "botsort.yaml, bytetrack.yaml, ocsort.yaml, deepocsort.yaml, fasttrack.yaml) or a path "
-        "to your own YAML of tracking hyperparameters.",
+        AUTO_TRACKER,
+        help="track mode only: tracker config. 'auto' (default) uses mbariml's ByteTrack config "
+        "for the preset, with thresholds low enough to start tracks from the preset's detections. "
+        "Otherwise an Ultralytics shipped name (tracktrack.yaml, botsort.yaml, bytetrack.yaml, "
+        "ocsort.yaml, deepocsort.yaml, fasttrack.yaml) or a path to your own YAML; those start "
+        "tracks only at their own thresholds (0.25-0.7), whatever --conf is.",
     ),
     track_roi: str = typer.Option(
         DEFAULT_TRACK_ROI_POLICY,
@@ -443,6 +502,9 @@ def infer_video(
         raise typer.BadParameter(f"--preset must be one of {sorted(PRESETS)}")
 
     settings = _resolve_preset(preset, conf=conf, iou=iou, imgsz=imgsz)
+    tracker = _resolve_tracker(tracker, preset)
+    if mode == "track":
+        _warn_if_tracker_misses_detections(tracker, settings["conf"])
     # Resolved to absolute deliberately: image_path/video_path are how every
     # later command (review, the exports, the GUI's "Open Video" button) finds
     # the pixels again, and those run from whatever directory the user happens
@@ -460,6 +522,8 @@ def infer_video(
         "Mode '%s' | preset '%s': conf=%.4g, iou=%.4g, imgsz=%d | device: %s | %d video(s)",
         mode, preset, settings["conf"], settings["iou"], settings["imgsz"], resolved_device, len(videos),
     )
+    if mode == "track":
+        logger.info("Tracker: %s", tracker)
 
     model = load_model(model_path)
     (output_dir_path / "names.txt").write_text("\n".join(model.names.values()))

@@ -11,6 +11,49 @@ recognizable.
 
 ---
 
+## 0.29.0 — `infer video` tracks what the preset detects
+
+**`--tracker auto` is the new default: a tracker config matched to the
+preset.** A tracker has confidence thresholds of its own, and a detection
+starts a track only if it clears both `track_high_thresh` and
+`new_track_thresh`. The old default, Ultralytics' `tracktrack.yaml`, needs
+0.6 and 0.7. With the `curate` preset's conf of 0.005 that discarded nearly
+everything on faint benthic footage -- lowering `--conf` could never help.
+Measured on five one-minute benthic clips (MBARI VARS YOLO26s model):
+
+| | before (`tracktrack.yaml`) | now (`auto`, `curate`) |
+|---|---|---|
+| tracks, one 60 s clip | 0 | 149 |
+| tracks, a 10 s excerpt of another | 0 | 36 |
+
+`auto` picks one of two ByteTrack configs shipped in `src/mbariml/trackers/`:
+
+| preset | detection `--conf` | track starts at | continues at | lost track kept |
+|---|---|---|---|---|
+| `curate` | 0.005 | 0.01 | 0.005 | 300 frames |
+| `predict` | 0.08 | 0.1 | 0.08 | 300 frames |
+
+On the five clips, `curate` gave 1,163 tracks. In a random sample of 24 of the
+684 tracks at least 30 observations long, every one stayed on a single object
+(checked by eye; fragmentation wasn't assessed). The same 10 s excerpt gives
+18 tracks with `predict`.
+
+Any Ultralytics config or your own YAML still works through `--tracker`. When
+its start threshold is more than twice `--conf`, `infer video` now warns that
+faint objects may produce no tracks at all. `mbariml run` uses `auto` too.
+
+**Review, from 0.23.0 but missing from this changelog until now:**
+**"Color-correct display"** removes the green/blue water cast on the tiles and
+the full image, using mbariml-autolabel's correction (copied verbatim into
+`gui/colour.py`): per-channel, half a 0.5-99.5 percentile stretch and half
+gray-world, measured once per whole source image, then CLAHE on lightness
+and a 1.35x saturation boost. Measurements are cached in
+`<database>_colour.npz`. Display only. **"Hide unverified"** is the
+counterpart of "Hide verified", applied in the query like it; checking one
+unchecks the other. Every checkbox in review also gained a white keyline.
+
+---
+
 ## 0.28.0 — Tighten Boxes works on verified boxes; SAM3 tightening is much tighter
 
 **"Tighten Boxes (SAM3)" now refits every box on the shown image, verified

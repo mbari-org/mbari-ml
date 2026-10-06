@@ -1,0 +1,18 @@
+# mbariml's tracker for `infer video --preset curate` (detection conf 0.005).
+# Selected by `--tracker auto`, the default. See mbariml.steps.infer_video.
+#
+# ByteTrack with every threshold lowered to match a permissive detector.
+# Ultralytics' own configs start a track only at 0.25 (ByteTrack) to 0.7
+# (TrackTrack), so with conf 0.005 they quietly discard almost everything:
+# on five one-minute benthic clips, fewer than 0.1% of detections reached
+# TrackTrack's 0.7, and on one clip it confirmed no tracks at all. With this
+# config the same five clips gave 1,163 tracks, and in a random sample of 24,
+# every track stayed on one object (the mbariml paper's Section 6).
+
+tracker_type: bytetrack
+track_high_thresh: 0.01  # first association; with new_track_thresh, the confidence a track starts at
+track_low_thresh: 0.005  # second association: the curate preset's own conf, so every detection can extend a track
+new_track_thresh: 0.001  # start a track from any first-association detection left unmatched
+track_buffer: 300        # frames a lost track is kept (5 s at 59.94 fps): faint animals drop out and come back
+match_thresh: 0.8        # Ultralytics' default
+fuse_score: False        # don't weight matching by score: at these confidences it is mostly noise

@@ -187,8 +187,9 @@ mbariml infer video models/best.pt /data/dive_video/ /data/results/
 **`--mode track` (default) keeps ONE ROI per tracked object.** This is what
 you want for building curation/training data from video: a sponge in view for
 300 frames is one animal, not 300 training examples — 300 near-identical
-crops would swamp clustering and be tedious to review. Measured on a real
-ten-second benthic clip: **711 detections collapsed to 7 tracks → 7 ROIs.**
+crops would swamp clustering and be tedious to review. Measured on five
+one-minute benthic clips: **272,126 tracked detections collapsed to 1,163
+tracks → 1,163 ROIs.**
 
 Tracking is necessarily **two passes**, because a track's representative
 frame can't be chosen until the track has ended:
@@ -202,14 +203,31 @@ unreliable on long-GOP encodings and lands on the nearest keyframe, which
 would silently pair a detection's box with the wrong pixels. Decode is far
 cheaper than inference, so the extra pass costs a fraction of pass 1.
 
-`--tracker` takes any Ultralytics tracker config — default `tracktrack.yaml`
-(the CVPR 2025 tracker), or `botsort`/`bytetrack`/`ocsort`/`deepocsort`/
-`fasttrack`, or a path to your own YAML of tracking hyperparameters. **How
-many tracks you get is governed by the tracker's own thresholds
-(`track_high_thresh`, `new_track_thresh`), not just `--conf`** — lowering
-`--conf` alone will not produce more tracks. Verified directly: the same clip
-that gave 1 track with stock `tracktrack.yaml` gave 4 with a copy whose
-thresholds were lowered.
+**The tracker has confidence thresholds of its own, and they decide how many
+tracks you get, not `--conf`.** A detection starts a track only if it clears
+both `track_high_thresh` and `new_track_thresh`. Ultralytics' configs set
+those at 0.25 (ByteTrack, BoT-SORT) to 0.7 (TrackTrack), far above the
+`curate` preset's 0.005, so on faint benthic footage they throw away nearly
+everything: fewer than 0.1% of detections on five one-minute clips reached
+TrackTrack's 0.7, and a 10-second clip gave **0 tracks**.
+
+So `--tracker auto`, the default, uses mbariml's own ByteTrack config for the
+preset (`src/mbariml/trackers/`):
+
+| preset | detection `--conf` | track starts at | track continues at | lost track kept |
+|---|---|---|---|---|
+| `curate` | 0.005 | 0.01 | 0.005 | 300 frames |
+| `predict` | 0.08 | 0.1 | 0.08 | 300 frames |
+
+The same 10-second clip gives 36 tracks with `curate`, 18 with `predict`. On
+five one-minute clips `curate` gave 1,163 tracks, and in a random sample of 24
+of the longer ones, every track stayed on one object.
+
+`--tracker` also takes an Ultralytics shipped name (`tracktrack.yaml`,
+`botsort.yaml`, `bytetrack.yaml`, `ocsort.yaml`, `deepocsort.yaml`,
+`fasttrack.yaml`) or a path to your own YAML. If its start threshold is more
+than twice `--conf`, `infer video` warns that faint objects may produce no
+tracks at all.
 
 `--track-roi` chooses which frame of a track becomes its ROI:
 
@@ -1001,7 +1019,7 @@ they're interactive, or they don't belong in the middle of a batch run.
 | Symptom | Cause / fix |
 |---|---|
 | `infer` finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
-| `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Copy the tracker YAML, lower `track_high_thresh` / `new_track_thresh`, and pass it with `--tracker`. Lowering `--conf` alone will not help. |
+| `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Use `--tracker auto` (the default), whose thresholds match the preset. With your own `--tracker`, lower its `track_high_thresh` / `new_track_thresh`; a warning at startup says when they are far above `--conf`. Lowering `--conf` alone will not help. |
 | An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded when rows are added (absolute since v0.11.0); re-run `infer` or `import` if the imagery has been relocated. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
 | Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
