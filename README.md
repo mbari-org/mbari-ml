@@ -19,11 +19,12 @@ then out again as training data. Described in
 ![The mbariml review GUI](docs/review_gui.png)
 
 *`mbariml review` — the curation GUI. Left: the ROI mosaic, tinted by label
-with a green check on verified ROIs, here brightened a little with the
-Brightness/Contrast sliders. Right: the full source frame with every
-detection overlaid as a draggable box (the selected one in red), over the
-controls panel. "Open Video" is live because this ROI came from
-`infer video`, so it jumps straight to that moment in the source footage.*
+with a green check on verified ROIs, the selected tile outlined in blue.
+Right: the full source frame with every detection overlaid as a draggable box
+(the selected one in red), over the controls panel: adding ROIs by hand or
+with SAM3, tightening boxes, sorting and similarity search, display-only
+brightness/contrast and color correction, a confidence range, and
+verify/relabel/delete.*
 
 **Also in this repo:** [`cheat_sheet.txt`](cheat_sheet.txt) (one worked
 example per command, plus verbatim `--help` for all of them) ·
