@@ -13,7 +13,7 @@ then out again as training data. Described in
 | **Import** | `import yolo`, `import voc` | an existing labeled dataset into a database |
 | **Generate** | `infer images`, `infer video` | pixels + detections into a database |
 | **Enrich** | `embed`, `cluster`, `refine` | embeddings and grouping |
-| **Curate** | `review`, `remap-labels` | human review and relabeling |
+| **Review** | `review`, `remap-labels` | human review and relabeling |
 | **Export** | `export {voc,yolo,id,html,stats}`, `query` | annotations, galleries, numbers |
 
 ![The mbariml review GUI](docs/review_gui.png)
@@ -100,8 +100,8 @@ All commands:
 | `mbariml embed`        | Enrich | Compute a DINOv3 embedding for every ROI |
 | `mbariml cluster`      | Enrich | Cluster embeddings with EVoC, name clusters, export review grids (see below) |
 | `mbariml refine`       | Enrich | Re-cluster one label's ROIs into finer sub-clusters |
-| `mbariml review`       | Curate | Interactive GUI for labeling/deleting/adding ROIs |
-| `mbariml remap-labels` | Curate | Bulk-rename `new_label` values from a CSV |
+| `mbariml review`       | Review | Interactive GUI for labeling/deleting/adding ROIs |
+| `mbariml remap-labels` | Review | Bulk-rename `new_label` values from a CSV |
 | `mbariml export voc`   | Export | Pascal VOC XML |
 | `mbariml export yolo`  | Export | YOLO label files + names.txt + train/val/test splits (see below) |
 | `mbariml export id`    | Export | `*.id` sidecar next to each source image (see below) |
@@ -221,7 +221,8 @@ preset (`src/mbariml/trackers/`):
 
 The same 10-second clip gives 36 tracks with `curate`, 18 with `predict`. On
 five one-minute clips `curate` gave 1,163 tracks, and in a random sample of 24
-of the longer ones, every track stayed on one object.
+of the longer ones, every track stayed on one object. (That check was made from
+contact sheets by an AI model, Claude, not by a person.)
 
 `--tracker` also takes an Ultralytics shipped name (`tracktrack.yaml`,
 `botsort.yaml`, `bytetrack.yaml`, `ocsort.yaml`, `deepocsort.yaml`,
@@ -229,17 +230,33 @@ of the longer ones, every track stayed on one object.
 than twice `--conf`, `infer video` warns that faint objects may produce no
 tracks at all.
 
-`--track-roi` chooses which frame of a track becomes its ROI:
+`--track-roi` chooses which frame of a track becomes its ROI, and
+`--track-third` which third of the track the `-third` policies pick from:
 
-- **`best-conf-central`** (default) — most confident frame of the track's
-  *middle third*. A track's first and last frames are when the animal is
-  entering/leaving view — clipped at the frame edge, occluded, motion-blurred
-  — and plain max-confidence happily picks exactly those.
-- `sharpest-central` — least blurry frame of the middle third (Laplacian
+- **`best-conf-third`** (default) — most confident frame of the chosen third.
+- `sharpest-third` — least blurry frame of the chosen third (Laplacian
   variance), when crop quality matters more than detector confidence.
 - `best-conf` / `center` — whole-track alternatives.
+- `--track-third first | middle | last` — **`middle`** by default.
 
-Tracks too short for a meaningful middle third fall back automatically.
+```bash
+mbariml infer video models/best.pt dive.mp4 /data/results/ --track-third last
+```
+
+The middle third is the default from annotators' experience: a track's first
+and last frames are when the animal is entering or leaving view — clipped at
+the frame edge, occluded, motion-blurred — and plain max-confidence happily
+picks exactly those. Measured on 684 benthic tracks (the paper's track-selection analysis),
+confidence peaked most often in the **last** third, but the last third also
+had the most boxes touching the frame edge (23%, against 8% in the middle), and
+taking the most confident frame anywhere picked an edge-touching box for 42%
+of tracks against 9% for the default. Which third gives the better training
+example wasn't measured, so it's your choice: `--track-third last` if your own
+footage says so.
+
+`best-conf-central` and `sharpest-central`, the names before `--track-third`,
+still work and mean the `-third` policy with the third you give (middle by
+default). Tracks too short for thirds to mean anything use the whole track.
 
 **`--mode stride`** skips all of that: sample every Nth frame, treat each as
 an independent image, one pass.

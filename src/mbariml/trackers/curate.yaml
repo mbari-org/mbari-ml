@@ -7,7 +7,8 @@
 # on five one-minute benthic clips, fewer than 0.1% of detections reached
 # TrackTrack's 0.7, and on one clip it confirmed no tracks at all. With this
 # config the same five clips gave 1,163 tracks, and in a random sample of 24,
-# every track stayed on one object (the mbariml paper's Section 6).
+# every track stayed on one object -- judged from contact sheets by an AI model
+# (Claude), not yet by a person (the mbariml paper's track-selection analysis).
 
 tracker_type: bytetrack
 track_high_thresh: 0.01  # first association; with new_track_thresh, the confidence a track starts at

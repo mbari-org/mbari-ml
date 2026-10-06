@@ -1,6 +1,6 @@
 """mbariml: YOLO detection -> embedding -> clustering -> curation pipeline.
 
-The pipeline is five stages -- Import, Generate, Enrich, Curate, Export -- whose
+The pipeline is five stages -- Import, Generate, Enrich, Review, Export -- whose
 commands all read/write one shared DuckDB database. Every command can be run
 on its own, pointed at an existing database, which is what lets you start
 anywhere -- import an existing labeled dataset (``import yolo``/``import

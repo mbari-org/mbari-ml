@@ -1,4 +1,4 @@
-"""Curate: interactive PySide6 GUI for reviewing and relabeling ROIs.
+"""Review: interactive PySide6 GUI for reviewing and relabeling ROIs.
 
 This is inherently interactive, so it isn't part of the scriptable
 "start at any step"/``mbariml run`` chain -- launch it directly.

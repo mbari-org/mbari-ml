@@ -31,7 +31,7 @@ pipeline really is -- the five stages, as named in the paper:
     IMPORT   import {yolo,voc}                existing labeled dataset -> database
     GENERATE infer images | infer video       pixels + detections -> database
     ENRICH   embed | cluster | refine         embeddings and grouping
-    CURATE   review | remap-labels            human review and relabeling
+    REVIEW   review | remap-labels            human review and relabeling
     EXPORT   export {voc,yolo,id,html,stats}  annotations, galleries, numbers
              query
 
@@ -170,17 +170,27 @@ infer video
                  warns when a tracker's start threshold is over 2x --conf.
 
     --track-roi  Which frame of a track becomes its ROI:
-                   best-conf-central [DEFAULT] most confident frame of the
-                        track's MIDDLE THIRD. The first and last frames of a
-                        track are when the animal is entering/leaving view --
-                        clipped at the frame edge, occluded, motion-blurred --
-                        and plain max-confidence happily picks exactly those.
-                   sharpest-central  least blurry frame of the middle third
+                   best-conf-third [DEFAULT] most confident frame of the
+                        third chosen by --track-third.
+                   sharpest-third    least blurry frame of that third
                         (Laplacian variance), when crop quality matters more
                         than detector confidence.
                    best-conf         most confident frame of the whole track.
                    center            middle frame, ignoring confidence.
-                 Tracks too short for a middle third fall back automatically.
+                 best-conf-central / sharpest-central (the old names) still
+                 work, as the -third policies.
+
+    --track-third  first | middle [DEFAULT] | last -- which third of each
+                 track the -third policies pick from. Middle by default: the
+                 first and last frames of a track are when the animal is
+                 entering/leaving view -- clipped at the frame edge,
+                 occluded, motion-blurred. On 684 benthic tracks confidence
+                 peaked most often in the LAST third, which also held the
+                 most edge-clipped boxes. Your call:
+
+      mbariml infer video models/best.pt dive.mp4 /data/results/ --track-third last
+
+                 Tracks too short for thirds use the whole track.
 
     --min-track-length N   ignore tracks with fewer than N observations.
 
@@ -343,7 +353,7 @@ refine (optional)
 
 
 ==============================================================================
-CURATE -- human review
+REVIEW -- human review
 ==============================================================================
 
 review (interactive GUI)
@@ -890,12 +900,19 @@ mbariml infer video --help
 │                                    --conf is.                                                    │
 │                                    [default: auto]                                               │
 │ --track-roi               <str>    track mode only: which frame of a track becomes its ROI.      │
-│                                    'best-conf-central' (default) takes the most confident frame  │
-│                                    from the track's middle third, avoiding the entry/exit frames │
-│                                    where the animal is clipped or blurred; 'sharpest-central'    │
-│                                    picks the least blurry one there instead; 'best-conf' and     │
-│                                    'center' use the whole track.                                 │
-│                                    [default: best-conf-central]                                  │
+│                                    'best-conf-third' (default) takes the most confident frame    │
+│                                    from one third of the track (--track-third); 'sharpest-third' │
+│                                    the least blurry one there; 'best-conf' and 'center' use the  │
+│                                    whole track. 'best-conf-central'/'sharpest-central' still     │
+│                                    work, as the -third policies.                                 │
+│                                    [default: best-conf-third]                                    │
+│ --track-third             <str>    track mode only: the third of each track the -third policies  │
+│                                    pick from: 'first', 'middle' or 'last'. 'middle' (default)    │
+│                                    avoids the entry/exit frames where the animal is often        │
+│                                    clipped by the frame edge; on benthic footage, confidence     │
+│                                    tends to peak in the last third, which also holds the most    │
+│                                    edge-clipped boxes.                                           │
+│                                    [default: middle]                                             │
 │ --min-track-length        <int>    track mode only: ignore tracks with fewer than this many      │
 │                                    observations.                                                 │
 │                                    [default: 1]                                                  │

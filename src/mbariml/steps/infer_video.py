@@ -88,14 +88,25 @@ PRESET_TRACKERS = {"curate": _TRACKERS_DIR / "curate.yaml", "predict": _TRACKERS
 # (curate: 0.01 vs 0.005; predict: 0.1 vs 0.08).
 TRACKER_START_WARN_RATIO = 2.0
 
-# How to pick the one frame that represents a track. Defaults to
-# best-conf-central because a track's first and last frames are when the
-# animal is entering/leaving view -- clipped at the image edge, occluded, or
+# How to pick the one frame that represents a track. The *-third policies
+# pick from one third of the track, chosen with --track-third; the others use
+# the whole track.
+#
+# Defaults to best-conf-third over the middle third, from annotators'
+# experience: a track's first and last frames are when the animal is
+# entering/leaving view -- clipped at the frame edge, occluded, or
 # motion-blurred -- and plain max-confidence happily picks exactly those.
-# Restricting to the middle third avoids the entry/exit artifacts; taking the
-# most confident frame within it still favors a clean, unambiguous view.
-TRACK_ROI_POLICIES = ("best-conf-central", "best-conf", "center", "sharpest-central")
-DEFAULT_TRACK_ROI_POLICY = "best-conf-central"
+# Measured on 684 benthic tracks (the mbariml paper's track-selection analysis), confidence
+# peaked most often in the LAST third, yet the last third also had the most
+# boxes touching the frame edge and the middle third the fewest. Which third
+# makes the better training example wasn't measured, so it's a choice, not
+# something this code decides.
+TRACK_ROI_POLICIES = ("best-conf-third", "sharpest-third", "best-conf", "center")
+# The names before --track-third existed, both meaning the middle third.
+TRACK_ROI_ALIASES = {"best-conf-central": "best-conf-third", "sharpest-central": "sharpest-third"}
+DEFAULT_TRACK_ROI_POLICY = "best-conf-third"
+TRACK_THIRDS = ("first", "middle", "last")
+DEFAULT_TRACK_THIRD = "middle"
 
 
 @dataclass
@@ -128,22 +139,24 @@ class _Track:
         return Counter(observation.class_id for observation in self.observations).most_common(1)[0][0]
 
 
-def _central_slice(observations: list[_Observation]) -> list[_Observation]:
-    """The middle third of a track, or the whole thing if it's too short for
-    a middle third to mean anything."""
+def _third_slice(observations: list[_Observation], third: str = DEFAULT_TRACK_THIRD) -> list[_Observation]:
+    """The first, middle or last third of a track -- observations [0, n//3),
+    [n//3, 2n//3) or [2n//3, n) -- or the whole thing if it's too short for a
+    third to mean anything."""
     count = len(observations)
     if count < 3:
         return observations
-    central = observations[count // 3 : (2 * count) // 3]
-    return central or observations
+    bounds = {"first": (0, count // 3), "middle": (count // 3, (2 * count) // 3), "last": ((2 * count) // 3, count)}
+    start, end = bounds[third]
+    return observations[start:end] or observations
 
 
-def _candidate_observations(track: _Track, policy: str) -> list[_Observation]:
+def _candidate_observations(track: _Track, policy: str, third: str = DEFAULT_TRACK_THIRD) -> list[_Observation]:
     """The observation(s) worth decoding for this track under *policy*.
 
     Confidence/position-based policies resolve to exactly one frame up front
-    (no pixels needed to decide). ``sharpest-central`` can't: sharpness is a
-    property of the decoded crop, so every frame in the middle third is a
+    (no pixels needed to decide). ``sharpest-third`` can't: sharpness is a
+    property of the decoded crop, so every frame in the chosen third is a
     candidate and the winner is settled during the sweep in
     :func:`_extract_track_rois`.
     """
@@ -152,10 +165,10 @@ def _candidate_observations(track: _Track, policy: str) -> list[_Observation]:
         return [observations[len(observations) // 2]]
     if policy == "best-conf":
         return [max(observations, key=lambda o: o.confidence)]
-    if policy == "best-conf-central":
-        return [max(_central_slice(observations), key=lambda o: o.confidence)]
-    if policy == "sharpest-central":
-        return _central_slice(observations)
+    if policy == "best-conf-third":
+        return [max(_third_slice(observations, third), key=lambda o: o.confidence)]
+    if policy == "sharpest-third":
+        return _third_slice(observations, third)
     raise typer.BadParameter(f"--track-roi must be one of {list(TRACK_ROI_POLICIES)}")
 
 
@@ -374,13 +387,13 @@ def _track_pass(model, video_path: Path, info: video.VideoInfo, *, tracker: str,
 
 def _extract_track_rois(
     model, video_path: Path, info: video.VideoInfo, tracks: dict[int, _Track], conn, frames_dir: Path,
-    *, policy: str, next_id: int,
+    *, policy: str, next_id: int, third: str = DEFAULT_TRACK_THIRD,
 ) -> int:
     """Pass 2: sweep the video once and write one ROI per track.
 
-    For every policy except ``sharpest-central`` each track has a single
+    For every policy except ``sharpest-third`` each track has a single
     candidate frame, so the first (only) crop seen for it wins outright. For
-    ``sharpest-central`` every middle-third frame is a candidate and the
+    ``sharpest-third`` every frame in the chosen third is a candidate and the
     sweep keeps whichever crop scores highest, which is why the winner is
     held as an already-cropped row rather than re-decoded afterwards.
     """
@@ -391,7 +404,7 @@ def _extract_track_rois(
     # reaches that frame.
     candidates_by_frame: dict[int, list[tuple[_Track, _Observation]]] = {}
     for track in tracks.values():
-        for observation in _candidate_observations(track, policy):
+        for observation in _candidate_observations(track, policy, third):
             candidates_by_frame.setdefault(observation.frame_number, []).append((track, observation))
 
     # track id -> (score, row-building inputs) for the best crop seen so far.
@@ -405,7 +418,7 @@ def _extract_track_rois(
     ):
         for track, observation in candidates_by_frame.get(frame_number, ()):
             box = (observation.x_min, observation.y_min, observation.x_max, observation.y_max)
-            if policy == "sharpest-central":
+            if policy == "sharpest-third":
                 crop = frame_bgr[
                     max(0, int(observation.y_min)) : int(observation.y_max),
                     max(0, int(observation.x_min)) : int(observation.x_max),
@@ -443,7 +456,8 @@ def _extract_track_rois(
             next_id += 1
 
     _insert_video_rows(conn, rows)
-    logger.info("%s: wrote %d ROI(s), one per track (%s)", video_path.name, len(rows), policy)
+    described = f"{policy}, {third} third" if policy.endswith("-third") else policy
+    logger.info("%s: wrote %d ROI(s), one per track (%s)", video_path.name, len(rows), described)
     return next_id
 
 
@@ -471,10 +485,17 @@ def infer_video(
     ),
     track_roi: str = typer.Option(
         DEFAULT_TRACK_ROI_POLICY,
-        help="track mode only: which frame of a track becomes its ROI. 'best-conf-central' "
-        "(default) takes the most confident frame from the track's middle third, avoiding the "
-        "entry/exit frames where the animal is clipped or blurred; 'sharpest-central' picks the "
-        "least blurry one there instead; 'best-conf' and 'center' use the whole track.",
+        help="track mode only: which frame of a track becomes its ROI. 'best-conf-third' "
+        "(default) takes the most confident frame from one third of the track (--track-third); "
+        "'sharpest-third' the least blurry one there; 'best-conf' and 'center' use the whole "
+        "track. 'best-conf-central'/'sharpest-central' still work, as the -third policies.",
+    ),
+    track_third: str = typer.Option(
+        DEFAULT_TRACK_THIRD,
+        help="track mode only: the third of each track the -third policies pick from: 'first', "
+        "'middle' or 'last'. 'middle' (default) avoids the entry/exit frames where the animal is "
+        "often clipped by the frame edge; on benthic footage, confidence tends to peak in the "
+        "last third, which also holds the most edge-clipped boxes.",
     ),
     min_track_length: int = typer.Option(
         1, help="track mode only: ignore tracks with fewer than this many observations."
@@ -496,8 +517,11 @@ def infer_video(
     frames) in OUTPUT_DIR/yolo_predictions.duckdb."""
     if mode not in ("track", "stride"):
         raise typer.BadParameter("--mode must be 'track' or 'stride'")
+    track_roi = TRACK_ROI_ALIASES.get(track_roi, track_roi)
     if track_roi not in TRACK_ROI_POLICIES:
         raise typer.BadParameter(f"--track-roi must be one of {list(TRACK_ROI_POLICIES)}")
+    if track_third not in TRACK_THIRDS:
+        raise typer.BadParameter(f"--track-third must be one of {list(TRACK_THIRDS)}")
     if preset not in PRESETS:
         raise typer.BadParameter(f"--preset must be one of {sorted(PRESETS)}")
 
@@ -566,7 +590,7 @@ def infer_video(
                         tracks = {k: v for k, v in tracks.items() if len(v.observations) >= min_track_length}
                     next_id = _extract_track_rois(
                         model, video_path, info, tracks, conn, frames_dir,
-                        policy=track_roi, next_id=next_id,
+                        policy=track_roi, next_id=next_id, third=track_third,
                     )
             except Exception:
                 failures += 1

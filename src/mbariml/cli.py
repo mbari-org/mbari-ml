@@ -8,7 +8,7 @@ every docstring and both docs, for a sequence that was never actually linear):
     Import   import yolo | import voc        existing labeled dataset -> database
     Generate infer images | infer video      pixels + detections -> database
     Enrich   embed | cluster | refine        add embeddings and grouping
-    Curate   review | remap-labels           human review and relabeling
+    Review   review | remap-labels           human review and relabeling
     Export   export {voc,yolo,id,html,stats} | query
 
 Every command reads and writes the SAME database schema (see ``mbariml.db``),
@@ -72,7 +72,7 @@ infer_app.command("images")(infer_images.infer_images)
 infer_app.command("video")(infer_video.infer_video)
 app.add_typer(infer_app, name="infer")
 
-# Enrich / Curate / Export.
+# Enrich / Review / Export.
 app.command("embed")(embed_step.embed)
 app.command("cluster")(cluster_step.cluster)
 app.command("refine")(refine_step.refine)
@@ -126,7 +126,7 @@ app.add_typer(sam3_app, name="sam3")
 
 
 # The scriptable chain, in order. "Steps", not "stages": the stages are the
-# pipeline's five (Import, Generate, Enrich, Curate, Export -- see the module
+# pipeline's five (Import, Generate, Enrich, Review, Export -- see the module
 # docstring), and these chain steps cut across them. Named rather than
 # numbered so adding or merging a command never renumbers anything again.
 _CHAIN_STEPS = ["ingest", "embed", "cluster", "export"]
@@ -195,7 +195,8 @@ def run(
             infer_video.infer_video(
                 model_path, input_path, str(output_dir_path), mode="track",
                 stride=infer_video.DEFAULT_STRIDE, tracker=infer_video.AUTO_TRACKER,
-                track_roi=infer_video.DEFAULT_TRACK_ROI_POLICY, min_track_length=1,
+                track_roi=infer_video.DEFAULT_TRACK_ROI_POLICY,
+                track_third=infer_video.DEFAULT_TRACK_THIRD, min_track_length=1,
                 preset="curate", limit=limit, batch_size=16,
                 conf=None, iou=None, max_det=500, imgsz=None, device="auto",
             )

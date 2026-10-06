@@ -11,6 +11,43 @@ recognizable.
 
 ---
 
+## 0.30.0 — `infer video --track-third`: choose which third of a track to pick from
+
+**`--track-third first | middle | last`** (default `middle`) sets which third
+of each track the frame is picked from. The middle third stays the default,
+from annotators' experience that entry and exit frames are clipped, occluded
+or blurred -- but the measurements don't settle which third makes the better
+training example, so it's now your choice rather than fixed in the code.
+Measured on 684 benthic tracks (curate preset, MBARI VARS YOLO26s), picking
+the most confident frame within each third:
+
+| `--track-third` | picks touching the frame edge | mean confidence percentile within the track |
+|---|---|---|
+| `first` | 20.5% | 88 |
+| `middle` (default) | 9.2% | 91 |
+| `last` | 37.9% | 94 |
+
+Confidence peaked most often in the last third (371 of 684 tracks), which
+also held the most edge-clipped boxes (23.1% of observations, against 7.5% in
+the middle). A box counts as touching the edge within 10 px of it.
+
+The third-based policies are renamed to say so: **`best-conf-third`**
+(default) and **`sharpest-third`**. The old names, `best-conf-central` and
+`sharpest-central`, still work and mean the same policies with whatever
+`--track-third` is given (middle by default), so existing commands are
+unchanged. `mbariml run` passes the defaults.
+
+**The Curate stage is now called Review**, which is what it is: `review` and
+`remap-labels`. The five stages are Import, Generate, Enrich, Review, Export.
+Docs and docstrings only; no command or option changed. (The `curate` preset
+is a different thing and keeps its name.)
+
+The 0.29.0 entry below said its sample of tracks was "checked by eye". It
+was judged from contact sheets by an AI model (Claude), not by a person; that
+entry, the README and `trackers/curate.yaml` now say so.
+
+---
+
 ## 0.29.0 — `infer video` tracks what the preset detects
 
 **`--tracker auto` is the new default: a tracker config matched to the
@@ -35,7 +72,8 @@ Measured on five one-minute benthic clips (MBARI VARS YOLO26s model):
 
 On the five clips, `curate` gave 1,163 tracks. In a random sample of 24 of the
 684 tracks at least 30 observations long, every one stayed on a single object
-(checked by eye; fragmentation wasn't assessed). The same 10 s excerpt gives
+(judged from contact sheets by an AI model, Claude, not by a person;
+fragmentation wasn't assessed). The same 10 s excerpt gives
 18 tracks with `predict`.
 
 Any Ultralytics config or your own YAML still works through `--tracker`. When
