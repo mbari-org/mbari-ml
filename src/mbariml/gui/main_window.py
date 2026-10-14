@@ -77,6 +77,7 @@ from mbariml.gui.sam3_popup import Sam3BoxPopup
 from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, SelectionModel
 from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
+from mbariml.paths import ImageLocator
 from mbariml.steps.embed import embed_roi_bgr
 from mbariml import video
 
@@ -95,6 +96,11 @@ CONTRAST_MIN, CONTRAST_MAX, CONTRAST_DEFAULT = 25, 300, 100
 # on a full page. Coalesce to the last value after a short pause instead --
 # short enough to still feel live.
 DISPLAY_ADJUST_DEBOUNCE_MS = 70
+# "Local contrast" (CLAHE clip limit, see mbariml.gui.colour), in steps of
+# 0.5; 0 is off and the default. Re-decoding every tile is heavier than a
+# brightness change, so slider movement is coalesced over a longer wait.
+LOCAL_CONTRAST_MAX_STEPS = 6
+LOCAL_CONTRAST_DEBOUNCE_MS = 200
 ROI_LOAD_CONCURRENCY = 8
 
 # Each pyqtgraph RectROI overlay (handles, region-changed wiring, a TextItem
@@ -258,7 +264,7 @@ class MainWindow(QMainWindow):
         self._database_path = database_path
         self._db_ctx = db.init_curation_db(database_path)
         self.conn = self._db_ctx.__enter__()
-        self._roi_service = RoiService()
+        self._roi_service = RoiService(locator=ImageLocator(database_path))
 
         self.label_filter = label
         self.page_size = page_size
@@ -279,6 +285,8 @@ class MainWindow(QMainWindow):
         # _on_colour_correct_toggled. Kept after it's turned off so turning it
         # back on reuses every measurement already made.
         self._colour_corrector = None
+        self._local_contrast = 0.0  # CLAHE clip on the colour-corrected display; 0 = off
+        self._white_pick_active = False
         # The confidence range shown, both ends inclusive; 0.0-1.0 = no
         # filter (every value passes, NULL included). Applied at the query
         # level everywhere label_filter/exclude_verified are -- see
@@ -354,6 +362,9 @@ class MainWindow(QMainWindow):
         self._display_adjust_timer = QTimer(self)
         self._display_adjust_timer.setSingleShot(True)
         self._display_adjust_timer.timeout.connect(self._apply_display_adjustment)
+        self._local_contrast_timer = QTimer(self)
+        self._local_contrast_timer.setSingleShot(True)
+        self._local_contrast_timer.timeout.connect(self._apply_local_contrast)
 
         self.graphics_view = QGraphicsView()
         self.graphics_view.installEventFilter(self)
@@ -402,11 +413,6 @@ class MainWindow(QMainWindow):
             self._sam3_popup.close()
         self._roi_loading_cancel_event.set()
         self._roi_loading.cancel_pending()
-        if self._colour_corrector is not None:
-            try:
-                self._colour_corrector.save()
-            except Exception:  # noqa: BLE001 -- only a cache; rebuilt next time
-                logger.exception("Could not save the colour-correction cache")
         try:
             self._db_ctx.__exit__(None, None, None)
         except Exception:
@@ -428,6 +434,8 @@ class MainWindow(QMainWindow):
             self.add_new_button.setChecked(False)  # triggers _on_add_new_toggled(False)
         elif self._sam3_add_active:
             self.sam3_add_button.setChecked(False)  # triggers _on_sam3_add_toggled(False)
+        elif self._white_pick_active:
+            self.white_pick_button.setChecked(False)  # triggers _on_white_pick_toggled(False)
         else:
             self.unselect_all()
 
@@ -573,12 +581,44 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(contrast_layout)
         self.colour_correct_box = QCheckBox("Color-correct display")
         self.colour_correct_box.setToolTip(
-            "Remove the green/blue cast and restore contrast and colour in what you see "
+            "Remove the water's colour cast and restore contrast and colour in what you see "
             "(tiles and the image), measured on each whole image so a tile keeps its own "
             "colour. Display only: labels, boxes and embeddings use the original pixels."
         )
         self.colour_correct_box.toggled.connect(self._on_colour_correct_toggled)
-        controls_layout.addWidget(self.colour_correct_box)
+        colour_layout = QHBoxLayout()
+        colour_layout.addWidget(self.colour_correct_box)
+        self.local_contrast_label = QLabel("Local contrast: off")
+        colour_layout.addWidget(self.local_contrast_label)
+        self.local_contrast_slider = QSlider(Qt.Orientation.Horizontal)
+        self.local_contrast_slider.setRange(0, LOCAL_CONTRAST_MAX_STEPS)
+        self.local_contrast_slider.setValue(0)
+        self.local_contrast_slider.setToolTip(
+            "CLAHE on the colour-corrected display: brings out faint, low-contrast "
+            "objects, at the cost of grain and a harsher look. Off by default."
+        )
+        self.local_contrast_slider.valueChanged.connect(self._on_local_contrast_changed)
+        colour_layout.addWidget(self.local_contrast_slider)
+        self.white_pick_button = QPushButton("Pick White")
+        self.white_pick_button.setCheckable(True)
+        self.white_pick_button.setToolTip(
+            "Click something you know is white or grey (sand, a sponge, a calibration "
+            "target) on the image panel: every frame from the same video -- or, for "
+            "stills, the same folder -- is then balanced so that it's neutral."
+        )
+        self.white_pick_button.toggled.connect(self._on_white_pick_toggled)
+        colour_layout.addWidget(self.white_pick_button)
+        self.white_clear_button = QPushButton("Auto White")
+        self.white_clear_button.setToolTip(
+            "Forget the picked white for this image's video or folder and go back "
+            "to the automatic estimate."
+        )
+        self.white_clear_button.clicked.connect(self._on_white_clear_clicked)
+        colour_layout.addWidget(self.white_clear_button)
+        for widget in (self.local_contrast_label, self.local_contrast_slider,
+                       self.white_pick_button, self.white_clear_button):
+            widget.setEnabled(False)  # until "Color-correct display" is on
+        controls_layout.addLayout(colour_layout)
         controls_layout.addWidget(
             QLabel("View-only: brightens/stretches the ROI thumbnails to help spot faint "
                    "animals. Never changes stored data.")
@@ -1095,24 +1135,45 @@ class MainWindow(QMainWindow):
         self.load_page()
 
     def _on_colour_correct_toggled(self, checked: bool) -> None:
-        """Display-only colour correction for green/blue water, exactly as
-        mbariml-autolabel does it (see mbariml.gui.colour): tiles and the
-        full image both, each measured on the whole frame it came from.
-        Labels, boxes, embeddings and box-edit re-crops all keep using the
-        original pixels -- RoiService.fetch_full_image never returns the
-        corrected frame.
+        """Display-only colour correction for underwater images, shallow and
+        deep (see mbariml.gui.colour): tiles and the full image both, each
+        measured on the whole frame it came from. Labels, boxes, embeddings
+        and box-edit re-crops all keep using the original pixels --
+        RoiService.fetch_full_image never returns the corrected frame.
 
-        Measurements are cached in ``<database>_colour.npz`` next to the
-        database -- the same file autolabel uses, so either tool reuses the
-        other's -- and saved on close.
+        Measurements are kept in memory only (~3 ms an image); picked whites
+        ("Pick White") are saved in ``<database>_white.json`` next to the
+        database as they're picked -- the only file this writes.
         """
         if checked and self._colour_corrector is None:
-            from mbariml.gui.colour import Corrector
+            from mbariml.gui.colour import WHITE_SUFFIX, Corrector
 
             db_path = Path(self._database_path)
-            self._colour_corrector = Corrector(db_path.with_name(db_path.stem + "_colour.npz"))
+            self._colour_corrector = Corrector(db_path.with_name(db_path.stem + WHITE_SUFFIX))
+            self._colour_corrector.set_sources(self._colour_sources())
+            self._colour_corrector.set_local_contrast(self._local_contrast)
+        if not checked and self._white_pick_active:
+            self.white_pick_button.setChecked(False)
+        for widget in (self.local_contrast_label, self.local_contrast_slider,
+                       self.white_pick_button, self.white_clear_button):
+            widget.setEnabled(checked)
         self._roi_service.set_corrector(self._colour_corrector if checked else None)
+        self._refresh_colour_display()
 
+    def _colour_sources(self) -> dict[str, str]:
+        """Each image (as found on disk now) -> the source a picked white
+        applies to: the video it was extracted from, else its folder, both as
+        recorded in the database so picks survive the project moving."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT image_path, video_path FROM predictions"
+            if db.has_column(self.conn, "video_path") else
+            "SELECT DISTINCT image_path, NULL FROM predictions"
+        ).fetchall()
+        return {self._roi_service.locate(path): video or str(Path(path).parent) for path, video in rows if path}
+
+    def _refresh_colour_display(self) -> None:
+        """Re-show the tiles and the full image after the colour correction
+        changed (on/off, local contrast, a white picked or cleared)."""
         # Re-decode every tile (threaded; each measures its frame on the
         # worker if it isn't cached yet). Brightness/contrast still apply on
         # top, in getpic.
@@ -1128,6 +1189,77 @@ class MainWindow(QMainWindow):
                     self._current_detail_image_path,
                     self._roi_service.correct_for_display(image, self._current_detail_image_path),
                 )
+
+    def _on_local_contrast_changed(self, value: int) -> None:
+        self._local_contrast = value / 2
+        self.local_contrast_label.setText(
+            f"Local contrast: {self._local_contrast:.1f}" if value else "Local contrast: off"
+        )
+        self._local_contrast_timer.start(LOCAL_CONTRAST_DEBOUNCE_MS)
+
+    def _apply_local_contrast(self) -> None:
+        if self._colour_corrector is None:
+            return
+        self._colour_corrector.set_local_contrast(self._local_contrast)
+        self._refresh_colour_display()
+
+    def _on_white_pick_toggled(self, checked: bool) -> None:
+        """"Pick White": while on, a click on the image panel sets the white
+        point for every frame from that image's video (or folder) -- see
+        Corrector.set_white. One click, then it turns itself off. Exclusive
+        with the two add modes."""
+        if checked and not self._require_image_for(
+            self.white_pick_button, "Select an ROI first so its source image is shown in the "
+                                    "panel above -- the white is picked on that image."
+        ):
+            return
+        if checked and self._add_new_active:
+            self.add_new_button.setChecked(False)
+        if checked and self._sam3_add_active:
+            self.sam3_add_button.setChecked(False)
+
+        self._white_pick_active = checked
+        self.white_pick_button.setText("Cancel (Esc)" if checked else "Pick White")
+        self._detail_view.set_point_mode(checked, self._on_white_point_clicked if checked else None)
+        if checked:
+            self.status_label.setText(
+                "Click something white or neutral grey on the image panel above "
+                "(light, but not blown out)."
+            )
+        else:
+            self.update_status_bar()
+
+    def _on_white_point_clicked(self, x: float, y: float, _screen_pos) -> None:
+        image_path = self._current_detail_image_path
+        if image_path is None or self._colour_corrector is None:
+            return
+        image = self._roi_service.fetch_full_image(image_path)  # original pixels, cached
+        if image is None:
+            self.status_label.setText("Can't read this image's file, so a white can't be picked on it.")
+            return
+        try:
+            source = self._colour_corrector.set_white(self._roi_service.locate(image_path), image, x, y)
+        except ValueError as exc:
+            self.status_label.setText(str(exc))  # stay in pick mode: try another spot
+            return
+        self.white_pick_button.setChecked(False)  # one pick per click of the button
+        self._refresh_colour_display()
+        self.status_label.setText(
+            f"White set from this point for every frame of {Path(source).name}. "
+            "\"Auto White\" goes back to the automatic estimate."
+        )
+
+    def _on_white_clear_clicked(self) -> None:
+        image_path = self._current_detail_image_path
+        if image_path is None or self._colour_corrector is None:
+            self.status_label.setText("Select an ROI first: Auto White applies to its image's video or folder.")
+            return
+        source = self._colour_corrector.clear_white(self._roi_service.locate(image_path))
+        if source is None:
+            self.status_label.setText("This image's video or folder already uses the automatic white balance.")
+            return
+        self._refresh_colour_display()
+        self.status_label.setText(f"Back to the automatic white balance for {Path(source).name}.")
 
     # -- Selection / preview --------------------------------------------------
 
@@ -1392,6 +1524,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("That ROI came from a still image, not video -- nothing to open.")
             return
 
+        video_path = self._roi_service.locate(video_path)  # same moved-folder lookup as the frames
         seconds = getattr(row, "frame_time_s", None) or 0.0
         try:
             opened_in = video.open_video_at(video_path, seconds)
@@ -1403,16 +1536,17 @@ class MainWindow(QMainWindow):
 
     # -- Add New ROI -----------------------------------------------------------
 
-    def _require_image_for(self, button: QPushButton) -> bool:
-        """The add modes draw on the image in the detail panel, so turning one
-        on with no image shown is refused with an explanatory message (and
-        the button un-checked) instead of silently doing nothing."""
+    def _require_image_for(self, button: QPushButton, message: str | None = None) -> bool:
+        """The add modes (and Pick White) work on the image in the detail
+        panel, so turning one on with no image shown is refused with an
+        explanatory message (and the button un-checked) instead of silently
+        doing nothing."""
         if self._current_detail_image_path is not None:
             return True
         QMessageBox.information(
             self,
             "No Image Shown",
-            "Select an ROI first so its source image is shown in the panel above -- "
+            message or "Select an ROI first so its source image is shown in the panel above -- "
             "new boxes are drawn on that image.",
         )
         button.blockSignals(True)
@@ -1430,6 +1564,8 @@ class MainWindow(QMainWindow):
             return
         if checked and self._sam3_add_active:
             self.sam3_add_button.setChecked(False)  # triggers _on_sam3_add_toggled(False)
+        if checked and self._white_pick_active:
+            self.white_pick_button.setChecked(False)  # triggers _on_white_pick_toggled(False)
 
         self._add_new_active = checked
         self.add_new_button.setText("Done Adding (Esc)" if checked else "+ Add New ROI")
@@ -1671,6 +1807,8 @@ class MainWindow(QMainWindow):
             return
         if checked and self._add_new_active:
             self.add_new_button.setChecked(False)  # triggers _on_add_new_toggled(False)
+        if checked and self._white_pick_active:
+            self.white_pick_button.setChecked(False)  # triggers _on_white_pick_toggled(False)
 
         self._sam3_add_active = checked
         self._sam3_point_request += 1

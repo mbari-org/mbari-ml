@@ -261,6 +261,19 @@ default). Tracks too short for thirds to mean anything use the whole track.
 **`--mode stride`** skips all of that: sample every Nth frame, treat each as
 an independent image, one pass.
 
+**Moving a project folder.** `image_path` is recorded absolute, but every
+command that opens the imagery (`review`, the four exports) first checks it,
+and if the file isn't there looks under the **database's folder** for the
+path's trailing parts -- a frame recorded as
+`/Users/me/Desktop/survey/frames/x.jpg` is found as `<db folder>/frames/x.jpg`
+once `survey/` has moved to `~/Documents/Projects/`. So keep the frames
+(`infer video` writes them to `OUTPUT_DIR/frames/`, beside the database) or
+your imagery somewhere under the database's folder and the whole project can
+move, be renamed or be copied to another machine. The longest matching tail
+wins, so same-named frames in sibling dive folders stay apart; the lookup is
+done once per folder (a few ms) and logged; the database is never rewritten.
+Exports write the found location (manifests, `.id` `source_image`).
+
 **Why the frames get written to disk.** Each frame that produced a detection
 is extracted to a real JPEG under `OUTPUT_DIR/frames/`, and `image_path`
 points at *that file*. Video rows are therefore indistinguishable from image
@@ -448,14 +461,37 @@ while preserving the human labels.
   two sliders act independently rather than fighting each other, and
   **Reset** returns both to neutral. View-only: the stored ROI is never
   modified, so this changes nothing you export.
-- **Color-correct display** removes the green/blue water cast and restores
-  contrast and the weak reds, on the tiles and the full image alike. It's
-  the same code `mbariml-autolabel` uses (copied into
-  `mbariml/gui/colour.py`), measured per whole source image so a crop keeps
-  its colour relative to its surroundings. Measurements are cached in
-  `<database>_colour.npz` next to the database (the same file autolabel
-  uses). View-only: labels, boxes, embeddings and box-edit re-crops all use
-  the original pixels.
+- **Color-correct display** removes the water's colour cast and restores
+  contrast and the weak reds, on the tiles and the full image alike, for
+  shallow sunlit footage and strobe-lit deep-sea footage alike. Per whole
+  source image (so a crop keeps its colour relative to its surroundings) it
+  rebuilds red from green (Ancuti et al. 2018), white-balances at 0.85
+  strength toward a slightly warm grey (open water stays blue rather than
+  going pink; sand and sediment come out beige-brown rather than lavender),
+  and stretches contrast on luminance only, capped at 3x so a flat midwater
+  frame isn't turned into amplified noise, leaving headroom so bright sand
+  isn't blown out; then a mild saturation boost. See
+  `mbariml/gui/colour.py` for the measurements behind each step.
+  Measured per image as tiles load (~3 ms each) and kept in memory; no cache
+  file is written.
+  Beside the checkbox:
+  - **Local contrast** (off by default): CLAHE on the corrected view. It
+    brings out faint, low-contrast objects, at the cost of grain (sensor
+    noise and JPEG blocks grow ~50-60% at 1.0) and a harsher look. Colour
+    doesn't depend on it.
+  - **Pick White**, then click something you know is white or neutral grey
+    on the image panel -- sand, a sponge, a calibration target; never open
+    water, which isn't neutral. Every frame from the same video (or, for
+    stills, the same folder) is then balanced so that spot is neutral,
+    instead of each frame being guessed separately. With one camera and one
+    set of lights there is one right answer, and a person who knows what's in
+    the frame finds it better than any automatic estimate. A spot that is
+    clipped to white or too dark is refused. **Auto White** goes back to the
+    automatic estimate for that video or folder. Picks are saved in
+    `<database>_white.json`, keyed by the source as recorded in the
+    database, so they survive the project folder moving.
+  View-only: labels, boxes, embeddings and box-edit re-crops all use the
+  original pixels.
 - **Hide verified / Hide unverified** narrow the grid to what still needs
   review, or to what's already done. Checking one unchecks the other, since
   both together would hide everything.
@@ -1037,7 +1073,7 @@ they're interactive, or they don't belong in the middle of a batch run.
 |---|---|
 | `infer` finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
 | `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Use `--tracker auto` (the default), whose thresholds match the preset. With your own `--tracker`, lower its `track_high_thresh` / `new_track_thresh`; a warning at startup says when they are far above `--conf`. Lowering `--conf` alone will not help. |
-| An export reports **"N image(s) could not be found on disk"** | The database references images that have moved, or a volume that isn't mounted. Paths are recorded when rows are added (absolute since v0.11.0); re-run `infer` or `import` if the imagery has been relocated. |
+| An export reports **"N image(s) could not be found on disk"** | The database references images that aren't at their recorded path and aren't under the database's folder either -- a volume that isn't mounted, or imagery moved somewhere else. Paths are recorded when rows are added (absolute since v0.11.0). A project folder moved **as a whole** is found automatically (see *Moving a project folder*); otherwise re-run `infer` or `import`. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |
 | Right-click similarity sort says **"no embedding"** | Run `mbariml embed` on the database first. |
 | Similarity sort **looks like it only sorted the current page** | It never does — it ranks the whole matching set. Check the status line: it reports the pool as *"all N matching ROIs"*, or *"M of N — … not embedded yet"* when a partial/interrupted `embed` is the limit. A `--label` filter, "Hide verified" or a confidence range also narrow the pool by design. |

@@ -19,6 +19,7 @@ from tqdm import tqdm
 from mbariml import db
 from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
+from mbariml.paths import locate_rows
 
 app = typer.Typer(help="Generate a paginated HTML gallery of images and their labeled crops.")
 logger = get_logger(__name__)
@@ -37,7 +38,9 @@ def _label_expr(conn) -> str:
     return db.EFFECTIVE_LABEL_SQL if db.has_column(conn, "new_label") else "label"
 
 
-def _process_images_and_crops(conn, output_dir: Path, *, include_unverified: bool) -> list[dict]:
+def _process_images_and_crops(
+    conn, output_dir: Path, db_path: str | Path, *, include_unverified: bool
+) -> list[dict]:
     """Bug fixed here: this used to group by bare image_name and reconstruct
     the path as image_dir/image_name. For a mission with nested per-dive
     subdirectories, two images with the same filename in different dives
@@ -56,10 +59,10 @@ def _process_images_and_crops(conn, output_dir: Path, *, include_unverified: boo
     where = db.curated_where(
         exclude_noise=False, require_verified=not include_unverified
     ) if db.has_column(conn, "verified") else ""
-    rows = conn.execute(
+    rows = locate_rows(conn.execute(
         f"SELECT image_path, x_min, y_min, x_max, y_max, {label_expr} AS label "
         f"FROM predictions {where}"
-    ).fetchall()
+    ).fetchall(), db_path)
 
     images_dir = output_dir / "images"
     crops_dir = output_dir / "crops"
@@ -210,7 +213,9 @@ def generate_html(
     folder_name = output_dir_path.name
 
     with db.connect(db_path, must_exist=True) as conn:
-        data = _process_images_and_crops(conn, output_dir_path, include_unverified=include_unverified)
+        data = _process_images_and_crops(
+            conn, output_dir_path, db_path, include_unverified=include_unverified
+        )
 
     if not data:
         logger.warning("No images could be processed; no HTML pages were generated.")

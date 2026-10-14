@@ -47,6 +47,7 @@ from mbariml import __version__
 from mbariml import db
 from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
+from mbariml.paths import locate_rows
 
 app = typer.Typer(help="Export *.id identification sidecar files next to each source image.")
 logger = get_logger(__name__)
@@ -272,6 +273,7 @@ def export_ids(
             {db.curated_where(require_verified=not include_unverified)}
             """
         ).fetchall()
+    rows = locate_rows(rows, db_path)
 
     if not rows:
         logger.warning(

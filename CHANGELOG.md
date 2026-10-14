@@ -11,6 +11,107 @@ recognizable.
 
 ---
 
+## 0.31.0 — Color correction for deep-sea footage, Pick White; projects can be moved
+
+**A project folder can now be moved, renamed or copied to another machine.**
+`image_path` is recorded absolute, so moving a project broke every path at
+once, even though `infer video` keeps its frames in `OUTPUT_DIR/frames/` right
+beside the database. Review then looked fine, since its tiles come from the
+crops stored in the database, but the full frame, box edits, SAM3 and colour
+correction had no image, and every export skipped each frame as missing. Now
+`review` and all four exports look under the **database's folder** for a
+path's trailing parts when the recorded file isn't there (`<db
+folder>/frames/x.jpg` for `/old/place/survey/frames/x.jpg`). The longest
+matching tail wins, so same-named frames in sibling dive folders stay apart.
+The search runs once per recorded folder and is logged. Nothing is written
+back to the database. On a Greek survey whose folder had moved from the
+Desktop, 378 of 395 recorded paths were missing; all 395 resolve, in 5 ms
+total. Exports write the location the frame was found at: image manifests,
+VOC `<path>`, and `.id` `source_image` and frame size. "Open Video" uses the
+same lookup. See `mbariml/paths.py`.
+
+### Color-correct display works on deep-sea footage, not just shallow
+
+**Review's "Color-correct display" was tuned on shallow SeaClear tiles and
+over-corrected everything else.** It stretched each colour channel to its
+own 0.5-99.5 percentile range, which on top of gray-world acts as a second,
+content-driven white balance: a channel with a narrow range gets a huge gain.
+Measured as mean output Lab a* over 40 images per set (0 is neutral, + is
+magenta), it turned strobe-lit Prosilica seafloor pink (a* +20, from -4.7),
+pushed shallow open water magenta (top 15% of the frame: a* +14, from -3.2)
+and made sediment plumes glow red, and it multiplied the ~25 grey levels of
+an empty i2MAP midwater frame ~10x into blue noise.
+
+The new correction, still measured once per whole image (~3 ms):
+
+- **Red is rebuilt from green** (Ancuti et al. 2018) instead of multiplying
+  a weak, noisy red channel. It scales with how depleted red is, so shallow
+  frames get a lot of it and strobe-lit deep frames little.
+- **Gray-world at 0.85 strength, aimed at a slightly warm grey** (red +4%,
+  blue -8%), gains clamped to 0.5-3x, ignoring clipped and near-black pixels.
+  Full strength forces a mostly-water frame to grey and tints the far water
+  pink. A neutral target left sand and sediment cool and lavender (b* -7 to
+  -12), since natural scenes average slightly warm.
+- **Contrast is stretched on luminance only**, so it can't shift hue, with
+  the gain capped at 3x, plus a gamma that lifts dark frames toward mid-grey.
+  The brightest 0.5% maps to 92% white rather than full white, which had blown
+  bright sand out and left it crunchy.
+- Saturation boost 1.35x → 1.15x, and **CLAHE is now off by default**,
+  behind a new **Local contrast** slider (0-3). Colour doesn't depend on it.
+  At clip 1.0 it raised object-scale contrast by ~40-45% but also fine grain
+  (sensor noise, JPEG blocks) by ~50-60%, and it equalizes whatever is shown,
+  so a small tile came out differently from the same spot in the full frame.
+
+**Pick White**: click something white or neutral grey on the image panel
+(sand, a sponge, a calibration target), and every frame from the same video,
+or for stills the same folder, is balanced so that spot is neutral, instead
+of each frame being guessed separately. Clipped or too-dark spots are refused
+with a message, and **Auto White** reverts that video or folder. Picks are
+saved in `<database>_white.json`, keyed by the source as recorded in the
+database. On a Prosilica frame, a picked sediment patch went from a* -4 / b*
+-15 to -1 / +1.
+
+Results (mean a*/b* over 40 images per set, +b* is yellow): Prosilica a* +0.2
+/ b* +5.9 (brown sediment), MBARI ROV and i2MAP frames a* -1.9 / b* +8.5, the
+Greek set a* -6.3 / b* +5.7 with its water column a* +6.0 / b* -13.7 (still
+blue, not magenta). The spread of a*/b* between images fell from ~5-7 to ~1-4,
+so frames from one dive look alike. Pixels clipped to white on the Greek set
+fell from 2.7% to 1.5%. With Local contrast off, correcting a full 1936x1456
+frame takes 9 ms (the old correction took 7 ms), and a 256-px tile 0.5 ms.
+
+Also compared on the same three sets, and not adopted:
+- Gray-world to green with fixed x1.1 red / x0.9 blue factors, CLAHE 2.0 and
+  unsharp masking. It inspired the warm target, but it turns hazy water
+  salmon (a* +13, b* +6), leaves dark frames dark (L 30 against 48) and adds
+  crunch.
+- Simplest Color Balance (Limare et al., IPOL 2011): each channel stretched
+  so 1.5% clips at each end, the stretch the old correction was half of.
+  Smooth and good on shallow footage, but strobe-lit Prosilica went magenta
+  (a* +27, and +49 at 0.5%), varying widely between frames.
+- sc-30-bit/Underwater-Image-Enhancement: histogram-equalizes red, which
+  casts deep frames red (Prosilica a* +17); its "dark channel" dehazing is a
+  brightness curve that darkens mid-tones (mean L 23-42).
+
+**A source image that can't be found no longer silently disables
+correction.** Tiles are drawn from the crops stored in the database, but the
+correction was measured on the source frame. When that file was missing (and
+not under the database's folder either), correction did nothing, and OpenCV
+printed a warning for every tile, twice. Now a missing frame is tried once per
+session, one warning is logged, and its tiles are corrected from the crop's
+own pixels.
+
+**No colour cache file any more.** `<database>_colour.npz` is no longer
+written or read. Measuring is ~3 ms an image, done on the tile workers as
+tiles load (about 1 s for a 400-frame database), so a cache saved little and
+would need versioning to stay correct as the correction changes. Old
+`_colour.npz` files can be deleted. The only file colour correction writes is
+`<database>_white.json`, and only once a white is picked.
+
+**This breaks the verbatim copy of mbariml-autolabel's `colour.py`**: port the
+new file there to keep the two tools matching.
+
+---
+
 ## 0.30.0 — `infer video --track-third`: choose which third of a track to pick from
 
 **`--track-third first | middle | last`** (default `middle`) sets which third

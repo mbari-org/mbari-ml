@@ -33,8 +33,11 @@ def _blank_roi(size: int = 100) -> np.ndarray:
 class RoiService:
     """Decodes ROI blobs and caches full-frame images, bounded by an LRU."""
 
-    def __init__(self, max_cache_entries: int = DEFAULT_FULL_IMAGE_CACHE_SIZE) -> None:
+    def __init__(self, max_cache_entries: int = DEFAULT_FULL_IMAGE_CACHE_SIZE, locator=None) -> None:
         self._max_cache_entries = max(1, int(max_cache_entries))
+        # mbariml.paths.ImageLocator: finds a frame whose folder has moved
+        # since import, under the database's folder. None: paths as stored.
+        self._locator = locator
         self._cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
         self._lock = threading.Lock()
         # Display-only colour correction (mbariml.gui.colour.Corrector), or
@@ -65,8 +68,9 @@ class RoiService:
     def fetch_full_image(self, image_path: str) -> np.ndarray | None:
         """Return the full source image for *image_path* as BGR, cached.
 
-        Returns ``None`` if the file can't be read. Safe to call from a
-        worker thread.
+        Returns ``None`` if the file can't be read. A frame whose folder has
+        moved since import is found under the database's folder (see
+        ``locate``). Safe to call from a worker thread.
         """
         with self._lock:
             cached = self._cache.get(image_path)
@@ -74,7 +78,7 @@ class RoiService:
                 self._cache.move_to_end(image_path)
                 return cached
 
-        image = cv2.imread(image_path)
+        image = cv2.imread(self.locate(image_path))
         if image is None:
             logger.warning("Could not read image: %s", image_path)
             return None
@@ -86,6 +90,10 @@ class RoiService:
                 self._cache.popitem(last=False)
 
         return image
+
+    def locate(self, image_path: str) -> str:
+        """Where *image_path* is on disk now (see mbariml.paths.ImageLocator)."""
+        return self._locator.locate(image_path) if self._locator else image_path
 
     def set_corrector(self, corrector) -> None:
         """Turn display colour correction on (a ``Corrector``) or off (None)."""
@@ -106,6 +114,7 @@ class RoiService:
         corrector = self._corrector
         if corrector is None or bgr is None:
             return bgr
+        image_path = self.locate(image_path)
         corrector.params_for(image_path)
         with self._correct_lock:
             return corrector.apply(bgr, image_path)

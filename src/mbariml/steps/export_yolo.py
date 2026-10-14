@@ -62,6 +62,7 @@ from mbariml import db
 from mbariml.export_common import write_image_manifest_and_script
 from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
+from mbariml.paths import locate_rows
 from mbariml.yolo_utils import read_names_file
 
 app = typer.Typer(help="Export curated labels to YOLO-format label files, plus a names file.")
@@ -166,6 +167,7 @@ def _filter_by_conf(rows: list[tuple], min_conf: float) -> list[tuple]:
 def _export_labels(
     conn,
     output_dir: Path,
+    db_path: str | Path,
     *,
     include_unverified: bool = False,
     fixed_names: list[str] | None = None,
@@ -183,7 +185,7 @@ def _export_labels(
     labels_dir = output_dir / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = _fetch_curated(conn, include_unverified=include_unverified)
+    rows = locate_rows(_fetch_curated(conn, include_unverified=include_unverified), db_path)
     if min_conf is not None:
         rows = _filter_by_conf(rows, min_conf)
     names = _class_names({new_label for _, new_label, *_ in rows}, fixed_names)
@@ -538,7 +540,7 @@ def export_yolo(
         else:
             db.require_verified_column(conn, db_path)
         written, names, image_paths, stem_map = _export_labels(
-            conn, output_dir_path, include_unverified=include_unverified, fixed_names=fixed_names,
+            conn, output_dir_path, db_path, include_unverified=include_unverified, fixed_names=fixed_names,
             min_conf=min_conf,
         )
 

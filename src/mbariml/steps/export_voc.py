@@ -19,12 +19,13 @@ from mbariml import db
 from mbariml.export_common import write_image_manifest_and_script
 from mbariml.image_naming import export_stem_map
 from mbariml.logging_utils import get_logger
+from mbariml.paths import locate_rows
 
 app = typer.Typer(help="Export curated labels to Pascal VOC XML annotation files.")
 logger = get_logger(__name__)
 
 
-def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
+def _export_to_pascal_voc(conn, output_dir: Path, db_path: str | Path) -> tuple[int, list[str]]:
     """Bug fixed here: this used to group detections by bare image_name and
     reconstruct the path as image_dir/image_name. For a mission with nested
     per-dive subdirectories, two images with the same filename in different
@@ -40,13 +41,13 @@ def _export_to_pascal_voc(conn, output_dir: Path) -> tuple[int, list[str]]:
     # so every verified-but-unrelabelled row was silently dropped here too --
     # the same defect as the yolo/id exports, just wearing a disguise. Now
     # the one shared rule from mbariml.db.
-    predictions = conn.execute(
+    predictions = locate_rows(conn.execute(
         f"""
         SELECT image_path, {db.EFFECTIVE_LABEL_SQL}, confidence, x_min, y_min, x_max, y_max
         FROM predictions
         {db.curated_where()}
         """
-    ).fetchall()
+    ).fetchall(), db_path)
 
     grouped: dict[str, list[dict]] = {}
     for image_path, new_label, confidence, x_min, y_min, x_max, y_max in predictions:
@@ -151,7 +152,7 @@ def export_voc(
 
     with db.connect(db_path, must_exist=True) as conn:
         db.require_verified_column(conn, db_path)
-        written, image_paths = _export_to_pascal_voc(conn, output_dir_path)
+        written, image_paths = _export_to_pascal_voc(conn, output_dir_path, db_path)
         names_file = _export_new_names(conn, output_dir_path)
 
     write_image_manifest_and_script(image_paths, output_dir_path, export_name="voc")

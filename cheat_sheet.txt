@@ -389,10 +389,19 @@ review (interactive GUI)
   one unchecks the other) control what's shown, and
   Brightness/Contrast sliders below the tile-size slider stretch the
   thumbnails across the whole grid -- faint animals against sediment are much
-  easier to pick out that way. "Color-correct display" removes the green/blue
-  water cast from tiles and the full image, using mbariml-autolabel's exact
-  correction (cached in <database>_colour.npz). All are view-only (stored
+  easier to pick out that way. "Color-correct display" removes the water's
+  colour cast from tiles and the full image, for shallow and deep-sea footage
+  alike (red rebuilt from green, white balance toward a slightly warm grey,
+  luminance-only contrast stretch; measured in memory, no cache file).
+  "Local contrast" adds CLAHE (off by default: more detail, more grain).
+  "Pick White", then click sand/a sponge/a target (never open water): every
+  frame of that video (or folder) is balanced to make it neutral; "Auto
+  White" undoes it. Picks are saved in <database>_white.json. All are view-only (stored
   ROIs are never modified); "Reset" puts brightness/contrast back to neutral.
+
+  Moved the project folder since import? Frames whose recorded path no
+  longer exists are found under the database's folder (e.g. <db folder>/
+  frames/x.jpg), here and in every export -- nothing to rewrite.
 
   The right panel shows the full source image with mouse-wheel zoom and
   click-drag pan (accidental Magic Mouse/trackpad scrolling -- momentum,
