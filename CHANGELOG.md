@@ -11,6 +11,68 @@ recognizable.
 
 ---
 
+## 0.32.0 — Detection and tracking settings tuned on the DeepSea MOT benchmark
+
+**Every inference default is now a measured optimum** for the MBARI VARS 452k
+YOLO26s model, from the DeepSea MOT benchmark (8 clips, 4,800 frames, 319
+annotated animals; scored against its boxes at IoU 0.5). The earlier values
+were reasonable guesses; several cost a lot.
+
+**`infer images` (and stride mode).**
+
+| preset | before | now |
+|---|---|---|
+| `curate` | conf 0.005, NMS iou 0.05, imgsz 1952 | conf 0.005, **NMS iou 0.2**, imgsz 1952 |
+| `predict` | conf 0.08, NMS iou 0.15, imgsz 992 | **conf 0.025, NMS iou 0.2, imgsz 1952** |
+
+- NMS iou 0.05 merged neighbouring animals: AP50 0.60 against 0.70 at 0.2
+  (imgsz 1952). 0.2 is best at every image size tried (0.1-0.3 are within a
+  point; 0.7 leaves duplicate boxes, 0.66). It was also best for the 1M
+  Megalodon model, and as good as adding a containment (IoS) filter.
+- `predict`: precision 0.96 → 0.94, recall 0.41 → 0.47 (augmentation on, as
+  `infer images` runs). imgsz 1952 gains most on small midwater animals
+  (AP50 0.72 against 0.69) for about 1.3x the detection time.
+- Test-time augmentation stays on for images: +0.02 AP50, +4 points of recall,
+  about 2.2x the detection time.
+
+**`infer video --mode track`: a tuned tracker, detection conf and minimum
+track length per preset.** Track mode now detects at its own conf (`curate`
+0.001, `predict` 0.0001) and drops short tracks by default (`--min-track-length`
+28 and 60; it was 1). Both tracker configs were re-tuned:
+
+| | animals found by their own track (of 319) | tracks | core HOTA |
+|---|---|---|---|
+| `curate`, 0.31.0 | 203 | 324 | 55.4 |
+| `curate`, now | **222** | **298** | 60.9 |
+| `predict`, 0.31.0 (imgsz 992) | 169 | 216 | 48.6 |
+| `predict`, now | 198 | 235 | **61.7** |
+
+- `curate.yaml` comes from a two-objective sweep (animals found up, tracks
+  down, at most 2% of tracks mixing animals; 1,500 trials). An animal counts
+  only as the main identity of a track, so chaining two animals doesn't count
+  twice. It mixes 1 track in 298.
+- `predict.yaml` is the HOTA-tuned ByteTrack (2,500 trials). Requiring 0.08 to
+  extend a track broke most deep-sea tracks into pieces; now every detection
+  can extend one, tracks start at 0.003, and the 60-frame minimum removes junk.
+- Both hold at imgsz 992 and 1280 (HOTA 59.3-59.6), so `--imgsz` overrides
+  stay safe. Augmentation for video was tested and left off: +13 animals but
+  +43 tracks, same HOTA, 2.2x the detection time.
+- The start-threshold warning is no longer raised for mbariml's own configs
+  at their own conf; it still is for any other `--tracker` or `--conf`.
+- `mbariml run` (video) uses the preset's minimum track length too.
+- On the five one-minute benthic clips the README quotes, `curate` now gives
+  1,013 tracks from 437,311 tracked detections (0.31.0: 1,163 from 272,126):
+  more of the faint detections are used, and 913 tracks shorter than 28
+  frames are dropped.
+
+Tuned for the 452k YOLO26s; other models have their own best conf and
+tracker thresholds. The `curate` sweep is in-sample on all 8 clips; the HOTA
+sweep's leave-one-clip-out estimate is ~1 point below its in-sample score.
+The benchmark's boxes miss some organisms, so true precision at low conf is
+higher than measured.
+
+---
+
 ## 0.31.0 — Color correction for deep-sea footage, Pick White; projects can be moved
 
 **A project folder can now be moved, renamed or copied to another machine.**

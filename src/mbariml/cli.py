@@ -196,7 +196,7 @@ def run(
                 model_path, input_path, str(output_dir_path), mode="track",
                 stride=infer_video.DEFAULT_STRIDE, tracker=infer_video.AUTO_TRACKER,
                 track_roi=infer_video.DEFAULT_TRACK_ROI_POLICY,
-                track_third=infer_video.DEFAULT_TRACK_THIRD, min_track_length=1,
+                track_third=infer_video.DEFAULT_TRACK_THIRD, min_track_length=None,
                 preset="curate", limit=limit, batch_size=16,
                 conf=None, iou=None, max_det=500, imgsz=None, device="auto",
             )

@@ -168,15 +168,42 @@ saving, and a 16× gap in default confidence — flags and defaults, not
 architecture. Keeping two copies meant every fix had to be made twice. The
 intent distinction survives as `--preset`:
 
-- **`--preset curate`** (default) — conf 0.005, imgsz 1952, no annotated
-  images. Mine everything, then cluster/review and discard the noise. Default
-  deliberately: an over-permissive threshold is recoverable (filter later —
-  the review GUI even has a confidence-range slider), while a too-strict one
-  silently drops detections you can't get back without a full re-run.
-- **`--preset predict`** — conf 0.08, imgsz 992, saves annotated images.
-  Believable predictions over new imagery.
+- **`--preset curate`** (default) — conf 0.005, NMS iou 0.2, imgsz 1952, no
+  annotated images. Mine everything, then cluster/review and discard the
+  noise. Default deliberately: an over-permissive threshold is recoverable
+  (filter later — the review GUI even has a confidence-range slider), while a
+  too-strict one silently drops detections you can't get back without a full
+  re-run.
+- **`--preset predict`** — conf 0.025, NMS iou 0.2, imgsz 1952, saves
+  annotated images. Believable predictions over new imagery.
 
 Any individual option overrides its preset.
+
+The values are measured, not guessed (0.32.0). On the DeepSea MOT benchmark's
+4,800 frames treated as stills (MBARI_VARS_452k_YOLO26s, IoU 0.5 against the
+benchmark's boxes, test-time augmentation on as `infer images` runs it):
+
+| | conf | precision | recall |
+|---|---|---|---|
+| `curate` | 0.005 | 0.87 | 0.56 |
+| `predict` | 0.025 | 0.94 | 0.47 |
+| `predict` before 0.32.0 (imgsz 992) | 0.08 | 0.96 | 0.41 |
+
+NMS iou 0.2 is best at every image size tried. The old `curate` value, 0.05,
+merged neighbouring animals and cost 10 points of AP50 (0.60 against 0.70);
+0.7, Ultralytics' default, leaves duplicate boxes (0.66). imgsz 1952 beats 992
+most on small midwater animals (AP50 0.72 against 0.69), at about 1.3x the
+time with augmentation. Test-time augmentation adds 0.02 AP50 and 4 points of
+recall for about 2.2x the detection time. Other models (and other imagery)
+will have their own best `--conf`; NMS iou 0.2 was also best for the 1M
+Megalodon model.
+
+**Very large stills need a larger `--imgsz`.** The presets' 1952 shrinks a
+6720×4480 frame 3.4x, and small animals vanish. On MegaCoralCam stills (1M
+Megalodon model, conf 0.025) 1952 gave 14 boxes per image and 3200 gave 22.5,
+the additions being crabs, fish and small sponges, with the large animals
+unchanged; decoding the 30 MP JPEG dominates, so it cost no extra time. Those
+images have no ground truth, so check a few results when you go larger.
 
 ### Generate: video
 
@@ -188,8 +215,9 @@ mbariml infer video models/best.pt /data/dive_video/ /data/results/
 you want for building curation/training data from video: a sponge in view for
 300 frames is one animal, not 300 training examples — 300 near-identical
 crops would swamp clustering and be tedious to review. Measured on five
-one-minute benthic clips: **272,126 tracked detections collapsed to 1,163
-tracks → 1,163 ROIs.**
+one-minute benthic clips (0.32.0 `curate` defaults): **437,311 tracked
+detections collapsed to 1,013 tracks → 1,013 ROIs.** (Detection and tracking
+took 14 minutes on an M3 Ultra, about 2.8 minutes per minute of video.)
 
 Tracking is necessarily **two passes**, because a track's representative
 frame can't be chosen until the track has ended:
@@ -214,21 +242,39 @@ TrackTrack's 0.7, and a 10-second clip gave **0 tracks**.
 So `--tracker auto`, the default, uses mbariml's own ByteTrack config for the
 preset (`src/mbariml/trackers/`):
 
-| preset | detection `--conf` | track starts at | track continues at | lost track kept |
+| preset | goal | detection conf (track mode) | tracker | `--min-track-length` |
 |---|---|---|---|---|
-| `curate` | 0.005 | 0.01 | 0.005 | 300 frames |
-| `predict` | 0.08 | 0.1 | 0.08 | 300 frames |
+| `curate` | every animal, each by a track of its own | 0.001 | `curate.yaml` | 28 |
+| `predict` | the most accurate tracks (HOTA) | 0.0001 | `predict.yaml` | 60 |
 
-The same 10-second clip gives 36 tracks with `curate`, 18 with `predict`. On
-five one-minute clips `curate` gave 1,163 tracks, and in a random sample of 24
-of the longer ones, every track stayed on one object. (That check was made from
-contact sheets by an AI model, Claude, not by a person.)
+Track mode detects at its own confidence, lower than the preset's image
+value: a tracker uses faint detections to carry a track through frames where
+the animal is hard to see, and the tracker config plus the minimum length
+decide what becomes a track. `--conf` and `--min-track-length` still override.
+
+Both configs were tuned on the DeepSea MOT benchmark (0.32.0;
+MBARI_VARS_452k_YOLO26s at imgsz 1952, NMS iou 0.2). Against the 0.31.0
+settings:
+
+| | animals found by their own track (of 319) | tracks | core HOTA |
+|---|---|---|---|
+| `curate` | **222** | 298 | 60.9 |
+| `curate` in 0.31.0 | 203 | 324 | 55.4 |
+| `predict` | 198 | 235 | **61.7** |
+| `predict` in 0.31.0 (imgsz 992) | 169 | 216 | 48.6 |
+
+"Found by its own track" counts an animal only as the main identity of a
+track, so chaining two animals into one track doesn't count twice; at most 2%
+of `curate` tracks were allowed to mix animals (it mixes 1 of 298). Both
+configs hold up at imgsz 992 and 1280 (HOTA 59.3-59.6). Thresholds are
+detector-specific: they were tuned for the 452k YOLO26s.
 
 `--tracker` also takes an Ultralytics shipped name (`tracktrack.yaml`,
 `botsort.yaml`, `bytetrack.yaml`, `ocsort.yaml`, `deepocsort.yaml`,
 `fasttrack.yaml`) or a path to your own YAML. If its start threshold is more
 than twice `--conf`, `infer video` warns that faint objects may produce no
-tracks at all.
+tracks at all (not for mbariml's own configs at their own conf, which keep
+that gap on purpose).
 
 `--track-roi` chooses which frame of a track becomes its ROI, and
 `--track-third` which third of the track the `-third` policies pick from:
@@ -1071,7 +1117,7 @@ they're interactive, or they don't belong in the middle of a batch run.
 
 | Symptom | Cause / fix |
 |---|---|
-| `infer` finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.08. A model trained on different imagery may genuinely find nothing. |
+| `infer` finds **no detections at all** | Check the model path resolves, then the threshold: `--preset curate` uses conf 0.005, `--preset predict` uses 0.025 (track mode: 0.001 and 0.0001). A model trained on different imagery may genuinely find nothing. |
 | `infer video --mode track` finds **few or no tracks** | Track creation is gated by the *tracker's* thresholds, not `--conf`. Use `--tracker auto` (the default), whose thresholds match the preset. With your own `--tracker`, lower its `track_high_thresh` / `new_track_thresh`; a warning at startup says when they are far above `--conf`. Lowering `--conf` alone will not help. |
 | An export reports **"N image(s) could not be found on disk"** | The database references images that aren't at their recorded path and aren't under the database's folder either -- a volume that isn't mounted, or imagery moved somewhere else. Paths are recorded when rows are added (absolute since v0.11.0). A project folder moved **as a whole** is found automatically (see *Moving a project folder*); otherwise re-run `infer` or `import`. |
 | `cluster` says **"too few to cluster"** | EVoC needs more rows than `--n-neighbors` (default 40). Lower `--n-neighbors`, or drop `--limit`. |

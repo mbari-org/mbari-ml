@@ -10,15 +10,30 @@ confidence threshold. None of that is architecture; it's flags and defaults.
 Keeping two copies meant every fix had to be made twice (and, in practice,
 sometimes wasn't). The intent distinction survives as ``--preset``:
 
-    --preset curate   conf 0.005, imgsz 1952, no annotated images
+    --preset curate   conf 0.005, NMS iou 0.2, imgsz 1952, no annotated images
                       Mine everything, then cluster/review and throw away the
                       noise. This is the default, deliberately: an
                       over-permissive threshold is recoverable (filter later
                       -- the review GUI even has a confidence-range slider),
                       while a too-strict one silently drops detections you
                       can only get back with a full re-run.
-    --preset predict  conf 0.08, imgsz 992, saves annotated images
+    --preset predict  conf 0.025, NMS iou 0.2, imgsz 1952, saves annotated images
                       Believable predictions over new imagery.
+
+Both presets were measured on the DeepSea MOT benchmark's frames as stills
+(8 clips, 4,800 frames, MBARI_VARS_452k_YOLO26s, test-time augmentation on as
+below; precision/recall at IoU 0.5 against the benchmark's boxes):
+
+    curate   conf 0.005   precision 0.87, recall 0.56
+    predict  conf 0.025   precision 0.94, recall 0.47
+             (0.31.0: conf 0.08, imgsz 992 -> precision 0.96, recall 0.41)
+
+NMS iou 0.2 is the best value at every image size tried: 0.05 (curate until
+0.32.0) merges neighbouring animals and costs 10 points of AP50 (0.60 vs
+0.70), 0.7 leaves duplicate boxes (0.66). imgsz 1952 over 992 gains most on
+small midwater animals (AP50 0.72 vs 0.69). Test-time augmentation
+(``augment``) adds 0.02 AP50 and 4 points of recall at ~2.2x the detection
+time; it stays on for images, where nothing else costs as much.
 
 Any individual option still wins over the preset -- pass ``--conf`` and it's
 used regardless of which preset supplied the rest.
@@ -62,8 +77,8 @@ logger = get_logger(__name__)
 # (conf, iou, imgsz, save_annotated) per preset -- see the module docstring
 # for what each one is for and why `curate` is the default.
 PRESETS: dict[str, dict] = {
-    "curate": {"conf": 0.005, "iou": 0.05, "imgsz": 1952, "save_annotated": False},
-    "predict": {"conf": 0.08, "iou": 0.15, "imgsz": 992, "save_annotated": True},
+    "curate": {"conf": 0.005, "iou": 0.2, "imgsz": 1952, "save_annotated": False},
+    "predict": {"conf": 0.025, "iou": 0.2, "imgsz": 1952, "save_annotated": True},
 }
 DEFAULT_PRESET = "curate"
 
@@ -244,8 +259,8 @@ def infer_images(
     output_dir: str = typer.Argument(..., help="Directory to save the database, annotated images, and (optionally) a CSV."),
     preset: str = typer.Option(
         DEFAULT_PRESET,
-        help="'curate' (conf 0.005, imgsz 1952, no annotated images -- mine everything for "
-        "clustering/review) or 'predict' (conf 0.08, imgsz 992, saves annotated images -- "
+        help="'curate' (conf 0.005, iou 0.2, imgsz 1952, no annotated images -- mine everything for "
+        "clustering/review) or 'predict' (conf 0.025, iou 0.2, imgsz 1952, saves annotated images -- "
         "believable predictions over new imagery). Any option below overrides its preset value.",
     ),
     limit: Optional[int] = typer.Option(None, help="Limit the number of images processed (for a quick test run)."),

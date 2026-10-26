@@ -118,15 +118,20 @@ infer images
   and a 16x gap in the default confidence. That distinction survives as
   --preset:
 
-    --preset curate    conf 0.005, imgsz 1952, no annotated images  [DEFAULT]
+    --preset curate    conf 0.005, NMS iou 0.2, imgsz 1952, no annotated images  [DEFAULT]
                        Mine everything, then cluster/review and throw away the
                        noise. Default deliberately: an over-permissive
                        threshold is recoverable (filter later -- the review
                        GUI even has a confidence-range slider), a too-strict one
                        silently drops detections you can't get back without a
                        full re-run.
-    --preset predict   conf 0.08, imgsz 992, saves annotated images
+    --preset predict   conf 0.025, NMS iou 0.2, imgsz 1952, saves annotated images
                        Believable predictions over new imagery.
+
+  Measured on DeepSea MOT frames as stills (452k YOLO26s, 0.32.0):
+  curate precision 0.87 / recall 0.56, predict 0.94 / 0.47 (predict before
+  0.32.0: 0.96 / 0.41). NMS iou 0.2 beats 0.05 (the old curate value) by 10
+  points of AP50 and 0.7 by 4. See README "Generate: images".
 
   Any individual option overrides its preset: `--preset predict --conf 0.2`
   does what it says.
@@ -145,16 +150,20 @@ infer video
     This is what you want for building curation/training data out of video.
     A sponge in view for 300 frames is one animal, not 300 training examples
     -- 300 near-identical crops would swamp clustering and be tedious to
-    review. Measured on five one-minute benthic clips: 272,126 tracked
-    detections collapsed to 1,163 tracks, so 1,163 ROIs.
+    review. Measured on five one-minute benthic clips (0.32.0 defaults):
+    437,311 tracked detections collapsed to 1,013 tracks, so 1,013 ROIs.
 
       mbariml infer video models/best.pt /data/dive_video/ /data/results/
 
     --tracker    Tracker config. Default `auto`: mbariml's own ByteTrack
-                 config for the preset (src/mbariml/trackers/), whose
-                 thresholds let the preset's detections start tracks --
-                 curate: start 0.01, continue 0.005; predict: start 0.1,
-                 continue 0.08; both keep a lost track 300 frames.
+                 config for the preset (src/mbariml/trackers/), tuned on the
+                 DeepSea MOT benchmark together with track mode's detection
+                 conf and minimum track length:
+                   curate   every animal, one track each: conf 0.001,
+                            curate.yaml, --min-track-length 28
+                            (222 of 319 animals in 298 tracks; 0.31.0: 203 in 324)
+                   predict  most accurate tracks: conf 0.0001, predict.yaml,
+                            --min-track-length 60 (HOTA 61.7; 0.31.0: 48.6)
                  Or an Ultralytics shipped name (tracktrack.yaml,
                  botsort.yaml, bytetrack.yaml, ocsort.yaml, deepocsort.yaml,
                  fasttrack.yaml), or a path to your own YAML:
@@ -166,8 +175,10 @@ infer video
                  TRACKER's thresholds (track_high_thresh, new_track_thresh),
                  not by --conf. Ultralytics' own configs start tracks only at
                  0.25-0.7, so with --conf 0.005 they can find no tracks at
-                 all (0 on a 10 s benthic clip, vs 36 with auto). infer video
-                 warns when a tracker's start threshold is over 2x --conf.
+                 all (0 on a 10 s benthic clip where auto found 36, in
+                 0.29.0). infer video warns when a tracker's start
+                 threshold is over 2x --conf (except mbariml's own configs
+                 at their own conf).
 
     --track-roi  Which frame of a track becomes its ROI:
                    best-conf-third [DEFAULT] most confident frame of the
@@ -192,7 +203,8 @@ infer video
 
                  Tracks too short for thirds use the whole track.
 
-    --min-track-length N   ignore tracks with fewer than N observations.
+    --min-track-length N   ignore tracks with fewer than N observations
+                 (default from --preset: curate 28, predict 60).
 
   --mode stride  Sample every Nth frame and treat each as an independent
     image. No tracking, so the same animal is detected repeatedly.
@@ -669,7 +681,7 @@ middle of a batch run. Run them directly, any time.
 ==============================================================================
 FULL --help REFERENCE
 ==============================================================================
-Captured verbatim against v0.28.0. Run `mbariml <command> --help`
+Captured verbatim against v0.28.0 (infer images/video: v0.32.0). Run `mbariml <command> --help`
 yourself any time to get the current, authoritative version of any of this.
 
 mbariml --help
@@ -822,7 +834,6 @@ mbariml infer --help
 
 
 mbariml infer images --help
-
                                                                                                     
  Usage: mbariml infer images [OPTIONS] {model_path} {input_dir} {output_dir}                        
                                                                                                     
@@ -838,11 +849,11 @@ mbariml infer images --help
 │                             [required]                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --preset                                   <str>    'curate' (conf 0.005, imgsz 1952, no         │
-│                                                     annotated images -- mine everything for      │
-│                                                     clustering/review) or 'predict' (conf 0.08,  │
-│                                                     imgsz 992, saves annotated images --         │
-│                                                     believable predictions over new imagery).    │
+│ --preset                                   <str>    'curate' (conf 0.005, iou 0.2, imgsz 1952,   │
+│                                                     no annotated images -- mine everything for   │
+│                                                     clustering/review) or 'predict' (conf 0.025, │
+│                                                     iou 0.2, imgsz 1952, saves annotated images  │
+│                                                     -- believable predictions over new imagery). │
 │                                                     Any option below overrides its preset value. │
 │                                                     [default: curate]                            │
 │ --limit                                    <int>    Limit the number of images processed (for a  │
@@ -878,7 +889,6 @@ mbariml infer images --help
 
 
 mbariml infer video --help
-
                                                                                                     
  Usage: mbariml infer video [OPTIONS] {model_path} {input_path} {output_dir}                        
                                                                                                     
@@ -924,10 +934,12 @@ mbariml infer video --help
 │                                    [default: middle]                                             │
 │ --min-track-length        <int>    track mode only: ignore tracks with fewer than this many      │
 │                                    observations.                                                 │
-│                                    [default: 1]                                                  │
-│ --preset                  <str>    'curate' (conf 0.005, imgsz 1952) or 'predict' (conf 0.08,    │
-│                                    imgsz 992). Any option below overrides its preset value.      │
-│                                    Annotated-image saving does not apply to video.               │
+│ --preset                  <str>    'curate' (find every animal) or 'predict' (the most accurate  │
+│                                    tracks). Sets conf, iou and imgsz as for `infer images`;      │
+│                                    track mode then detects at its own conf (curate 0.001,        │
+│                                    predict 0.0001) with the preset's tuned tracker and           │
+│                                    --min-track-length. Any option below overrides its preset     │
+│                                    value. Annotated-image saving does not apply to video.        │
 │                                    [default: curate]                                             │
 │ --limit                   <int>    Only process the first N videos found.                        │
 │ --batch-size              <int>    stride mode only: frames sent to YOLO per batch.              │
