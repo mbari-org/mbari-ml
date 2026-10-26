@@ -82,10 +82,22 @@ AUTO_TRACKER = "auto"
 _TRACKERS_DIR = Path(__file__).resolve().parent.parent / "trackers"
 PRESET_TRACKERS = {"curate": _TRACKERS_DIR / "curate.yaml", "predict": _TRACKERS_DIR / "predict.yaml"}
 
+# Track mode's detection conf and minimum track length per preset, tuned
+# together with the preset's tracker config on the DeepSea MOT benchmark (the
+# numbers are in trackers/*.yaml). They differ from the preset's conf for
+# images and stride mode on purpose: a tracker uses faint detections to carry
+# a track through frames where the animal is hard to see, and the tracker
+# config plus the minimum length decide what becomes a track. Passing --conf or
+# --min-track-length overrides them.
+PRESET_TRACKING = {
+    "curate": {"conf": 0.001, "min_track_length": 28},
+    "predict": {"conf": 0.0001, "min_track_length": 60},
+}
+
 # A tracker whose start threshold is more than this many times --conf is
 # warned about: detections between the two can extend a track but never
-# start one. 2x leaves room for the deliberate gap mbariml's own configs keep
-# (curate: 0.01 vs 0.005; predict: 0.1 vs 0.08).
+# start one. Not checked for mbariml's own configs at their own conf, which
+# keep that gap deliberately (predict: tracks start at 0.003, conf 0.0001).
 TRACKER_START_WARN_RATIO = 2.0
 
 # How to pick the one frame that represents a track. The *-third policies
@@ -497,13 +509,17 @@ def infer_video(
         "often clipped by the frame edge; on benthic footage, confidence tends to peak in the "
         "last third, which also holds the most edge-clipped boxes.",
     ),
-    min_track_length: int = typer.Option(
-        1, help="track mode only: ignore tracks with fewer than this many observations."
+    min_track_length: Optional[int] = typer.Option(
+        None,
+        help="track mode only: ignore tracks with fewer than this many observations. "
+        "[default: from --preset: curate 28, predict 60]",
     ),
     preset: str = typer.Option(
         "curate",
-        help="'curate' (conf 0.005, imgsz 1952) or 'predict' (conf 0.08, imgsz 992). Any option "
-        "below overrides its preset value. Annotated-image saving does not apply to video.",
+        help="'curate' (find every animal) or 'predict' (the most accurate tracks). Sets conf, iou "
+        "and imgsz as for `infer images`; track mode then detects at its own conf (curate 0.001, "
+        "predict 0.0001) with the preset's tuned tracker and --min-track-length. Any option below "
+        "overrides its preset value. Annotated-image saving does not apply to video.",
     ),
     limit: Optional[int] = typer.Option(None, help="Only process the first N videos found."),
     batch_size: int = typer.Option(16, help="stride mode only: frames sent to YOLO per batch."),
@@ -526,9 +542,15 @@ def infer_video(
         raise typer.BadParameter(f"--preset must be one of {sorted(PRESETS)}")
 
     settings = _resolve_preset(preset, conf=conf, iou=iou, imgsz=imgsz)
-    tracker = _resolve_tracker(tracker, preset)
     if mode == "track":
-        _warn_if_tracker_misses_detections(tracker, settings["conf"])
+        tracking = PRESET_TRACKING[preset]
+        if conf is None:
+            settings["conf"] = tracking["conf"]
+        if min_track_length is None:
+            min_track_length = tracking["min_track_length"]
+        if tracker != AUTO_TRACKER or conf is not None:
+            _warn_if_tracker_misses_detections(_resolve_tracker(tracker, preset), settings["conf"])
+    tracker = _resolve_tracker(tracker, preset)
     # Resolved to absolute deliberately: image_path/video_path are how every
     # later command (review, the exports, the GUI's "Open Video" button) finds
     # the pixels again, and those run from whatever directory the user happens
@@ -547,7 +569,7 @@ def infer_video(
         mode, preset, settings["conf"], settings["iou"], settings["imgsz"], resolved_device, len(videos),
     )
     if mode == "track":
-        logger.info("Tracker: %s", tracker)
+        logger.info("Tracker: %s | min track length: %d", tracker, min_track_length)
 
     model = load_model(model_path)
     (output_dir_path / "names.txt").write_text("\n".join(model.names.values()))

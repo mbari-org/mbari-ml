@@ -1,19 +1,29 @@
-# mbariml's tracker for `infer video --preset curate` (detection conf 0.005).
-# Selected by `--tracker auto`, the default. See mbariml.steps.infer_video.
+# mbariml's tracker for `infer video --preset curate` (track mode: detection conf 0.001,
+# --min-track-length 28). Selected by `--tracker auto`, the default. See mbariml.steps.infer_video.
 #
-# ByteTrack with every threshold lowered to match a permissive detector.
-# Ultralytics' own configs start a track only at 0.25 (ByteTrack) to 0.7
-# (TrackTrack), so with conf 0.005 they quietly discard almost everything:
-# on five one-minute benthic clips, fewer than 0.1% of detections reached
-# TrackTrack's 0.7, and on one clip it confirmed no tracks at all. With this
-# config the same five clips gave 1,163 tracks, and in a random sample of 24,
-# every track stayed on one object -- judged from contact sheets by an AI model
-# (Claude), not yet by a person (the mbariml paper's track-selection analysis).
+# Goal: every animal, each by a track of its own. Track mode keeps one ROI per
+# track, so a track that chains two animals loses one of them, and a second
+# track on one animal is a duplicate ROI to review.
+#
+# Tuned on the DeepSea MOT benchmark (8 clips, 319 animals) with
+# MBARI_VARS_452k_YOLO26s at imgsz 1952, NMS iou 0.2: a 2-objective sweep
+# (animals found by their own track, up; tracks, down; at most 2% of tracks
+# may mix animals), 1,500 trials, in-sample on all 8 clips.
+#
+#                                            animals found   tracks   mixed   core HOTA
+#   this config                                   222          298       1       60.9
+#   this config, imgsz 1280                       228          305       3       59.6
+#   0.31.0 (conf 0.005, NMS 0.05, no minimum)     203          324       0       55.4
+#
+# The thresholds are far below Ultralytics' (tracks start at 0.25-0.7 there):
+# faint detections carry most deep-sea tracks. match_thresh 0.98 accepts a
+# match down to IoU 0.02 (slow animals, jerky camera); the purity limit above
+# shows it does not chain neighbours.
 
 tracker_type: bytetrack
-track_high_thresh: 0.01  # first association; with new_track_thresh, the confidence a track starts at
-track_low_thresh: 0.005  # second association: the curate preset's own conf, so every detection can extend a track
-new_track_thresh: 0.001  # start a track from any first-association detection left unmatched
-track_buffer: 300        # frames a lost track is kept (5 s at 59.94 fps): faint animals drop out and come back
-match_thresh: 0.8        # Ultralytics' default
-fuse_score: False        # don't weight matching by score: at these confidences it is mostly noise
+track_high_thresh: 0.00044  # first association
+track_low_thresh: 0.00014   # second association: below the detection conf, so every detection can extend a track
+new_track_thresh: 0.00137   # an unmatched first-association detection at least this confident starts a track
+track_buffer: 292           # frames a lost track is kept: faint animals drop out and come back
+match_thresh: 0.98258       # cost gate on 1 - IoU
+fuse_score: False           # don't weight matching by score: at these confidences it is mostly noise
