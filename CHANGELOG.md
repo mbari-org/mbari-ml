@@ -65,6 +65,14 @@ track length per preset.** Track mode now detects at its own conf (`curate`
   more of the faint detections are used, and 913 tracks shorter than 28
   frames are dropped.
 
+**`infer images` keeps a reduced batch size instead of re-splitting every
+batch.** At a large `--imgsz`, MPS rejects a batch of 50 big stills (at 3200
+on 6720x4480 images only about 6-11 fit in one pass). The fallback halved and
+retried, but started again at 50 for every batch, so each batch failed
+three times and printed "Batch of N images too large for MPS" warnings
+throughout the run. The reduced size is now kept for the rest of the run,
+and the one-time notice is logged at INFO.
+
 Tuned for the 452k YOLO26s; other models have their own best conf and
 tracker thresholds. The `curate` sweep is in-sample on all 8 clips; the HOTA
 sweep's leave-one-clip-out estimate is ~1 point below its in-sample score.
