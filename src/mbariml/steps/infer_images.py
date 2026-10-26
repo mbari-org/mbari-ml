@@ -160,9 +160,10 @@ def insert_rows(conn, rows: list[tuple]) -> None:
     )
 
 
-def _predict(model, batch_files, yolo_params: dict) -> list:
-    """model.predict over batch_files, halving the batch and retrying if MPS
-    rejects a tensor for exceeding INT_MAX elements.
+def _predict(model, batch_files, yolo_params: dict, limit: list[int]) -> list:
+    """model.predict over batch_files, in passes of at most ``limit[0]`` images,
+    halving that and retrying if MPS rejects a tensor for exceeding INT_MAX
+    elements.
 
     Ultralytics autocasts a list of paths into in-memory images and runs them
     as ONE forward pass (B = len(list), whatever ``batch`` says -- the
@@ -170,18 +171,28 @@ def _predict(model, batch_files, yolo_params: dict) -> list:
     mixes image sizes it can't letterbox to a shared rectangle, so every image
     is padded to imgsz x imgsz; at 50 x 1952^2 the C2PSA attention matrix
     (B * heads * (H*W)^2 at stride 32) passes 2^31 and MPSGraph refuses it.
-    Same-size batches stay under, which is why this only hit some batches.
-    Results come back in the same order as batch_files either way.
+    Same-size batches stay under at 1952, but not at a larger --imgsz: at 3200
+    on 6720x4480 stills only ~6-11 images fit in one pass.
+
+    ``limit`` is shared across batches (a one-element list), so a lowered pass
+    size is kept: it used to restart at --batch-size for every batch, failing
+    and halving again each time. Results come back in batch_files order.
     """
-    try:
-        return model.predict(source=[str(f) for f in batch_files], **yolo_params)
-    except RuntimeError as exc:
-        if "INT_MAX" not in str(exc) or len(batch_files) == 1:
-            raise
-        mid = len(batch_files) // 2
-        logger.warning("Batch of %d images too large for MPS; retrying as %d + %d",
-                       len(batch_files), mid, len(batch_files) - mid)
-        return _predict(model, batch_files[:mid], yolo_params) + _predict(model, batch_files[mid:], yolo_params)
+    results: list = []
+    i = 0
+    while i < len(batch_files):
+        chunk = batch_files[i : i + limit[0]]
+        try:
+            results += model.predict(source=[str(f) for f in chunk], **yolo_params)
+        except RuntimeError as exc:
+            if "INT_MAX" not in str(exc) or len(chunk) == 1:
+                raise
+            limit[0] = len(chunk) // 2
+            logger.info("MPS can't run %d images at once at imgsz %d; continuing in passes of %d",
+                        len(chunk), yolo_params["imgsz"], limit[0])
+            continue
+        i += len(chunk)
+    return results
 
 
 def _run_batches(model, image_files, batch_size: int, conn, yolo_params: dict) -> tuple[int, int]:
@@ -194,11 +205,12 @@ def _run_batches(model, image_files, batch_size: int, conn, yolo_params: dict) -
     # output directory collide on the UNIQUE id index instead of appending.
     roi_index = db.next_free_id(conn)
     num_batches = (len(image_files) + batch_size - 1) // batch_size
+    pass_limit = [batch_size]  # lowered by _predict if MPS can't take a whole batch, and kept
 
     for batch_num, i in enumerate(range(0, len(image_files), batch_size), start=1):
         batch_files = image_files[i : i + batch_size]
         try:
-            results = _predict(model, batch_files, yolo_params)
+            results = _predict(model, batch_files, yolo_params, pass_limit)
             rows, roi_index = _results_to_rows(results, batch_files, model, roi_index)
             insert_rows(conn, rows)
             total_rows += len(rows)
