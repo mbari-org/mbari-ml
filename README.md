@@ -471,7 +471,12 @@ while preserving the human labels.
   Tab to the slider) and the arrow keys move it by 0.01, Page Up/Down by
   0.10. Rows with no confidence show only at the full 0.00-1.00 range. The
   page counts, the Verified/Unverified counter and "Find similar" all follow
-  the range. View-only: nothing stored changes.
+  the range. View-only: nothing stored changes. The line under the slider
+  counts what the range hides (*"Hidden by confidence: 105,147 of 575,664
+  ROIs (18.3%) in 48 of 56 classes"*), and **Details...** breaks it down per
+  class -- total, shown, hidden, % hidden, sortable by any column, with
+  **Copy table** for a spreadsheet. Both follow the search, like the
+  Verified counter, and ignore Hide verified/unverified.
 - **Search** (type or pick a label, Enter) shows only ROIs whose *effective*
   label matches: the new label where one is set, otherwise the original
   label -- the same label the tile shows in bold. A row renamed from `trash`
@@ -498,6 +503,10 @@ while preserving the human labels.
 - **Sort by "New Label"** uses that same rule: a tile with no new label sorts
   under its original label, in among the renamed tiles, rather than all of
   them collecting at the end.
+- **Sort by "Confidence (high-low)"** puts the detector's surest calls first;
+  **"Confidence (low-high)"** its weakest, for clearing out false positives.
+  Both respect the confidence range, so 0.10-0.30 low-high walks the
+  marginal band from the bottom up.
 - The status line under the buttons always shows the current page, how many
   ROIs are shown, and how many are selected, so a keypress never surprises you.
 - **Brightness / Contrast sliders** (below the tile-size slider) adjust the
@@ -681,6 +690,19 @@ ROIs became a flat ~70-75 it/s for the same 3000 ROIs after this fix — no
 degradation at all, ~6x faster overall on top of removing an actively
 worsening trend that would have made a large run take dramatically longer
 than a naive per-item estimate suggests.
+
+**The CPU and GPU no longer take turns, and torch's CPU pool is pinned to
+one thread.** Measured on an M3 Ultra (MPS) with a 575,796-ROI database:
+ViT-L/16 at 256 px forwards ~97 ROIs/s, which is the ceiling. Sixteen
+decode workers each running torch's default per-core thread pool spent
+141 s of kernel time in a 60 s run and held the GPU to ~83 ROIs/s; pinned,
+~95 ROIs/s (that whole database in about 1 h 40 min, where it had taken
+2 h 15 min). A background thread now reads and decodes the next batches
+while the GPU runs the current one, and reads ROI blobs a batch at a time:
+peak memory went from 41 GB (every blob in the table held for the whole
+run) to under 5 GB, and `--limit` no longer reads the whole table first.
+Half precision doesn't help: fp16 overflows to NaN in DINOv3, and bf16 is
+only ~19% faster and moves embeddings away from their fp32 values.
 
 It's safe to interrupt and resume any time: `mbariml embed` only processes
 rows with `embedding IS NULL`, so re-running after a `Ctrl-C` (or a crash)

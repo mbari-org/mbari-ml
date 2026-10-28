@@ -51,7 +51,13 @@ CURATION_SCHEMA_SQL = """
         sharpness DOUBLE
     );
     CREATE UNIQUE INDEX IF NOT EXISTS predictions_id_idx ON predictions (id);
-    CREATE INDEX IF NOT EXISTS idx_predictions_new_label ON predictions(new_label);
+    -- No index on new_label, and an existing one is dropped: nothing reads
+    -- through it (the review GUI matches COALESCE(new_label, label), which
+    -- an index on new_label can't serve), but every relabel had to maintain
+    -- it. Measured on a 575,796-row database, 30 relabels of 500 ROIs: 29.4 s
+    -- in all, half of them over 0.5 s and the worst 3.1 s -- the GUI froze
+    -- for that long -- against 0.6 s in all, none over 0.26 s, without it.
+    DROP INDEX IF EXISTS idx_predictions_new_label;
     CREATE INDEX IF NOT EXISTS idx_predictions_image_path ON predictions(image_path);
     CREATE INDEX IF NOT EXISTS idx_predictions_roi_index ON predictions(roi_index);
 

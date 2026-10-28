@@ -11,6 +11,51 @@ recognizable.
 
 ---
 
+## Unreleased — Faster review GUI on large databases, confidence counts and sort, faster `embed`
+
+Measured on a 575,796-ROI Coral Observatory database (M3 Ultra).
+
+**Relabeling no longer freezes the GUI.** The `new_label` index served no
+query (the GUI matches `COALESCE(new_label, label)`, which it can't use) but
+every relabel had to maintain it, and the auto-checkpoints it inflated ran
+on the GUI thread. 30 relabels of 500 ROIs: 29.4 s in all, half over 0.5 s,
+worst 3.1 s → 0.6 s in all, none over 0.26 s. The index is dropped when a
+database is opened (0.01 s).
+
+| review GUI, 575,796 rows | before | now |
+|---|---|---|
+| Find similar, whole database | 49.7 s | 3.7 s |
+| Find similar, one label (67k) | 6.7 s | 1.1 s |
+| page 1 query (500 tiles) | 364 ms | 30 ms |
+| last page query | 1,240 ms | 103 ms |
+
+- Find similar loaded every embedding as a Python list of 1024 floats; it now
+  fetches them flat into one numpy array. Same ranking, checked rank for rank.
+- Pages no longer fetch embeddings (no tile used them), and sort only
+  `(id, sort key)` before fetching the page's rows by id.
+- Paging breaks ties by `id`. With a sort key shared by many rows (a label
+  on 70,000 ROIs) LIMIT/OFFSET could order the ties differently per query,
+  repeating some ROIs across pages and skipping others; every ROI now
+  appears exactly once (checked over all 116 pages of 5,000).
+
+**What the confidence range hides.** A line under the slider counts it
+(*"Hidden by confidence: 105,147 of 575,664 ROIs (18.3%) in 48 of 56
+classes"*) and **Details...** opens a per-class table (total, shown, hidden,
+% hidden; sortable; Copy table). ~5 ms per count.
+
+**Sort by confidence**, high-low and low-high.
+
+**`embed`: ~83 → ~95 ROIs/s, peak memory 41 GB → under 5 GB.** Torch's CPU
+pool is pinned to one thread (16 decode workers each spawning a per-core
+pool spent 141 s of kernel time in a 60 s run); the next batches are read
+and decoded while the GPU runs the current one; ROI blobs are read a batch
+at a time instead of all up front, and `--limit` no longer reads the whole
+table. Embeddings are unchanged (bit-identical on a 4,096-ROI re-run). The
+GPU is the ceiling (~97 ROIs/s for ViT-L/16 on MPS); fp16 gives NaN in
+DINOv3 and bf16 shifts the embeddings, so neither is used.
+
+---
+
 ## 0.32.0 — Detection and tracking settings tuned on the DeepSea MOT benchmark
 
 **Every inference default is now a measured optimum** for the MBARI VARS 452k

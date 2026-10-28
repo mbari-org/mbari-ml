@@ -66,6 +66,7 @@ from PySide6.QtWidgets import (
 
 from mbariml import db
 from mbariml.gui import annotation_service, query_service, sam3_service
+from mbariml.gui.confidence_dialog import ConfidenceHiddenDialog, summarize as summarize_hidden
 from mbariml.gui.detail_view import DetailView
 from mbariml.gui.mosaic_view import MosaicView, MosaicVisibilityFilters
 from mbariml.gui.range_slider import RangeSlider
@@ -293,6 +294,10 @@ class MainWindow(QMainWindow):
         # query_service._confidence_conditions.
         self.min_confidence: float = 0.0
         self.max_confidence: float = 1.0
+        # (class, total, hidden) per class for the range above, from the last
+        # page load -- see query_service.count_hidden_by_confidence. Empty
+        # while the range is the full 0-1.
+        self._confidence_hidden: list[tuple[str, int, int]] = []
         self._zoom_percent = ZOOM_DEFAULT
         self._brightness = BRIGHTNESS_DEFAULT
         self._contrast_percent = CONTRAST_DEFAULT
@@ -638,6 +643,15 @@ class MainWindow(QMainWindow):
             QLabel("View-only: shows only ROIs whose YOLO detection confidence is in this range (drag either "
                    "end, then Show). Never changes stored data.")
         )
+        confidence_hidden_layout = QHBoxLayout()
+        self.confidence_hidden_label = QLabel("")
+        confidence_hidden_layout.addWidget(self.confidence_hidden_label, 1)
+        self.confidence_details_button = QPushButton("Details...")
+        self.confidence_details_button.setToolTip("How many ROIs of each class the confidence range hides.")
+        self.confidence_details_button.setEnabled(False)
+        self.confidence_details_button.clicked.connect(self._on_confidence_details_clicked)
+        confidence_hidden_layout.addWidget(self.confidence_details_button)
+        controls_layout.addLayout(confidence_hidden_layout)
 
         visibility_layout = QHBoxLayout()
         verify_button = QPushButton("Verify (V)")
@@ -884,7 +898,7 @@ class MainWindow(QMainWindow):
         self._start_worker(worker)
 
     @staticmethod
-    def _fetch_page_worker(generation: int, conn, **kwargs) -> tuple[int, list, int, int, int]:
+    def _fetch_page_worker(generation: int, conn, **kwargs) -> tuple[int, list, int, int, int, list]:
         # .cursor() called here, i.e. on the worker thread that will use it.
         cursor = conn.cursor()
         rows = query_service.fetch_page(cursor, **kwargs)
@@ -915,16 +929,27 @@ class MainWindow(QMainWindow):
         verified_count, unverified_count = query_service.count_verified(
             cursor, label_filter=label_filter, min_confidence=min_confidence, max_confidence=max_confidence
         )
-        return generation, rows, total_rows, verified_count, unverified_count
+        # What the confidence range hides, per class -- same scope as the
+        # verified counter. Skipped with the full range, which hides nothing.
+        confidence_hidden = (
+            query_service.count_hidden_by_confidence(
+                cursor, label_filter, min_confidence=min_confidence, max_confidence=max_confidence
+            )
+            if (min_confidence or 0) > 0 or (max_confidence if max_confidence is not None else 1) < 1
+            else []
+        )
+        return generation, rows, total_rows, verified_count, unverified_count, confidence_hidden
 
     @Slot(object)
     def _on_page_loaded(self, payload) -> None:
-        generation, rows, total_rows, verified_count, unverified_count = payload
+        generation, rows, total_rows, verified_count, unverified_count, confidence_hidden = payload
         if generation != self._page_load_generation:
             return  # superseded by a newer page/sort/filter change
         self._total_rows = total_rows
         self._verified_count = verified_count
         self._unverified_count = unverified_count
+        self._confidence_hidden = confidence_hidden
+        self._refresh_confidence_hidden_label()
         self._update_page_jump_range()
         self._build_rect_widgets(rows)
 
@@ -1103,6 +1128,35 @@ class MainWindow(QMainWindow):
         self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
+
+    def _refresh_confidence_hidden_label(self) -> None:
+        """One line under the confidence slider: how much the range hides."""
+        narrowed = self.min_confidence > 0 or self.max_confidence < 1
+        self.confidence_details_button.setEnabled(narrowed)
+        if not narrowed:
+            self.confidence_hidden_label.setText("No confidence range set: nothing hidden.")
+            return
+        total, hidden, classes_hit, classes = summarize_hidden(self._confidence_hidden)
+        share = f" ({hidden / total:.1%})" if total else ""
+        self.confidence_hidden_label.setText(
+            f"Hidden by confidence: {hidden:,} of {total:,} ROIs{share} in {classes_hit} of {classes} classes"
+        )
+
+    def _on_confidence_details_clicked(self) -> None:
+        """Per-class table of what the range hides. Recounted on open (a
+        ~5 ms aggregate, like fetch_rois_for_image safe on the GUI thread)
+        so labels or deletions since the last page load are included."""
+        self._confidence_hidden = query_service.count_hidden_by_confidence(
+            self.conn, self.label_filter, min_confidence=self.min_confidence, max_confidence=self.max_confidence
+        )
+        self._refresh_confidence_hidden_label()
+        ConfidenceHiddenDialog(
+            self._confidence_hidden,
+            min_confidence=self.min_confidence,
+            max_confidence=self.max_confidence,
+            label_filter=self.label_filter,
+            parent=self,
+        ).exec()
 
     def _on_hide_verified_toggled(self, checked: bool) -> None:
         self._set_verified_visibility(hide_verified=checked, hide_unverified=self.hide_unverified and not checked)

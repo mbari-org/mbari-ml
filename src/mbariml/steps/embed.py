@@ -51,6 +51,21 @@ time*, as a module-level side effect. That meant simply importing the file
 whether or not you were actually about to use it. It's now loaded lazily,
 once, on first use.
 
+Fourth: the CPU and GPU took turns. Each batch was fetched and decoded, then
+run through the model, then the next batch was fetched and decoded -- the
+GPU idled during decoding and the decode threads during the forward pass. A
+background thread now fetches and decodes the next batches while the GPU
+works on the current one. Measured on an M3 Ultra (MPS), ViT-L/16 at 256 px
+forwards ~97 ROIs/s at batch 32 (64 is no faster, 128 slower) and decoding
+runs at ~590 ROIs/s on 16 threads, so the GPU is the ceiling; a 575,796-ROI
+run had averaged ~71 ROIs/s (2 h 15 min) taking turns. ROI blobs are also
+read in small chunks by id rather than all at once: the whole table's blobs
+were held in memory for the entire run (11.5 GB of Python bytes on that
+database), and --limit still loaded every one before slicing.
+Half precision is not an option: fp16 overflows to NaN in DINOv3, and bf16
+is only ~19% faster while moving embeddings off their fp32 values (cosine
+down to 0.996), which must not be mixed into a database embedded in fp32.
+
 IMPORTANT: embeddings from different backbones are not comparable. If you
 switch ``EMBEDDING_MODEL_NAME`` (or re-run this after a previous run used a
 different model), re-embed the *whole* database with ``--force`` -- do not
@@ -62,6 +77,8 @@ spaces as if they were the same.
 from __future__ import annotations
 
 import os
+import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Optional
@@ -174,6 +191,57 @@ def _prepare_batch(chunk: list[tuple], executor: ThreadPoolExecutor) -> tuple[li
     return tensors, ok_ids, failed
 
 
+_PREFETCH_BATCHES = 4  # decoded batches kept ready ahead of the GPU
+
+
+def _prefetch_batches(conn, ids: list[int], batch_size: int, executor: ThreadPoolExecutor):
+    """Yield ``(rows in batch, tensors, ok_ids, num_failed)`` per batch, with a
+    background thread reading and decoding up to _PREFETCH_BATCHES batches
+    ahead so the GPU never waits on the CPU.
+
+    The thread reads through its own cursor (a DuckDB cursor must be made on
+    the thread that uses it), so the main thread's bulk UPDATEs on *conn*
+    don't interrupt it. An error in the thread is re-raised here, in the
+    caller.
+    """
+    ready: queue.Queue = queue.Queue(maxsize=_PREFETCH_BATCHES)
+    stop = threading.Event()
+    done = object()
+
+    def produce() -> None:
+        try:
+            cursor = conn.cursor()
+            for i in range(0, len(ids), batch_size):
+                if stop.is_set():
+                    return
+                batch_ids = ids[i:i + batch_size]
+                chunk = cursor.execute(
+                    "SELECT id, roi FROM predictions WHERE id IN (SELECT unnest(?)) ORDER BY id", [batch_ids]
+                ).fetchall()
+                tensors, ok_ids, n_failed = _prepare_batch(chunk, executor)
+                ready.put((len(batch_ids), tensors, ok_ids, n_failed + len(batch_ids) - len(chunk)))
+        except BaseException as exc:  # handed to the consumer, which re-raises it
+            ready.put(exc)
+            return
+        ready.put(done)
+
+    thread = threading.Thread(target=produce, name="embed-prefetch", daemon=True)
+    thread.start()
+    try:
+        while (item := ready.get()) is not done:
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        stop.set()
+        while thread.is_alive():  # unblock a producer waiting on a full queue
+            try:
+                ready.get(timeout=0.1)
+            except queue.Empty:
+                pass
+        thread.join()
+
+
 def _run_forward_pass(tensors: list) -> np.ndarray:
     """Run one forward pass over an already-preprocessed batch. Must be
     called from the main thread only -- GPU/MPS work isn't thread-parallel
@@ -219,21 +287,31 @@ def embed(
     if decode_workers <= 0:
         decode_workers = min(16, os.cpu_count() or 4)
 
-    rows: list[tuple]
-    with db.connect(db_path, must_exist=True) as conn:
-        query = "SELECT id, roi FROM predictions" if force else "SELECT id, roi FROM predictions WHERE embedding IS NULL"
-        query += " ORDER BY id"  # sorted writes are much faster on DuckDB than unsorted ones
-        rows = conn.execute(query).fetchall()
-        if limit:
-            rows = rows[:limit]
+    import torch
 
-        if not rows:
+    # One CPU thread per torch op: each decode worker runs the preprocess
+    # transform's torch ops, and with torch's default intra-op pool (one
+    # thread per core) 16 workers oversubscribed the CPU 16-fold -- 141 s of
+    # kernel time in a 60 s run, starving the thread feeding the GPU.
+    # Pinned, 83 -> 95 ROIs/s on an M3 Ultra (the GPU tops out near 97). The
+    # forward pass runs on the GPU and doesn't use this pool; on a CPU-only
+    # machine the decode workers are the parallelism instead.
+    torch.set_num_threads(1)
+
+    with db.connect(db_path, must_exist=True) as conn:
+        query = "SELECT id FROM predictions" if force else "SELECT id FROM predictions WHERE embedding IS NULL"
+        query += " ORDER BY id"  # sorted writes are much faster on DuckDB than unsorted ones
+        if limit:
+            query += f" LIMIT {int(limit)}"
+        ids = [row[0] for row in conn.execute(query).fetchall()]
+
+        if not ids:
             logger.info("No ROIs without an embedding found in %s; nothing to do (use --force to recompute anyway).", db_path)
             return
 
         logger.info(
             "Embedding %d ROI(s) from %s using %s (batch size %d, %d decode workers, flush every %d)",
-            len(rows), db_path, EMBEDDING_MODEL_NAME, batch_size, decode_workers, flush_size,
+            len(ids), db_path, EMBEDDING_MODEL_NAME, batch_size, decode_workers, flush_size,
         )
         _load_embedding_model()  # load once on the main thread before any worker touches the cache
 
@@ -241,10 +319,9 @@ def embed(
         failed = 0
         pending: list[tuple] = []
         with ThreadPoolExecutor(max_workers=decode_workers) as executor:
-            with tqdm(total=len(rows), desc="Generating embeddings") as progress:
-                for i in range(0, len(rows), batch_size):
-                    chunk = rows[i:i + batch_size]
-                    tensors, ok_ids, n_failed = _prepare_batch(chunk, executor)
+            batches = _prefetch_batches(conn, ids, batch_size, executor)
+            with tqdm(total=len(ids), desc="Generating embeddings") as progress:
+                for n_rows, tensors, ok_ids, n_failed in batches:
                     failed += n_failed
 
                     if tensors:
@@ -256,7 +333,7 @@ def embed(
                             failed += len(ok_ids)
                             logger.exception("Error embedding batch starting at ROI id=%s; leaving embeddings NULL", ok_ids[0])
 
-                    progress.update(len(chunk))
+                    progress.update(n_rows)
 
                     if len(pending) >= flush_size:
                         _flush_pending(conn, pending)

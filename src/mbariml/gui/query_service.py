@@ -46,18 +46,29 @@ logger = get_logger(__name__)
 # too, or such a row would sort/match as '' instead of by its original label.
 EFFECTIVE_LABEL_SQL = "COALESCE(NULLIF(new_label, ''), label)"
 
+#
+# Confidence comes both ways round: high-low to review the detector's surest
+# calls first, low-high to clear out false positives. DuckDB sorts NULLs last
+# either way, so a row with no score never leads the grid.
 SORT_COLUMNS = {
     "New Label": EFFECTIVE_LABEL_SQL,
     "Original Label": "label",
     "Image Name": "image_path",
     "Sharpness": "sharpness",
     "Aspect Ratio": "(x_max - x_min) / NULLIF(y_max - y_min, 0)",
+    "Confidence (high-low)": "confidence DESC",
+    "Confidence (low-high)": "confidence ASC",
 }
 DEFAULT_SORT_OPTION = "New Label"
 
+# No embedding: no tile uses it, and fetching it cost more than everything
+# else on a page together -- 500 tiles x 1024 floats became 512,000 Python
+# floats per page. Measured on a 575,796-row database: page 1 went 364 ->
+# 152 ms without it, the last page 1,240 -> 373 ms (and see fetch_page for
+# the rest). Similarity search loads embeddings itself.
 _ROW_COLUMNS = (
     "id, image_path, roi_index, new_label, roi, "
-    "x_min, y_min, x_max, y_max, embedding, label, verified, "
+    "x_min, y_min, x_max, y_max, label, verified, "
     "video_path, frame_time_s"
 )
 
@@ -85,7 +96,6 @@ class RoiRow:
     y_min: float
     x_max: float
     y_max: float
-    embedding: list[float] | None
     original_label: str | None
     verified: bool = False
     # NULL for image-derived rows. Set by `mbariml infer video`, which points
@@ -108,11 +118,10 @@ class RoiRow:
             y_min=row[6],
             x_max=row[7],
             y_max=row[8],
-            embedding=row[9],
-            original_label=row[10],
-            verified=bool(row[11]),
-            video_path=row[12],
-            frame_time_s=row[13],
+            original_label=row[9],
+            verified=bool(row[10]),
+            video_path=row[11],
+            frame_time_s=row[12],
         )
 
 
@@ -278,16 +287,66 @@ def fetch_page(
         logger.warning("Unknown sort option %r, falling back to %s", sort_option, DEFAULT_SORT_OPTION)
         sort_column = SORT_COLUMNS[DEFAULT_SORT_OPTION]
 
+    # Two steps: sort only the narrow (id, sort key) columns to find the
+    # page's ids, then fetch just those rows -- ROI blobs and all -- by id.
+    # Sorting whole rows dragged every ROI blob through the sort; on a
+    # 575,796-row database this took page 1 from 152 to 30 ms and the last
+    # page from 373 to 103 ms (1,240 ms before the embedding was dropped).
+    # `id` breaks ties so paging is deterministic: with only a non-unique
+    # key (a label shared by 100,000 rows) LIMIT/OFFSET may order the ties
+    # differently on each query, repeating some ROIs across pages and
+    # never showing others.
     params: list = []
-    query = f"SELECT {_ROW_COLUMNS} FROM predictions" + _build_where(
+    where_sql = _build_where(
         label_filter, params, exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified, min_confidence=min_confidence, max_confidence=max_confidence,
     )
-    query += f" ORDER BY {sort_column} LIMIT ? OFFSET ?"
+    query = f"""
+        WITH page AS (
+            SELECT id, row_number() OVER () AS page_rank
+            FROM (SELECT id FROM predictions{where_sql} ORDER BY {sort_column}, id LIMIT ? OFFSET ?)
+        )
+        SELECT {_ROW_COLUMNS} FROM predictions JOIN page USING (id) ORDER BY page_rank
+    """
     params.extend([page_size, offset])
 
     rows = conn.execute(query, params).fetchall()
     return [RoiRow._from_tuple(row) for row in rows]
+
+
+def count_hidden_by_confidence(
+    conn: duckdb.DuckDBPyConnection,
+    label_filter: str | None = None,
+    *,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
+) -> list[tuple[str, int, int]]:
+    """``(effective label, total, hidden)`` per class: how many ROIs the
+    confidence range keeps out of view, most hidden first.
+
+    Scoped like :func:`count_verified` -- by the search filter and nothing
+    else, so it answers "what is the confidence range hiding from what I'm
+    reviewing" whatever Hide verified/unverified is set to. "Hidden" uses
+    the same test as the grid (:func:`_confidence_conditions`), so a NULL
+    confidence counts as hidden once the range is narrowed. A columnar
+    aggregate that never touches ROI blobs: ~5 ms on 575,796 rows.
+    """
+    params: list = []
+    shown_conditions = _confidence_conditions(min_confidence, max_confidence, params)
+    shown_sql = " AND ".join(shown_conditions) or "TRUE"
+    where_sql = _build_where(label_filter, params)
+    rows = conn.execute(
+        f"""
+        SELECT COALESCE({EFFECTIVE_LABEL_SQL}, '(no label)') AS l,
+               COUNT(*) AS total,
+               COUNT(*) - COUNT(*) FILTER (WHERE {shown_sql}) AS hidden
+        FROM predictions{where_sql}
+        GROUP BY l
+        ORDER BY hidden DESC, total DESC, LOWER(l)
+        """,
+        params,
+    ).fetchall()
+    return [(label, int(total), int(hidden)) for label, total, hidden in rows]
 
 
 @dataclass
@@ -521,13 +580,24 @@ def compute_similarity_order(
         min_confidence=min_confidence, max_confidence=max_confidence,
         require_embedding=True,
     )
-    query = "SELECT roi_index, embedding FROM predictions" + where_sql
-    rows = conn.execute(query, params).fetchall()
-    if not rows:
+    # Fetched flat (one float per row of the result) into a single numpy
+    # array and reshaped, not fetchall(): that built a Python list of 1024
+    # Python floats per ROI, and on a 575,796-row database spent 46 of a
+    # whole-table search's 49 seconds doing it. Flat, the load takes ~3.5 s
+    # and the ranking below ~0.5 s. Each ROI's values come out contiguous
+    # with its roi_index repeated alongside, so the first of every `dim`
+    # roi_index values names its row -- checked against the last, so a
+    # ragged embedding can't silently misalign every row after it.
+    query = "SELECT roi_index, unnest(embedding) AS value FROM predictions" + where_sql
+    flat = conn.execute(query, params).fetchnumpy()
+    values, row_ids = flat["value"], flat["roi_index"]
+    if len(values) == 0:
         return []
-
-    indices = [r[0] for r in rows]
-    matrix = np.asarray([r[1] for r in rows], dtype=np.float32)
+    dim = len(ref_row[0])
+    if len(values) % dim or not np.array_equal(row_ids[::dim], row_ids[dim - 1::dim]):
+        raise ValueError("embeddings of different lengths in one database -- re-run `mbariml embed --force`")
+    indices = np.asarray(row_ids[::dim])
+    matrix = np.asarray(values, dtype=np.float32).reshape(-1, dim)
     reference = np.asarray(ref_row[0], dtype=np.float32)
 
     # Mean-center before normalizing. Raw deep/self-supervised embeddings
@@ -554,7 +624,7 @@ def compute_similarity_order(
     similarities = (matrix / matrix_norms) @ (reference / reference_norm)
 
     order = np.argsort(-similarities)  # descending: most similar first
-    return [indices[i] for i in order]
+    return indices[order].tolist()
 
 
 __all__ = [
@@ -564,6 +634,7 @@ __all__ = [
     "DEFAULT_SORT_OPTION",
     "count_rows",
     "count_verified",
+    "count_hidden_by_confidence",
     "fetch_page",
     "fetch_rois_for_image",
     "fetch_known_labels",
