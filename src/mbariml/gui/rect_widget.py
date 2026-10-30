@@ -37,6 +37,26 @@ SELECTION_HIGHLIGHT_COLOR = QtGui.QColor("#34a1eb")
 VERIFIED_BADGE_COLOR = QtGui.QColor("#2ecc71")
 
 
+def _decode_for_display(roi_service: RoiService, row: RoiRow) -> np.ndarray:
+    """A tile's crop as displayed -- colour-corrected when that's on (see
+    RoiService.correct_for_display). Display only: nothing reads it back
+    into stored data."""
+    roi = roi_service.decode_roi(row.roi_blob)
+    return roi_service.correct_for_display(roi, row.image_path)
+
+
+def _decode_with_generation(roi_service: RoiService, row: RoiRow, generation: int):
+    """Worker body for RectWidget.request_roi_refresh -- deliberately a
+    module-level function, not a bound method of the tile: QThreadPool
+    deletes a finished Worker on the pool thread, and if the Worker held
+    the tile (via a bound method) and the tile had meanwhile been retired,
+    that could be the tile's last reference -- destroying a QGraphicsItem
+    on a worker thread while it's still in the main thread's scene.
+    Measured: about 1 in 6,600 tiles died that way under a page-flipping
+    stress test, and a SIGSEGV in a later gc.collect() followed in real use."""
+    return generation, _decode_for_display(roi_service, row)
+
+
 def _readable_text_color(background: QtGui.QColor) -> QtGui.QColor:
     """Black or white, whichever reads better against *background*.
 
@@ -187,11 +207,8 @@ class RectWidget(QtWidgets.QGraphicsWidget):
     # -- ROI loading ----------------------------------------------------------
 
     def get_roi(self) -> np.ndarray:
-        """The decoded crop as displayed -- colour-corrected when that's on
-        (see RoiService.correct_for_display). Display only: nothing reads
-        self.roi back into stored data."""
-        roi = self._roi_service.decode_roi(self.row.roi_blob)
-        return self._roi_service.correct_for_display(roi, self.row.image_path)
+        """The decoded crop as displayed (see _decode_for_display)."""
+        return _decode_for_display(self._roi_service, self.row)
 
     def update_roi_pic(self) -> None:
         self.roi = self.get_roi()
@@ -203,29 +220,18 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         self._roi_refresh_generation += 1
         generation = self._roi_refresh_generation
 
-        worker = Worker(self._decode_with_generation, generation)
+        # The worker gets the row, never the tile -- see _decode_with_generation.
+        worker = Worker(_decode_with_generation, self._roi_service, self.row, generation)
         worker.signals.result.connect(self._on_async_roi_refresh_result)
         worker.signals.error.connect(self._on_async_roi_refresh_error)
         self._roi_workers.append(worker)  # see __init__ comment: must outlive the thread pool run
         QThreadPool.globalInstance().start(worker)
 
-    def _decode_with_generation(self, generation: int):
-        return generation, self.get_roi()
-
     def _forget_worker(self, signals_obj: object) -> None:
-        """Drop a completed worker from ``_roi_workers``.
-
-        ``_fn`` on each ``Worker`` is a bound method of this very widget
-        (``self._decode_with_generation``), so ``_roi_workers`` is a
-        self-cycle (widget -> _roi_workers -> Worker -> bound method ->
-        widget) for as long as an entry sits in it -- harmless on its own,
-        but combined with this being a QGraphicsItem, it's one more thing
-        that would otherwise only be collectible by the cyclic GC (see
-        ``cleanup()``'s docstring for why that's a real hazard here, not
-        just a delay). Safe to prune here: by the time this fires, the
-        worker's own ``run()`` has already emitted its result/error, so its
-        own executing frame -- not our list -- is what was protecting it
-        during the actual decode.
+        """Drop a completed worker from ``_roi_workers``. Safe to prune
+        here: by the time this fires, the worker's own ``run()`` has already
+        emitted its result/error, so its own executing frame -- not our list
+        -- is what was protecting it during the actual decode.
         """
         self._roi_workers = [w for w in self._roi_workers if w.signals is not signals_obj]
 

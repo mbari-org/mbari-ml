@@ -12,6 +12,7 @@ the feature list and what changed from the original single-file GUI.
 
 from __future__ import annotations
 
+import faulthandler
 import sys
 
 import typer
@@ -33,6 +34,9 @@ def review(
     ),
 ) -> None:
     """Launch the ROI review/labeling GUI."""
+    # A native crash (Qt/PySide) otherwise dies with only "SIGSEGV" -- this
+    # prints the Python stack that led there to the terminal.
+    faulthandler.enable()
     # Imported lazily: PySide6 is only needed for this one interactive command.
     from PySide6.QtWidgets import QApplication
 

@@ -54,6 +54,13 @@ table. Embeddings are unchanged (bit-identical on a 4,096-ROI re-run). The
 GPU is the ceiling (~97 ROIs/s for ViT-L/16 on MPS); fp16 gives NaN in
 DINOv3 and bf16 shifts the embeddings, so neither is used.
 
+**Fixed: `review` could crash (SIGSEGV) after paging through many tiles.** A
+tile's thumbnail decode held the tile itself, and the thread pool deletes a
+finished decode on its own thread, so a tile retired mid-decode was
+sometimes destroyed off the GUI thread (1 in ~6,600 tiles in a page-flipping
+stress test; 0 in 30,000 after). Decodes now hold only the row. `review` also
+prints the Python stack if it ever crashes natively.
+
 ---
 
 ## 0.32.0 — Detection and tracking settings tuned on the DeepSea MOT benchmark
