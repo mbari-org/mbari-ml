@@ -375,9 +375,11 @@ review (interactive GUI)
     mbariml review /data/results/yolo_predictions.duckdb --label noise
 
   In the grid: click to select, Shift-click for a range, Ctrl/Cmd-click to
-  add; arrow keys navigate/extend. Type a label into the relabel field (free
+  add; drag a rectangle to select the tiles it touches, Cmd-drag to add more
+  rectangles; arrow keys navigate/extend. Type a label into the relabel field (free
   text, or pick from the dropdown of labels already in use) and press Enter,
-  or click Label, to apply it to the selection. Right-click an ROI ->
+  or click Label, to apply it to the selection; the label stays in the field
+  for the next selection (Enter again), and typing replaces it. Right-click an ROI ->
   "Delete..." deletes just that ROI, or "Delete selected..." the whole
   selection if it's part of it (confirmed first, like the Delete key).
   Confidence (two-handle slider, then Show) -- show only ROIs whose YOLO

@@ -71,6 +71,14 @@ collection is gone. 5,000 rebuilds with hovers, clicks, handle drags and
 collections at random moments: no crash, and only the boxes on screen stay
 alive.
 
+**Drag to select** in the review grid: drag a rectangle over tiles to select
+them; Cmd-drag (Ctrl elsewhere) adds each rectangle, so separate patches build
+one selection. A press that doesn't move is still a click.
+
+**The relabel field keeps the last label** applied, so the next selection
+takes it with another Enter; clicking into the field selects it, so typing
+replaces it. A restart starts it empty.
+
 ---
 
 ## 0.32.0 — Detection and tracking settings tuned on the DeepSea MOT benchmark

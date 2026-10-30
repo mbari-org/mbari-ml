@@ -13,8 +13,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, cast
 
-from PySide6 import QtCore
-from PySide6.QtCore import QObject, Signal
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, Signal
 
 from mbariml.gui.mosaic_view import MosaicView
 
@@ -305,4 +305,90 @@ class MosaicSelectionCoordinator(QObject):
         return True
 
 
-__all__ = ["SelectionModel", "MosaicSelectionCoordinator"]
+DRAG_AUTOSCROLL_STEP = 24  # px per mouse move while dragging past the grid's top/bottom edge
+
+
+class RubberBandSelector(QObject):
+    """Drag a rectangle over the mosaic to select every tile it touches;
+    with Ctrl (Cmd on macOS) held, each drag adds to the selection instead
+    of replacing it, so several separate drags build one selection.
+
+    Watches the view's viewport rather than the tiles: a press on a tile
+    still reaches it as an ordinary click (select / Cmd-toggle), and only
+    once the mouse moves past the platform drag distance does it become a
+    drag. Shift is left to Shift-click range selection. Dragging past the
+    top or bottom edge scrolls the grid.
+    """
+
+    def __init__(
+        self,
+        *,
+        parent: QObject,
+        graphics_view: QtWidgets.QGraphicsView,
+        selection_model: SelectionModel,
+        visible_widgets_getter: Callable[[], list],
+    ) -> None:
+        super().__init__(parent)
+        self._view = graphics_view
+        self._selection_model = selection_model
+        self._visible_widgets_getter = visible_widgets_getter
+        self._band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, graphics_view.viewport())
+        self._press_pos: QtCore.QPoint | None = None
+        self._origin_scene: QtCore.QPointF | None = None
+        # Selection to add the drag to (Cmd) -- taken before the press
+        # reaches the tile, since a Cmd-press toggles the tile under it.
+        self._base: list[RectWidget] = []
+        self._dragging = False
+        graphics_view.viewport().installEventFilter(self)
+
+    def eventFilter(self, source, event) -> bool:  # noqa: N802 (Qt's own naming)
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            modifiers = event.modifiers()
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                return False
+            self._press_pos = event.position().toPoint()
+            self._origin_scene = self._view.mapToScene(self._press_pos)
+            add = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+            self._base = self._selection_model.selected if add else []
+            self._dragging = False
+        elif kind == QEvent.Type.MouseMove and self._press_pos is not None:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                self._finish()
+                return False
+            pos = event.position().toPoint()
+            if not self._dragging:
+                if (pos - self._press_pos).manhattanLength() < QtWidgets.QApplication.startDragDistance():
+                    return False
+                self._dragging = True
+            self._update(pos)
+            return True  # the drag owns the mouse now; tiles don't need the moves
+        elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            # Not consumed: the scene still has to see the release to let go
+            # of the tile that took the press.
+            self._finish()
+        return False
+
+    def _update(self, pos: QtCore.QPoint) -> None:
+        bar = self._view.verticalScrollBar()
+        if pos.y() < 0:
+            bar.setValue(bar.value() - DRAG_AUTOSCROLL_STEP)
+        elif pos.y() > self._view.viewport().height():
+            bar.setValue(bar.value() + DRAG_AUTOSCROLL_STEP)
+        # The origin is kept in scene coordinates so it stays put when the grid scrolls.
+        band = QRect(self._view.mapFromScene(self._origin_scene), pos).normalized()
+        self._band.setGeometry(band.intersected(self._view.viewport().rect()))
+        self._band.show()
+        scene_rect = self._view.mapToScene(band).boundingRect()
+        hit = [w for w in self._visible_widgets_getter() if w.sceneBoundingRect().intersects(scene_rect)]
+        self._selection_model.set_selection(list(dict.fromkeys(self._base + hit)))
+
+    def _finish(self) -> None:
+        self._band.hide()
+        self._press_pos = None
+        self._origin_scene = None
+        self._base = []  # no leftover tile references past the drag -- see MosaicSelectionCoordinator.reset()
+        self._dragging = False
+
+
+__all__ = ["SelectionModel", "MosaicSelectionCoordinator", "RubberBandSelector"]

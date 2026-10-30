@@ -75,7 +75,7 @@ from mbariml.gui.roi_loading_coordinator import MosaicRoiLoadingCoordinator
 from mbariml.gui.roi_service import RoiService, crop_and_encode
 from mbariml.gui.runnables import Worker
 from mbariml.gui.sam3_popup import Sam3BoxPopup
-from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, SelectionModel
+from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, RubberBandSelector, SelectionModel
 from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
 from mbariml.paths import ImageLocator
@@ -384,6 +384,12 @@ class MainWindow(QMainWindow):
             all_widgets_getter=lambda: self._rect_widgets,
             visible_widgets_getter=lambda: self._visible_widgets,
         )
+        self._rubber_band = RubberBandSelector(
+            parent=self,
+            graphics_view=self.graphics_view,
+            selection_model=self.selection_model,
+            visible_widgets_getter=lambda: self._visible_widgets,
+        )
 
         self._roi_loading = MosaicRoiLoadingCoordinator(parent=self, max_concurrency=ROI_LOAD_CONCURRENCY)
         self._roi_loading.progress.connect(self._on_roi_loading_progress)
@@ -445,6 +451,12 @@ class MainWindow(QMainWindow):
             self.unselect_all()
 
     def eventFilter(self, source, event) -> bool:  # noqa: N802
+        # getattr: the graphics view's events reach this filter before the
+        # controls panel (and so label_combo) is built.
+        label_combo = getattr(self, "label_combo", None)
+        if label_combo is not None and source is label_combo.lineEdit() and event.type() == QEvent.Type.FocusIn:
+            # Deferred: a click's own mouse press would otherwise undo the selection.
+            QTimer.singleShot(0, source.selectAll)
         if source is self.graphics_view and event.type() == QEvent.Type.Resize:
             self.render_mosaic()
         if source is self.graphics_view and event.type() == QEvent.Type.KeyPress:
@@ -680,6 +692,9 @@ class MainWindow(QMainWindow):
         # a newly-used label next refresh, sourced from the database).
         self.label_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.label_combo.lineEdit().returnPressed.connect(self.update_labels)
+        # The last applied label stays in the field; focusing it selects
+        # that text so typing replaces it (see eventFilter).
+        self.label_combo.lineEdit().installEventFilter(self)
         label_editor_layout.addWidget(self.label_combo)
         label_button = QPushButton("Label")
         label_button.clicked.connect(self.update_labels)
@@ -2195,7 +2210,9 @@ class MainWindow(QMainWindow):
             logger.info("No label entered.")
             return
         self._apply_label_to_selected(new_label)
-        self.label_combo.clearEditText()
+        # Kept for the next selection (Enter or Label applies it again), and
+        # selected so typing a different label replaces it.
+        self.label_combo.lineEdit().selectAll()
 
     def _apply_label_to_selected(self, new_label: str) -> None:
         """Write new_label to the database for every selected ROI -- which

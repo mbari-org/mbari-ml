@@ -456,10 +456,15 @@ while preserving the human labels.
 `mbariml review DB_PATH` labels/deletes ROIs one page at a time:
 
 - **Click** a thumbnail to select it, **Shift-click** to select a range,
-  **Ctrl-click** to add to the selection.
+  **Ctrl-click** (Cmd on macOS) to add to the selection.
+- **Drag** a rectangle over tiles to select them; **Cmd-drag** (Ctrl elsewhere)
+  adds each rectangle to the selection, so separate patches build one
+  selection. Dragging past the top or bottom edge scrolls the grid.
 - Type a label into the relabel field (free text, or pick from the dropdown
   of labels already in use) and press **Enter**, or click **Label**, to
-  apply it to the current selection.
+  apply it to the current selection. The label stays in the field (until the
+  GUI restarts), so the next selection takes it with another Enter; typing
+  replaces it.
 - **Delete** removes the current selection (asks for confirmation first —
   it's permanent). So does **right-click → Delete selected...** on a tile
   that's part of the selection; on a tile that isn't, **right-click →
