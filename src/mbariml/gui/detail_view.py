@@ -20,7 +20,6 @@ batch.
 
 from __future__ import annotations
 
-import gc
 import time
 from collections.abc import Callable
 
@@ -355,20 +354,10 @@ class DetailView(QtWidgets.QWidget):
         for box in self._boxes:
             box.remove()
         self._boxes = []
-
-        # pyqtgraph's ROI/RectROI keeps internal references (e.g. a
-        # MouseDragHandler per handle) that cycle back to the ROI itself --
-        # confirmed directly: even after remove() detaches from the scene
-        # and clears our own callbacks, a box needs the *cyclic* GC to be
-        # collected, not plain refcounting. That's a hazard for a
-        # QGraphicsItem specifically (see RectWidget.cleanup()'s docstring
-        # for why, traced to an actual SIGSEGV): the cyclic GC runs at an
-        # unpredictable moment, and finalizing a QGraphicsItem while another
-        # one is mid-construction elsewhere is what crashed. Forcing
-        # collection right here -- right after detaching, right before
-        # set_boxes() goes on to construct new BoundingBox instances -- means
-        # it happens at a moment we control instead.
-        gc.collect()
+        # No gc.collect() here: it ran inside the tile-click handler and is
+        # where the review GUI crashed. Removed boxes are deleted by Qt now
+        # (see BoundingBox.remove), so whenever the GC later frees their
+        # Python wrappers there's nothing left for it to destroy.
 
 
 __all__ = ["DetailView"]

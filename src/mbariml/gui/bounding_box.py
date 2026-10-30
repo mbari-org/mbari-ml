@@ -214,6 +214,17 @@ class BoundingBox(pg.RectROI):
         self._tighten_callback = None
         self.view.removeItem(self.text_item)
         self.view.removeItem(self)
+        # removeItem() hands the box, its label and its handles to Python, so
+        # the cyclic GC (pyqtgraph's ROI <-> handle references) would be what
+        # destroys them -- and a gc.collect() run inside a click handler
+        # crashed there (SIGSEGV in dict_tp_clear, faulthandler stack through
+        # DetailView._clear_boxes). deleteLater() gives ownership back to Qt,
+        # which deletes them (handles with their box) once control returns to
+        # the event loop; the Python wrappers are then just invalidated, never
+        # a second delete. Deferred, so it's safe from inside this box's own
+        # event handler too (right-click "Delete").
+        self.text_item.deleteLater()
+        self.deleteLater()
 
     def _on_region_change_finished(self) -> None:
         x, y, w, h = self.get_box()

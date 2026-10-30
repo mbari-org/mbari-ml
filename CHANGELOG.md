@@ -61,6 +61,16 @@ sometimes destroyed off the GUI thread (1 in ~6,600 tiles in a page-flipping
 stress test; 0 in 30,000 after). Decodes now hold only the row. `review` also
 prints the Python stack if it ever crashes natively.
 
+**Fixed: `review` crashing (SIGSEGV) on a tile click after working in the detail
+view.** The crash handler above caught it: a `gc.collect()` that clearing the
+detail view's boxes forced inside the click handler crashed freeing a removed
+box. Removing a box from the view had made Python, and so the garbage
+collector, responsible for destroying it, its label and its eight handles;
+now Qt deletes them (`deleteLater`) once the click is handled, and the forced
+collection is gone. 5,000 rebuilds with hovers, clicks, handle drags and
+collections at random moments: no crash, and only the boxes on screen stay
+alive.
+
 ---
 
 ## 0.32.0 — Detection and tracking settings tuned on the DeepSea MOT benchmark
