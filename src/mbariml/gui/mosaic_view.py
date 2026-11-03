@@ -109,6 +109,17 @@ class MosaicView:
         # anything else.
         gc.collect()
 
+    def discard(self, rect_widgets: list) -> None:
+        """Detach just these tiles (deleted ones), leaving the rest in place
+        for the next render() -- same release steps as clear()."""
+        for rect_widget in rect_widgets:
+            rect_widget.hide()
+            rect_widget.setParentItem(None)
+            cleanup = getattr(rect_widget, "cleanup", None)
+            if cleanup is not None:
+                cleanup()
+        self._last_visible_signature = ()  # force the next render to lay out again
+
     def render(
         self,
         *,

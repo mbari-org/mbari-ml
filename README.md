@@ -459,7 +459,9 @@ while preserving the human labels.
   **Ctrl-click** (Cmd on macOS) to add to the selection.
 - **Drag** a rectangle over tiles to select them; **Cmd-drag** (Ctrl elsewhere)
   adds each rectangle to the selection, so separate patches build one
-  selection. Dragging past the top or bottom edge scrolls the grid.
+  selection. A drag that **starts on an already-selected tile deselects**
+  the tiles it touches instead. Dragging past the top or bottom edge scrolls
+  the grid.
 - Type a label into the relabel field (free text, or pick from the dropdown
   of labels already in use) and press **Enter**, or click **Label**, to
   apply it to the current selection. The label stays in the field (until the
@@ -508,6 +510,37 @@ while preserving the human labels.
 - **Sort by "New Label"** uses that same rule: a tile with no new label sorts
   under its original label, in among the renamed tiles, rather than all of
   them collecting at the end.
+- **Sort by "By animal (fixed camera)"** shows one tile per animal for a
+  time-lapse camera, after `mbariml fixtures DB` has linked the boxes frame to
+  frame by position (seconds; label ignored, so a sponge the detector called
+  two names is one animal; a box that doesn't look like the rest, such as a
+  crab sitting on a sponge, is left out, and a differently-labelled group that
+  looks unlike the rest, such as a crab using a squat lobster's crevice, is
+  split into its own animal). Animals whose boxes all carry one label come
+  first, the most mixed last. Each tile says how many boxes it
+  stands for and how many carry a different label. **V** verifies the boxes
+  carrying the animal's label and leaves the rest (the tile gets its check
+  badge and says how many are left; Hide verified then hides it); **typing a label** sets
+  every box of the animal; **right-click > Open this animal** pages its boxes
+  least typical first (Escape returns); **Delete** removes every box of the
+  selected animals after a confirmation giving the count. On a 575,639-box Coral Observatory
+  database, 1,315 animals covered 76% of the boxes. One camera per database.
+- **Open List...** (or `mbariml review DB --list FILE.csv`) shows just the
+  boxes a CSV names, in its order: a `roi_index` column, and optionally a
+  `suggested` or `note` column shown on each tile ("Polychaeta -> Actiniaria").
+  Search works within the list, so one kind of fix at a time is search, Ctrl+A,
+  type the label. Close List (or Escape) goes back.
+- **Sort by "Outliers in label"** goes label by label, the *least typical*
+  ROIs of each first (furthest from the label's mean embedding). After a
+  similarity search has shown you pages of look-alikes, this surfaces the
+  odd ones out instead: in a 67,750-ROI *Munida* class the first tiles were
+  blurred swimming shapes, the last crisp squat lobsters. Needs `mbariml
+  embed`; respects the search, Hide verified/unverified and the confidence
+  range; ranking 575k ROIs takes ~7 s.
+- **Select Page (Ctrl+A)** selects every tile shown on the page, so a page of
+  look-alikes is verified with Ctrl+A then **V**. In a text field Ctrl+A
+  still selects the text. The **tile-size slider** goes down to 25% (40
+  tiles a row on a laptop screen) to see a whole page at once.
 - **Sort by "Confidence (high-low)"** puts the detector's surest calls first;
   **"Confidence (low-high)"** its weakest, for clearing out false positives.
   Both respect the confidence range, so 0.10-0.30 low-high walks the

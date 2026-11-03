@@ -11,9 +11,71 @@ recognizable.
 
 ---
 
-## Unreleased — Faster review GUI on large databases, confidence counts and sort, faster `embed`
+## Unreleased — Review by animal for fixed cameras, faster review GUI on large databases, outlier sort, confidence counts and sort, faster `embed`
 
 Measured on a 575,796-ROI Coral Observatory database (M3 Ultra).
+
+**Review by animal (fixed cameras).** A time-lapse camera photographs the same
+sponge in every frame: one database held 575,639 boxes from 7,479 hourly frames
+but only ~1,300 animals that stay put. New `mbariml fixtures DB` links boxes
+frame to frame by position (IoU >= 0.5 with a moving reference box, label
+ignored, so one sponge the detector called three names stays one animal) and
+keeps fixtures seen in >= 20 frames: 1,315 fixtures held 435,686 boxes (76%),
+in 15 s. Boxes that don't look like their fixture (cosine < 0.5 to its mean
+embedding) are left out -- a crab sitting on a sponge scored 0.13-0.55 against
+the sponge's own 0.74-0.97 -- after which 35 of ~52,000 human-labelled
+fixture boxes were a mobile species inside a sessile animal. A group of boxes
+labelled differently from the rest of its fixture is split off when its mean
+embedding is below 0.9 cosine to the rest's -- below that, play-set groups were
+a different kind of animal 92-100% of the time (a Chorilia in a Munida's
+crevice), above it mostly one animal under two names: mixed fixtures went 735
+-> 195, boxes whose human label disagreed with their fixture 0.59% -> 0.23%,
+148 split-off groups became animals of their own. Pieces of one animal that
+linking left apart (same spot, never in the same frame, mean embeddings >= 0.9
+-- one anemone had become three fixtures) are then joined, and short pieces
+attach to the animal in their spot: 1,417 -> 1,033 animals, 6,490 more boxes
+covered, human-label disagreement 0.23% -> 0.28%. Review's new sort
+**"By animal (fixed camera)"** shows one tile per animal ("7,330 boxes, 8
+differ"), animals whose boxes all carry one label first, the most mixed last:
+
+- **V** verifies the animal's boxes that carry its label (39 *Actiniaria*
+  animals, 34,422 boxes, at once); boxes labelled otherwise stay unverified --
+  one spot can hold different animals over time. The tile then gets its check
+  badge and says how many are left ("4,551 boxes, 112 left"), and the status
+  line says what was done.
+- **A typed or picked label** sets every box of the animal and verifies them:
+  how one coral verified as both *Isididae* and *Paragorgia* (8,244 boxes)
+  gets one name.
+- **Right-click > Open this animal** pages its boxes least typical first;
+  Escape or Back to Animals returns. Shift+V unverifies (labels stay).
+- **Delete** (key or right-click > Delete this animal) removes every box of
+  the selected animals after a confirmation naming them and the box count.
+- Verifying or relabelling repaints those tiles in place; the grid re-sorts
+  only on the next page, sort or filter change, so nothing moves under you.
+
+**Open a list of boxes.** **Open List...** (or `review --list FILE.csv`)
+shows the boxes a CSV names, in file order -- a `roi_index` (or `id`) column,
+plus an optional `suggested` or `note` column each tile shows as
+"current -> suggested". Search, Hide verified and the confidence range narrow
+it; Close List or Escape returns. For lists other tools write, such as a sweep
+for mislabelled verified boxes.
+
+**The grid no longer jumps.** The status line and the confidence count were
+plain labels, which ask for the width of their whole text; a long status
+widened the controls panel and squeezed the grid (644 -> 396 px), which
+reflowed on every status change. Both now wrap inside the panel.
+
+**Getting through look-alikes faster.** A fixed camera fills page after page
+with the same animal, so:
+
+- **Sort by "Outliers in label"**: label by label, least typical first (cosine
+  to the label's mean embedding, pool mean-centred like Find similar). 575,640
+  ROIs ranked and page 1 shown in 7.2 s. In *Munida* (67,750 ROIs) the first
+  500 averaged 0.31 similarity to the label's centre, the last 500 0.58 --
+  blurred swimming shapes first, crisp squat lobsters last.
+- **Select Page (Ctrl+A)** then **V** verifies a page. Ctrl+A in a text field
+  still selects its text.
+- **Tiles down to 25%** (was 50%): 40 tiles a row in a 1,426 px grid.
 
 **Relabeling no longer freezes the GUI.** The `new_label` index served no
 query (the GUI matches `COALESCE(new_label, label)`, which it can't use) but
@@ -73,7 +135,9 @@ alive.
 
 **Drag to select** in the review grid: drag a rectangle over tiles to select
 them; Cmd-drag (Ctrl elsewhere) adds each rectangle, so separate patches build
-one selection. A press that doesn't move is still a click.
+one selection. A press that doesn't move is still a click. A drag that starts
+on a tile that is already selected deselects every tile it touches and leaves
+the rest of the selection alone.
 
 **The relabel field keeps the last label** applied, so the next selection
 takes it with another Enter; clicking into the field selects it, so typing

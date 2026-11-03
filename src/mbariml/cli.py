@@ -8,6 +8,7 @@ every docstring and both docs, for a sequence that was never actually linear):
     Import   import yolo | import voc        existing labeled dataset -> database
     Generate infer images | infer video      pixels + detections -> database
     Enrich   embed | cluster | refine        add embeddings and grouping
+             fixtures                        link a fixed camera's boxes into animals
     Review   review | remap-labels           human review and relabeling
     Export   export {voc,yolo,id,html,stats} | query
 
@@ -40,6 +41,7 @@ from mbariml.steps import (
     export_ids,
     export_voc,
     export_yolo,
+    fixtures as fixtures_step,
     import_voc,
     import_yolo,
     infer_images,
@@ -76,6 +78,7 @@ app.add_typer(infer_app, name="infer")
 app.command("embed")(embed_step.embed)
 app.command("cluster")(cluster_step.cluster)
 app.command("refine")(refine_step.refine)
+app.command("fixtures")(fixtures_step.fixtures)
 app.command("remap-labels")(remap_labels_step.remap_labels)
 app.command("query")(query_step.query)
 
@@ -109,12 +112,15 @@ def review(
         "Optional; defaults to $MBARIML_SAM3_MODEL, else the copy `mbariml sam3 download` fetched. "
         "Also needs Ultralytics' CLIP: pip install -e \".\\[sam3]\". `mbariml sam3 check` says what's missing.",
     ),
+    box_list: str = typer.Option(
+        None, "--list", help="Open with the boxes listed in this CSV (roi_index column; a 'suggested' or 'note' "
+        "column is shown on each tile). Same as the Open List... button."),
 ) -> None:
     """Launch the interactive ROI review/labeling GUI."""
     # Imported lazily: PySide6 is only needed for this one interactive command.
     from mbariml.steps.review import review as _review
 
-    _review(database_path, label, page_size, sam3_model)
+    _review(database_path, label, page_size, sam3_model, box_list)
 
 
 # Setup, not a stage: `mbariml sam3 {download,check}` fetches and checks the

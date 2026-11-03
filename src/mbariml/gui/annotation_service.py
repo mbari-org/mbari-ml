@@ -60,6 +60,87 @@ def set_verified(
     )
 
 
+def label_animals(
+    conn: duckdb.DuckDBPyConnection, labels: dict[int, str], *, relabel: bool
+) -> tuple[int, int]:
+    """One decision for an animal the camera saw thousands of times: verify
+    the boxes of each fixture (``mbariml fixtures``) under the label mapped
+    to it.
+
+    ``relabel=False`` (V on an animal tile) verifies only boxes that already
+    carry that label; the rest stay unverified for a closer look -- the same
+    spot can hold different animals over time (a squat lobster's crevice, a
+    crab on a sponge). ``relabel=True`` (a typed or picked label) writes the
+    label to every box that differs and verifies them all. Returns ``(boxes
+    verified, boxes relabelled)``.
+
+    Joined through the fixtures table, not an IN-list: one animal can be tens
+    of thousands of boxes. "Carries the label" uses the GUI's effective label
+    (an empty new_label counts as none -- see query_service.EFFECTIVE_LABEL_SQL)
+    and compares case-insensitively, as search does.
+    """
+    if not labels:
+        return 0, 0
+    fixtures, names = list(labels), [labels[f] for f in labels]
+    conn.execute(
+        "CREATE OR REPLACE TEMP TABLE _animal_labels AS "
+        "SELECT unnest(?::INTEGER[]) AS fixture, unnest(?::TEXT[]) AS lab",
+        [fixtures, names],
+    )
+    conn.execute("""
+        CREATE OR REPLACE TEMP TABLE _animal_boxes AS
+        SELECT f.roi_index, a.lab,
+               lower(COALESCE(NULLIF(p.new_label, ''), p.label)) IS DISTINCT FROM lower(a.lab) AS differs
+        FROM fixtures f JOIN _animal_labels a USING (fixture) JOIN predictions p USING (roi_index)""")
+    verified, relabelled = conn.execute(
+        "SELECT count(*) FILTER (WHERE ? OR NOT differs), count(*) FILTER (WHERE ? AND differs) FROM _animal_boxes",
+        [relabel, relabel],
+    ).fetchone()
+    conn.execute("""
+        UPDATE predictions SET new_label = CASE WHEN b.differs THEN b.lab ELSE new_label END, verified = 1
+        FROM _animal_boxes b WHERE predictions.roi_index = b.roi_index AND (? OR NOT b.differs)""", [relabel])
+    conn.execute("DROP TABLE _animal_labels; DROP TABLE _animal_boxes")
+    return int(verified), int(relabelled)
+
+
+def set_animals_verified(conn: duckdb.DuckDBPyConnection, fixtures: list[int], verified: bool) -> int:
+    """Set ``verified`` on every box of these fixtures; returns how many boxes.
+    Labels are left as they are -- unverifying doesn't undo a relabel."""
+    if not fixtures:
+        return 0
+    conn.execute(
+        "UPDATE predictions SET verified = ? WHERE roi_index IN "
+        "(SELECT roi_index FROM fixtures WHERE fixture IN (SELECT unnest(?::INTEGER[])))",
+        [1 if verified else 0, list(fixtures)],
+    )
+    return int(conn.execute(
+        "SELECT count(*) FROM fixtures WHERE fixture IN (SELECT unnest(?::INTEGER[]))", [list(fixtures)]
+    ).fetchone()[0])
+
+
+def delete_animals(conn: duckdb.DuckDBPyConnection, fixtures: list[int]) -> list[int]:
+    """Permanently delete every box of these fixtures, and the fixtures.
+    Returns the deleted boxes' roi_index values."""
+    if not fixtures:
+        return []
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            "CREATE OR REPLACE TEMP TABLE _gone AS SELECT roi_index FROM fixtures "
+            "WHERE fixture IN (SELECT unnest(?::INTEGER[]))", [list(fixtures)],
+        )
+        gone = [r[0] for r in conn.execute("SELECT roi_index FROM _gone").fetchall()]
+        conn.execute("DELETE FROM predictions WHERE roi_index IN (SELECT roi_index FROM _gone)")
+        conn.execute("DELETE FROM fixtures WHERE fixture IN (SELECT unnest(?::INTEGER[]))", [list(fixtures)])
+        conn.execute("DELETE FROM fixture_info WHERE fixture IN (SELECT unnest(?::INTEGER[]))", [list(fixtures)])
+        conn.execute("DROP TABLE _gone")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return gone
+
+
 def delete_rois(conn: duckdb.DuckDBPyConnection, roi_indices: list[int]) -> None:
     """Permanently delete the given ROIs."""
     if not roi_indices:
@@ -169,4 +250,4 @@ def update_bbox(
     )
 
 
-__all__ = ["apply_label", "set_verified", "delete_rois", "insert_roi", "set_embedding", "update_bbox"]
+__all__ = ["apply_label", "set_verified", "label_animals", "set_animals_verified", "delete_animals", "delete_rois", "insert_roi", "set_embedding", "update_bbox"]

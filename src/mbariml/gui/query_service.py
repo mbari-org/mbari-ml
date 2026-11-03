@@ -580,24 +580,9 @@ def compute_similarity_order(
         min_confidence=min_confidence, max_confidence=max_confidence,
         require_embedding=True,
     )
-    # Fetched flat (one float per row of the result) into a single numpy
-    # array and reshaped, not fetchall(): that built a Python list of 1024
-    # Python floats per ROI, and on a 575,796-row database spent 46 of a
-    # whole-table search's 49 seconds doing it. Flat, the load takes ~3.5 s
-    # and the ranking below ~0.5 s. Each ROI's values come out contiguous
-    # with its roi_index repeated alongside, so the first of every `dim`
-    # roi_index values names its row -- checked against the last, so a
-    # ragged embedding can't silently misalign every row after it.
-    query = "SELECT roi_index, unnest(embedding) AS value FROM predictions" + where_sql
-    flat = conn.execute(query, params).fetchnumpy()
-    values, row_ids = flat["value"], flat["roi_index"]
-    if len(values) == 0:
+    indices, matrix = _embedding_matrix(conn, where_sql, params, len(ref_row[0]))
+    if len(indices) == 0:
         return []
-    dim = len(ref_row[0])
-    if len(values) % dim or not np.array_equal(row_ids[::dim], row_ids[dim - 1::dim]):
-        raise ValueError("embeddings of different lengths in one database -- re-run `mbariml embed --force`")
-    indices = np.asarray(row_ids[::dim])
-    matrix = np.asarray(values, dtype=np.float32).reshape(-1, dim)
     reference = np.asarray(ref_row[0], dtype=np.float32)
 
     # Mean-center before normalizing. Raw deep/self-supervised embeddings
@@ -627,8 +612,265 @@ def compute_similarity_order(
     return indices[order].tolist()
 
 
+def _embedding_matrix(conn, where_sql: str, params: list, dim: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(roi_index values, float32 matrix of their embeddings)`` for the rows *where_sql* selects.
+
+    Fetched flat (one float per row of the result) into a single numpy array
+    and reshaped, not fetchall(): that built a Python list of 1024 Python
+    floats per ROI, and on a 575,796-row database spent 46 of a whole-table
+    similarity search's 49 seconds doing it. Flat, the load takes ~3.5 s.
+    Each ROI's values come out contiguous with its roi_index repeated
+    alongside, so the first of every `dim` roi_index values names its row --
+    checked against the last, so a ragged embedding can't silently misalign
+    every row after it.
+    """
+    query = "SELECT roi_index, unnest(embedding) AS value FROM predictions" + where_sql
+    flat = conn.execute(query, params).fetchnumpy()
+    values, row_ids = flat["value"], flat["roi_index"]
+    if len(values) == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros((0, dim), dtype=np.float32)
+    if len(values) % dim or not np.array_equal(row_ids[::dim], row_ids[dim - 1::dim]):
+        raise ValueError("embeddings of different lengths in one database -- re-run `mbariml embed --force`")
+    return np.asarray(row_ids[::dim]), np.asarray(values, dtype=np.float32).reshape(-1, dim)
+
+
+# Not in SORT_COLUMNS: no SQL expression can rank this, so it's computed in
+# Python (compute_outlier_order) and paged like a similarity ranking.
+OUTLIER_SORT_OPTION = "Outliers in label"
+
+
+def compute_outlier_order(
+    conn: duckdb.DuckDBPyConnection,
+    label_filter: str | None = None,
+    *,
+    exclude_verified: bool = False,
+    exclude_unverified: bool = False,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
+) -> list[int]:
+    """Every matching ROI's ``roi_index``, label by label (alphabetically,
+    like the "New Label" sort), and within each label the least typical first.
+
+    "Typical" is cosine similarity to the label's mean embedding, after
+    centring on the whole pool's mean (the same common-mode correction as
+    :func:`compute_similarity_order`). After a long run of near-identical
+    tiles, the ones that don't look like the rest of their label -- a
+    mislabel, a bad crop, a different animal -- come first instead of being
+    buried on page 40. ROIs with no embedding come last in their label.
+    Filters narrow the pool exactly as they do for similarity search.
+    Does real work (a full scan + numpy) -- call from a worker thread.
+    """
+    where_sql, params = _build_similarity_pool_where(
+        label_filter, "effective",
+        exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
+        min_confidence=min_confidence, max_confidence=max_confidence,
+        require_embedding=False,
+    )
+    pool = conn.execute(
+        f"SELECT roi_index, COALESCE({EFFECTIVE_LABEL_SQL}, '') AS effective_label FROM predictions" + where_sql, params
+    ).fetchnumpy()
+    pool_ids = np.asarray(pool["roi_index"])
+    if len(pool_ids) == 0:
+        return []
+    label_of = dict(zip(pool_ids.tolist(), pool["effective_label"].tolist()))
+
+    dim_row = conn.execute("SELECT len(embedding) FROM predictions WHERE embedding IS NOT NULL LIMIT 1").fetchone()
+    score: dict[int, float] = {}
+    if dim_row is not None:
+        emb_where, emb_params = _build_similarity_pool_where(
+            label_filter, "effective",
+            exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
+            min_confidence=min_confidence, max_confidence=max_confidence,
+            require_embedding=True,
+        )
+        indices, matrix = _embedding_matrix(conn, emb_where, emb_params, dim_row[0])
+        if len(indices):
+            matrix -= matrix.mean(axis=0)
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            matrix /= norms
+            labels = np.array([label_of[i] for i in indices.tolist()], dtype=object)
+            for label in np.unique(labels):
+                rows = np.flatnonzero(labels == label)
+                centroid = matrix[rows].mean(axis=0)
+                centroid /= np.linalg.norm(centroid) or 1.0
+                for i, sim in zip(indices[rows].tolist(), (matrix[rows] @ centroid).tolist()):
+                    score[i] = sim
+    # No embedding -> +inf: after every ranked ROI of its label.
+    ranked = sorted(label_of, key=lambda i: (label_of[i].lower(), score.get(i, float("inf")), i))
+    return ranked
+
+
+def read_box_list(path: str) -> tuple[list[int], dict[int, str]]:
+    """Box ids from a CSV, in file order, for review's Open List (and
+    ``review --list``): a ``roi_index`` (or ``id``) column, plus an optional
+    ``suggested`` or ``note`` column whose text each tile shows. Lists from
+    other tools -- an anomaly sweep, a VARS report -- open as they are."""
+    import csv
+
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        fields = {name.lower().strip(): name for name in (reader.fieldnames or [])}
+        id_col = fields.get("roi_index") or fields.get("id")
+        if id_col is None:
+            raise ValueError(f"{path}: needs a roi_index (or id) column; found {reader.fieldnames}")
+        note_col = fields.get("suggested") or fields.get("note")
+        ids: list[int] = []
+        notes: dict[int, str] = {}
+        for row in reader:
+            value = (row.get(id_col) or "").strip()
+            if not value:
+                continue
+            roi_index = int(float(value))
+            if roi_index not in notes:
+                ids.append(roi_index)
+                notes[roi_index] = (row.get(note_col) or "").strip() if note_col else ""
+    return ids, notes
+
+
+def filter_box_list(
+    conn: duckdb.DuckDBPyConnection,
+    ids: list[int],
+    label_filter: str | None = None,
+    *,
+    exclude_verified: bool = False,
+    exclude_unverified: bool = False,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
+) -> list[int]:
+    """The listed boxes that still exist and pass the current search, Hide
+    verified/unverified and confidence range -- in list order."""
+    params: list = []
+    where = _build_where(
+        label_filter, params, exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
+        min_confidence=min_confidence, max_confidence=max_confidence,
+    )
+    where = (where + " AND" if where else " WHERE") + " roi_index IN (SELECT unnest(?::INTEGER[]))"
+    keep = {r[0] for r in conn.execute("SELECT roi_index FROM predictions" + where, [*params, ids]).fetchall()}
+    return [i for i in ids if i in keep]
+
+
+# Not in SORT_COLUMNS either: one tile per animal from `mbariml fixtures`.
+ANIMAL_SORT_OPTION = "By animal (fixed camera)"
+
+
+@dataclass
+class AnimalInfo:
+    """One fixture from ``mbariml fixtures``, as the "By animal" sort shows it.
+
+    ``label`` is the most common effective label among its boxes right now
+    (it changes as boxes are relabelled), ``n_agree`` how many boxes carry
+    it. ``rep_roi_index`` is the tile shown for the whole animal.
+    """
+
+    fixture: int
+    rep_roi_index: int
+    label: str
+    n_agree: int
+    n: int
+    n_unverified: int
+    n_agree_unverified: int  # unverified boxes that carry ``label``
+
+    @property
+    def confirmed(self) -> bool:
+        """Every box carrying the animal's label is verified -- what V does.
+        Boxes labelled otherwise may still be waiting (see caption)."""
+        return self.n_agree_unverified == 0
+
+    @property
+    def caption(self) -> str:
+        """Counts, not percentages: 12 odd boxes out of 7,330 round to "100%".
+        Once confirmed, says how many boxes labelled otherwise are left, so a
+        V on an animal with a few odd boxes visibly did something."""
+        differ = self.n - self.n_agree
+        text = f"{self.n:,} boxes" + (f", {differ:,} differ" if differ else "")
+        if self.confirmed and self.n_unverified:
+            text += f", {self.n_unverified:,} left"
+        return text
+
+
+def has_fixtures(conn: duckdb.DuckDBPyConnection) -> bool:
+    return bool(conn.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('fixtures', 'fixture_info')"
+    ).fetchone()[0] == 2)
+
+
+def compute_animal_order(
+    conn: duckdb.DuckDBPyConnection,
+    label_filter: str | None = None,
+    *,
+    exclude_verified: bool = False,
+    exclude_unverified: bool = False,
+    fixtures: list[int] | None = None,
+) -> list[AnimalInfo]:
+    """Every fixture (or just *fixtures*): animals whose boxes all carry one
+    label first, the most mixed last (count of boxes labelled otherwise),
+    biggest first within a tie.
+
+    A search matches the animal's majority label. Hide verified drops confirmed
+    animals (every box carrying the label verified -- odd boxes left over show
+    up in the box-by-box sorts); Hide unverified drops animals with nothing
+    verified. The confidence range doesn't apply: an animal is one decision
+    whatever its boxes scored. Labels compare case-insensitively, as search does.
+    """
+    rows = conn.execute(f"""
+        WITH members AS (
+            SELECT f.fixture, COALESCE({EFFECTIVE_LABEL_SQL}, '') AS lab, COALESCE(p.verified, 0) = 1 AS ver
+            FROM fixtures f JOIN predictions p USING (roi_index)
+            WHERE ?::INTEGER[] IS NULL OR f.fixture IN (SELECT unnest(?::INTEGER[]))),
+        by_label AS (
+            SELECT fixture, lab, count(*) AS k, count(*) FILTER (WHERE NOT ver) AS k_unverified,
+                   row_number() OVER (PARTITION BY fixture ORDER BY count(*) DESC, lab) AS rn
+            FROM members GROUP BY fixture, lab),
+        totals AS (
+            SELECT fixture, count(*) AS n, count(*) FILTER (WHERE NOT ver) AS n_unverified
+            FROM members GROUP BY fixture)
+        SELECT t.fixture, i.rep_roi_index, b.lab, b.k, t.n, t.n_unverified, b.k_unverified
+        FROM totals t JOIN by_label b ON b.fixture = t.fixture AND b.rn = 1
+        JOIN fixture_info i ON i.fixture = t.fixture
+        ORDER BY t.n - b.k, t.n DESC, t.fixture""", [fixtures, fixtures]).fetchall()
+    animals = [AnimalInfo(*r) for r in rows]
+    if label_filter:
+        wanted = label_filter.lower()
+        animals = [a for a in animals if a.label.lower() == wanted]
+    if exclude_verified:
+        animals = [a for a in animals if not a.confirmed]
+    if exclude_unverified:
+        animals = [a for a in animals if a.n_unverified < a.n]
+    return animals
+
+
+def fetch_animal_members(
+    conn: duckdb.DuckDBPyConnection,
+    fixture: int,
+    *,
+    exclude_verified: bool = False,
+    exclude_unverified: bool = False,
+) -> list[int]:
+    """One animal's boxes, least typical first: frames where something else
+    sits in that spot, or the detector's box slipped, come before thousands of
+    identical ones. Boxes with no typicality (no embedding) come last."""
+    where = ""
+    if exclude_verified:
+        where = " AND COALESCE(p.verified, 0) != 1"
+    elif exclude_unverified:
+        where = " AND COALESCE(p.verified, 0) = 1"
+    return [r[0] for r in conn.execute(
+        f"""SELECT f.roi_index FROM fixtures f JOIN predictions p USING (roi_index)
+            WHERE f.fixture = ?{where} ORDER BY f.typicality ASC NULLS LAST, f.roi_index""",
+        [fixture],
+    ).fetchall()]
+
+
 __all__ = [
     "RoiRow",
+    "read_box_list",
+    "filter_box_list",
+    "AnimalInfo",
+    "ANIMAL_SORT_OPTION",
+    "has_fixtures",
+    "compute_animal_order",
+    "fetch_animal_members",
     "FrameRoi",
     "SORT_COLUMNS",
     "DEFAULT_SORT_OPTION",
@@ -640,6 +882,8 @@ __all__ = [
     "fetch_known_labels",
     "fetch_effective_labels",
     "compute_similarity_order",
+    "compute_outlier_order",
+    "OUTLIER_SORT_OPTION",
     "count_similarity_pool",
     "SIMILARITY_LABEL_COLUMNS",
 ]

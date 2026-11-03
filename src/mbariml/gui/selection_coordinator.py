@@ -311,7 +311,9 @@ DRAG_AUTOSCROLL_STEP = 24  # px per mouse move while dragging past the grid's to
 class RubberBandSelector(QObject):
     """Drag a rectangle over the mosaic to select every tile it touches;
     with Ctrl (Cmd on macOS) held, each drag adds to the selection instead
-    of replacing it, so several separate drags build one selection.
+    of replacing it, so several separate drags build one selection. A drag
+    that starts on a tile that is already selected deselects instead: every
+    tile it touches leaves the selection and the rest stay selected.
 
     Watches the view's viewport rather than the tiles: a press on a tile
     still reaches it as an ordinary click (select / Cmd-toggle), and only
@@ -338,6 +340,7 @@ class RubberBandSelector(QObject):
         # Selection to add the drag to (Cmd) -- taken before the press
         # reaches the tile, since a Cmd-press toggles the tile under it.
         self._base: list[RectWidget] = []
+        self._deselect = False  # the drag started on a selected tile: it removes tiles instead
         self._dragging = False
         graphics_view.viewport().installEventFilter(self)
 
@@ -349,8 +352,12 @@ class RubberBandSelector(QObject):
                 return False
             self._press_pos = event.position().toPoint()
             self._origin_scene = self._view.mapToScene(self._press_pos)
+            pressed = next((w for w in self._visible_widgets_getter()
+                            if w.sceneBoundingRect().contains(self._origin_scene)), None)
+            # Taken before the press reaches the tile, which may change the selection.
+            self._deselect = pressed is not None and self._selection_model.is_selected(pressed)
             add = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
-            self._base = self._selection_model.selected if add else []
+            self._base = self._selection_model.selected if add or self._deselect else []
             self._dragging = False
         elif kind == QEvent.Type.MouseMove and self._press_pos is not None:
             if not event.buttons() & Qt.MouseButton.LeftButton:
@@ -381,13 +388,18 @@ class RubberBandSelector(QObject):
         self._band.show()
         scene_rect = self._view.mapToScene(band).boundingRect()
         hit = [w for w in self._visible_widgets_getter() if w.sceneBoundingRect().intersects(scene_rect)]
-        self._selection_model.set_selection(list(dict.fromkeys(self._base + hit)))
+        if self._deselect:
+            gone = set(map(id, hit))
+            self._selection_model.set_selection([w for w in self._base if id(w) not in gone])
+        else:
+            self._selection_model.set_selection(list(dict.fromkeys(self._base + hit)))
 
     def _finish(self) -> None:
         self._band.hide()
         self._press_pos = None
         self._origin_scene = None
         self._base = []  # no leftover tile references past the drag -- see MosaicSelectionCoordinator.reset()
+        self._deselect = False
         self._dragging = False
 
 

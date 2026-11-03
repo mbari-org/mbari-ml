@@ -41,12 +41,15 @@ embedding and sharpness are recomputed from the new crop.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QEvent, QPoint, QThreadPool, Qt, QTimer, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QFileDialog,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -84,7 +87,9 @@ from mbariml import video
 
 logger = get_logger(__name__)
 
-ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT = 50, 200, 100  # percent
+# 25%: a page of near-identical tiles (a fixed camera's sponge, every hour)
+# fits on one screen to check at a glance, then Ctrl+A, V.
+ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT = 25, 200, 100  # percent
 
 # Display-only brightness/contrast for the mosaic thumbnails. Brightness is an
 # additive offset in 0-255 pixel units; contrast is a multiplier x100 (so 100
@@ -236,9 +241,23 @@ DARK_STYLESHEET = f"""
 """
 
 
+def _wrap_without_widening(label: QLabel) -> None:
+    """For a label whose text changes as you work (status line, counts).
+
+    A plain QLabel asks for the width of its whole text. The status line
+    reached ~140 characters ("1,315 animals, 435,686 boxes -- ..."), the
+    controls panel grew to fit it, the grid beside it shrank from 644 to 396 px
+    and reflowed -- so the grid jumped every time the status changed. Wrapping,
+    and ignoring the text's width when the panel is sized, keeps the grid still.
+    """
+    label.setWordWrap(True)
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+
 class MainWindow(QMainWindow):
     def __init__(
-        self, database_path: str, label: str | None = None, page_size: int = 500, sam3_model: str | None = None
+        self, database_path: str, label: str | None = None, page_size: int = 500, sam3_model: str | None = None,
+        box_list: str | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("ROI Labeling App")
@@ -274,8 +293,25 @@ class MainWindow(QMainWindow):
         self._verified_count = 0  # updated by every load_page() and verify/label/delete action
         self._unverified_count = 0
         self.sort_option = query_service.DEFAULT_SORT_OPTION
+        # A precomputed ranking paged instead of SQL ORDER BY: a similarity
+        # search (similarity_reference = the clicked ROI) or the "Outliers in
+        # label" sort (similarity_reference None) -- see load_page.
         self.similarity_order: list[int] | None = None
         self.similarity_reference: int | None = None
+        self._outlier_generation = 0
+        # "By animal" sort: the ranking is one representative ROI per fixture
+        # (`mbariml fixtures`), keyed here by that ROI. Opening an animal pages
+        # its boxes instead (_animal_open), until Back/Escape.
+        self._animals: dict[int, query_service.AnimalInfo] | None = None
+        self._animal_open: query_service.AnimalInfo | None = None
+        self._animal_list_page = 0
+        self._animal_generation = 0
+        # Open List / `review --list`: boxes from a CSV in file order, each
+        # tile showing the list's note (e.g. a suggested label). Wins over
+        # the sort until Close List.
+        self._box_list: list[int] | None = None
+        self._box_list_notes: dict[int, str] = {}
+        self._box_list_name = ""
         # Denominator for the status bar's "ranked M of T": how many ROIs
         # matched the search's filters at all, including any that had to be
         # skipped for want of an embedding. See count_similarity_pool.
@@ -410,7 +446,10 @@ class MainWindow(QMainWindow):
 
         self._install_shortcuts()
         self._refresh_known_labels()
-        self.load_page()
+        if box_list:
+            self.open_box_list(box_list)
+        else:
+            self.load_page()
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -433,8 +472,10 @@ class MainWindow(QMainWindow):
     def _install_shortcuts(self) -> None:
         """Delete removes the selection (with confirmation); Escape stops
         "Add New ROI" or "Add ROI with SAM3" mode if one is active, otherwise clears the selection; V
-        verifies the selection, Shift+V unverifies it; arrow keys
-        navigate/extend the selection (handled in eventFilter)."""
+        verifies the selection, Shift+V unverifies it; Ctrl+A selects every
+        tile shown on the page (in a text field it still selects the text);
+        arrow keys navigate/extend the selection (handled in eventFilter)."""
+        QShortcut(QKeySequence(QKeySequence.StandardKey.SelectAll), self, activated=self.select_all_on_page)
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self.delete_selected_rois)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._on_escape_pressed)
         QShortcut(QKeySequence(Qt.Key.Key_V), self, activated=self.verify_selected)
@@ -447,6 +488,10 @@ class MainWindow(QMainWindow):
             self.sam3_add_button.setChecked(False)  # triggers _on_sam3_add_toggled(False)
         elif self._white_pick_active:
             self.white_pick_button.setChecked(False)  # triggers _on_white_pick_toggled(False)
+        elif self._box_list is not None and not self.selection_model.selected:
+            self.close_box_list()
+        elif self._animal_open is not None and not self.selection_model.selected:
+            self._close_animal()
         else:
             self.unselect_all()
 
@@ -518,7 +563,9 @@ class MainWindow(QMainWindow):
         sort_layout = QHBoxLayout()
         sort_layout.addWidget(QLabel("Sort by:"))
         self.sort_dropdown = QComboBox()
-        self.sort_dropdown.addItems(list(query_service.SORT_COLUMNS.keys()))
+        self.sort_dropdown.addItems(
+            [*query_service.SORT_COLUMNS, query_service.OUTLIER_SORT_OPTION, query_service.ANIMAL_SORT_OPTION]
+        )
         self.sort_dropdown.setCurrentText(self.sort_option)
         self.sort_dropdown.currentTextChanged.connect(self._on_sort_changed)
         sort_layout.addWidget(self.sort_dropdown)
@@ -526,6 +573,13 @@ class MainWindow(QMainWindow):
         self.clear_similarity_button.setEnabled(False)
         self.clear_similarity_button.clicked.connect(self._on_clear_similarity_sort)
         sort_layout.addWidget(self.clear_similarity_button)
+        self.open_list_button = QPushButton("Open List...")
+        self.open_list_button.setToolTip(
+            "Show the boxes listed in a CSV (a roi_index column; a 'suggested' or 'note' column is shown on each "
+            "tile) -- e.g. an anomaly list. Close List returns to the sort."
+        )
+        self.open_list_button.clicked.connect(self._on_open_list_clicked)
+        sort_layout.addWidget(self.open_list_button)
         controls_layout.addLayout(sort_layout)
         controls_layout.addWidget(QLabel("Right-click an ROI to rank every ROI in the database by similarity to it (all pages, not just this one)."))
 
@@ -657,6 +711,7 @@ class MainWindow(QMainWindow):
         )
         confidence_hidden_layout = QHBoxLayout()
         self.confidence_hidden_label = QLabel("")
+        _wrap_without_widening(self.confidence_hidden_label)
         confidence_hidden_layout.addWidget(self.confidence_hidden_label, 1)
         self.confidence_details_button = QPushButton("Details...")
         self.confidence_details_button.setToolTip("How many ROIs of each class the confidence range hides.")
@@ -705,6 +760,10 @@ class MainWindow(QMainWindow):
         delete_button = QPushButton("Delete (Del)")
         delete_button.clicked.connect(self.delete_selected_rois)
         action_layout.addWidget(delete_button)
+        select_page_button = QPushButton("Select Page (Ctrl+A)")
+        select_page_button.setToolTip("Select every tile shown on this page -- then V verifies them all.")
+        select_page_button.clicked.connect(self.select_all_on_page)
+        action_layout.addWidget(select_page_button)
         unselect_button = QPushButton("Unselect All (Esc)")
         unselect_button.clicked.connect(self.unselect_all)
         action_layout.addWidget(unselect_button)
@@ -751,6 +810,7 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(nav_layout)
 
         self.status_label = QLabel("")
+        _wrap_without_widening(self.status_label)
         controls_layout.addWidget(self.status_label)
 
         controls_widget = QWidget()
@@ -783,7 +843,11 @@ class MainWindow(QMainWindow):
             if self.min_confidence > 0 or self.max_confidence < 1
             else ""
         )
-        similarity_active = self.similarity_order is not None
+        similarity_active = self.similarity_order is not None and self.similarity_reference is not None
+        animals_active = self._animal_mode() and self.similarity_order is not None
+        list_active = self._box_list is not None and self.similarity_order is not None and self.similarity_reference is None
+        outliers_active = (self.similarity_order is not None and self.similarity_reference is None
+                           and not animals_active and not list_active)
         # Spelled out as "ranked M of T ROIs" rather than just naming the
         # reference: a similarity search always re-ranks the whole matching
         # ROI set across every page, and the only thing that can narrow it
@@ -798,6 +862,16 @@ class MainWindow(QMainWindow):
             else:
                 scope_text = f"{ranked} of {pool_total} matching ROIs -- {pool_total - ranked} not embedded yet"
             mode_text = f" | sorted by similarity to ROI #{self.similarity_reference} ({scope_text})"
+        elif outliers_active:
+            mode_text = f" | least typical first within each label ({len(self.similarity_order)} ROIs)"
+        elif list_active:
+            mode_text = f" | list {self._box_list_name}: {len(self.similarity_order):,} of {len(self._box_list):,} boxes shown"
+        elif animals_active and self._animal_open is not None:
+            a = self._animal_open
+            mode_text = f" | animal #{a.fixture} ({a.label}): {len(self.similarity_order):,} boxes, least typical first"
+        elif animals_active:
+            n_boxes = sum(a.n for a in self._animals.values())
+            mode_text = f" | {len(self.similarity_order):,} animals, {n_boxes:,} boxes (right-click opens one)"
         else:
             mode_text = ""
         # Only actionable while a similarity sort is actually narrowing the
@@ -805,7 +879,14 @@ class MainWindow(QMainWindow):
         # with nothing else in the controls panel telling you how to get
         # back to the normal view short of picking a different sort option
         # (which does clear it, but non-obviously -- see _on_sort_changed).
-        self.clear_similarity_button.setEnabled(similarity_active)
+        # Inside an opened animal it's the way back to the animal grid.
+        self.clear_similarity_button.setEnabled(similarity_active or self._animal_open is not None or list_active)
+        self.clear_similarity_button.setText(
+            "Clear Similarity Sort" if similarity_active
+            else "Close List" if list_active
+            else "Back to Animals" if self._animal_open is not None
+            else "Clear Similarity Sort"
+        )
         capped_text = (
             f" | showing {len(self._frame_rois)}/{self._frame_roi_total} boxes on this frame"
             if self._frame_roi_total > len(self._frame_rois)
@@ -864,6 +945,28 @@ class MainWindow(QMainWindow):
 
     def load_page(self) -> None:
         """Fetch the current page off the GUI thread, then (re)build tiles."""
+        if self.sort_option == query_service.OUTLIER_SORT_OPTION and self.similarity_order is None:
+            # The ranking comes first (every filter change clears it); its
+            # worker calls back here once it's ready.
+            self._start_outlier_order()
+            return
+        if self._box_list is not None and self.similarity_order is None and self.similarity_reference is None:
+            self.similarity_order = query_service.filter_box_list(
+                self.conn.cursor(), self._box_list, self.label_filter,
+                exclude_verified=self.hide_verified, exclude_unverified=self.hide_unverified,
+                min_confidence=self.min_confidence, max_confidence=self.max_confidence,
+            )
+        if self._animal_mode() and self.similarity_order is None:
+            # A filter change or an animal-wide verify/relabel cleared the
+            # ranking: rebuild the animal list, or the open animal's boxes.
+            if self._animal_open is not None:
+                self.similarity_order = query_service.fetch_animal_members(
+                    self.conn.cursor(), self._animal_open.fixture,
+                    exclude_verified=self.hide_verified, exclude_unverified=self.hide_unverified,
+                )
+            else:
+                self._start_animal_order()
+                return
         self._page_load_generation += 1
         generation = self._page_load_generation
         offset = self.current_page * self.page_size
@@ -992,6 +1095,24 @@ class MainWindow(QMainWindow):
             )
             for row in rows
         ]
+        if self._box_list is not None and self.similarity_reference is None:
+            for rect_widget in self._rect_widgets:
+                note = self._box_list_notes.get(rect_widget.roi_index)
+                if note:  # in place of the original-label line, so keep that label in it
+                    rect_widget.caption = f"{rect_widget.row.original_label or ''} -> {note}"
+        if self._in_animal_grid():
+            for rect_widget in self._rect_widgets:
+                animal = self._animals.get(rect_widget.roi_index)
+                if animal is None:
+                    continue
+                # Display only: the tile shows the animal, not its representative box.
+                rect_widget.row.label = animal.label
+                rect_widget.row.verified = animal.confirmed  # the check badge
+                rect_widget.caption = animal.caption
+                rect_widget.menu_actions = [
+                    (f"Open this animal ({animal.n:,} boxes)", lambda a=animal: self._open_animal(a)),
+                    (f"Delete this animal ({animal.n:,} boxes)...", lambda rw=rect_widget: self._delete_animals([rw])),
+                ]
         self.render_mosaic()
         self.update_status_bar()
 
@@ -1026,10 +1147,24 @@ class MainWindow(QMainWindow):
     # -- Sort / filter / zoom / visibility controls --------------------------
 
     def _on_sort_changed(self, text: str) -> None:
+        if text == query_service.ANIMAL_SORT_OPTION and not query_service.has_fixtures(self.conn):
+            QMessageBox.information(
+                self, "No Animals Yet",
+                "The By animal sort needs the boxes linked into animals first. Close review and run\n\n"
+                f"    mbariml fixtures {self._database_path}\n\n"
+                "(it takes seconds), then reopen. It's for a fixed camera: one field of view per database.",
+            )
+            self.sort_dropdown.blockSignals(True)
+            self.sort_dropdown.setCurrentText(self.sort_option)
+            self.sort_dropdown.blockSignals(False)
+            return
         self.sort_option = text
         self.similarity_order = None
         self.similarity_reference = None
         self.similarity_pool_total = None
+        self._box_list = None
+        self._animals = None
+        self._animal_open = None
         self.current_page = 0
         self.load_page()
 
@@ -1038,7 +1173,15 @@ class MainWindow(QMainWindow):
         sort/paging. Changing the "Sort by" dropdown already clears this as
         a side effect, but that's a non-obvious way to escape a similarity
         search that happens to match just one (or a handful of) ROI(s) --
-        this button is the explicit, always-available way out."""
+        this button is the explicit, always-available way out. Inside an
+        opened animal (and no similarity search on top) it's "Back to
+        Animals" instead."""
+        if self._box_list is not None and self.similarity_reference is None:
+            self.close_box_list()
+            return
+        if self._animal_open is not None and self.similarity_reference is None:
+            self._close_animal()
+            return
         if self.similarity_order is None:
             return
         self.similarity_order = None
@@ -2196,6 +2339,242 @@ class MainWindow(QMainWindow):
             )
         self.load_page()
 
+    def _start_outlier_order(self) -> None:
+        """Rank the current pool for "Outliers in label" off the GUI thread."""
+        self._outlier_generation += 1
+        self.status_label.setText("Ranking the least typical ROIs in each label...")
+        worker = Worker(
+            self._compute_outlier_worker,
+            self._outlier_generation,
+            self.conn,
+            label_filter=self.label_filter,
+            exclude_verified=self.hide_verified,
+            exclude_unverified=self.hide_unverified,
+            min_confidence=self.min_confidence,
+            max_confidence=self.max_confidence,
+        )
+        worker.signals.result.connect(self._on_outlier_order_computed)
+        worker.signals.error.connect(self._on_similarity_error)
+        self._start_worker(worker)
+
+    @staticmethod
+    def _compute_outlier_worker(generation: int, conn, **filters):
+        cursor = conn.cursor()  # on the worker thread that uses it -- see load_page
+        return generation, query_service.compute_outlier_order(cursor, **filters)
+
+    @Slot(object)
+    def _on_outlier_order_computed(self, payload) -> None:
+        generation, order = payload
+        if generation != self._outlier_generation or self.sort_option != query_service.OUTLIER_SORT_OPTION:
+            return  # superseded by a newer filter or a different sort
+        if self.similarity_order is not None:
+            return  # a similarity search took over meanwhile
+        self.similarity_order = order
+        self.similarity_reference = None
+        self.similarity_pool_total = len(order)
+        self.load_page()
+
+    # -- Box lists (Open List / review --list) -------------------------------
+
+    def _on_open_list_clicked(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open a list of boxes", str(Path(self._database_path).parent), "CSV files (*.csv);;All files (*)"
+        )
+        if path:
+            self.open_box_list(path)
+
+    def open_box_list(self, path: str) -> None:
+        """Page the boxes listed in *path* (see query_service.read_box_list)."""
+        try:
+            ids, notes = query_service.read_box_list(path)
+        except Exception as exc:  # noqa: BLE001 -- shown to the user, who picked the file
+            QMessageBox.warning(self, "Open List", f"Can't read {path}:\n{exc}")
+            return
+        self._box_list, self._box_list_notes, self._box_list_name = ids, notes, Path(path).name
+        self.similarity_order = None
+        self.similarity_reference = None
+        self._animal_open = None
+        self.current_page = 0
+        self.load_page()
+
+    def close_box_list(self) -> None:
+        self._box_list = None
+        self._box_list_notes = {}
+        self.similarity_order = None
+        self.current_page = 0
+        self.load_page()
+
+    # -- By animal (fixed camera) ------------------------------------------
+
+    def _animal_mode(self) -> bool:
+        """The By animal sort is on and no similarity search has taken over."""
+        return (self.sort_option == query_service.ANIMAL_SORT_OPTION and self.similarity_reference is None
+                and self._box_list is None)
+
+    def _in_animal_grid(self) -> bool:
+        """Tiles are whole animals: actions on them apply to every box."""
+        return self._animal_mode() and self._animal_open is None and self._animals is not None
+
+    def _start_animal_order(self) -> None:
+        self._animal_generation += 1
+        self.status_label.setText("Gathering animals...")
+        worker = Worker(
+            self._compute_animal_worker,
+            self._animal_generation,
+            self.conn,
+            label_filter=self.label_filter,
+            exclude_verified=self.hide_verified,
+            exclude_unverified=self.hide_unverified,
+        )
+        worker.signals.result.connect(self._on_animal_order_computed)
+        worker.signals.error.connect(self._on_similarity_error)
+        self._start_worker(worker)
+
+    @staticmethod
+    def _compute_animal_worker(generation: int, conn, **filters):
+        cursor = conn.cursor()  # on the worker thread that uses it -- see load_page
+        return generation, query_service.compute_animal_order(cursor, **filters)
+
+    @Slot(object)
+    def _on_animal_order_computed(self, payload) -> None:
+        generation, animals = payload
+        if generation != self._animal_generation or not self._animal_mode() or self._animal_open is not None:
+            return  # superseded by a newer filter, a different sort, or an opened animal
+        self._animals = {a.rep_roi_index: a for a in animals}
+        self.similarity_order = [a.rep_roi_index for a in animals]
+        self.similarity_pool_total = len(animals)
+        self.current_page = min(self.current_page, max(0, (len(animals) - 1) // self.page_size))
+        self.load_page()
+
+    def _open_animal(self, animal: query_service.AnimalInfo) -> None:
+        """Page one animal's boxes, least typical first; Back/Escape returns."""
+        self._animal_list_page = self.current_page
+        self._animal_open = animal
+        self.similarity_order = None  # load_page fetches the animal's boxes
+        self.current_page = 0
+        self.load_page()
+
+    def _close_animal(self) -> None:
+        self._animal_open = None
+        self.similarity_order = None  # rebuilt with fresh counts
+        self.current_page = self._animal_list_page
+        self.load_page()
+
+    def _selected_animals(self) -> list[query_service.AnimalInfo]:
+        return [self._animals[rw.roi_index] for rw in self.selection_model.selected if rw.roi_index in self._animals]
+
+    def _label_selected_animals(self, new_label: str | None) -> None:
+        """V (*new_label* None): verify each selected animal's boxes that carry
+        its label; boxes labelled otherwise stay for a closer look. A typed or
+        picked label: every box of the animal takes it, verified."""
+        animals = self._selected_animals()
+        if not animals:
+            self.status_label.setText("No animals selected: click a tile (or Ctrl+A for the page) first.")
+            return
+        labels = {a.fixture: new_label or a.label for a in animals}
+        try:
+            verified, relabelled = annotation_service.label_animals(self.conn, labels, relabel=new_label is not None)
+        except Exception:
+            logger.exception("Error labelling animals")
+            return
+        left = sum(a.n - a.n_agree for a in animals) if new_label is None else 0
+        message = (f"{len(animals)} animal(s): verified {verified:,} box(es)"
+                   + (f", relabelled {relabelled:,}" if relabelled else "")
+                   + (f"; {left:,} labelled otherwise left to check -- open the animal, or type a label to set all"
+                      if left else ""))
+        logger.info(message)
+        self.selection_model.clear()
+        self._refresh_known_labels()
+        self._refresh_animal_tiles(animals)
+        self.status_label.setText(message)  # after the refresh, which rewrites the status line
+
+    def _unverify_selected_animals(self) -> None:
+        animals = self._selected_animals()
+        if not animals:
+            self.status_label.setText("No animals selected: click a tile (or Ctrl+A for the page) first.")
+            return
+        n = annotation_service.set_animals_verified(self.conn, [a.fixture for a in animals], False)
+        message = f"Unverified {len(animals)} animal(s): {n:,} box(es); labels unchanged."
+        logger.info(message)
+        self.selection_model.clear()
+        self._refresh_animal_tiles(animals)
+        self.status_label.setText(message)
+
+    def _delete_animals(self, tiles: list[RectWidget]) -> None:
+        """Delete every box of these animals, after a confirmation naming the
+        count. The tiles go and the rest close up; nothing else re-sorts."""
+        animals = [self._animals[rw.roi_index] for rw in tiles if rw.roi_index in self._animals]
+        if not animals:
+            return
+        n_boxes = sum(a.n for a in animals)
+        names = Counter(a.label for a in animals)
+        listing = ", ".join(f"{label} x{k}" if k > 1 else label for label, k in names.most_common(6))
+        if len(names) > 6:
+            listing += ", ..."
+        what = f"this animal ({animals[0].label})" if len(animals) == 1 else f"these {len(animals)} animals ({listing})"
+        confirmed = QMessageBox.question(
+            self,
+            "Delete Animals",
+            f"Delete {what}?\n\nThat permanently removes {n_boxes:,} box(es) from the database -- every frame "
+            "they were seen in. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            gone = set(annotation_service.delete_animals(self.conn, [a.fixture for a in animals]))
+        except Exception:
+            logger.exception("Error deleting animals")
+            return
+        reps = {a.rep_roi_index for a in animals}
+        removed = [rw for rw in self._rect_widgets if rw.roi_index in reps]
+        self.selection_model.clear()
+        self._mosaic_view.discard(removed)
+        self._rect_widgets = [rw for rw in self._rect_widgets if rw.roi_index not in reps]
+        for rep in reps:
+            self._animals.pop(rep, None)
+        self.similarity_order = [i for i in self.similarity_order if i not in reps]
+        self._total_rows = len(self.similarity_order)
+        for frame_roi in self._frame_rois:
+            if frame_roi.roi_index in gone:  # only the shown frame's boxes, not every frame's
+                self._detail_view.remove_box(frame_roi.roi_index)
+        self._frame_rois = [f for f in self._frame_rois if f.roi_index not in gone]
+        self._verified_count, self._unverified_count = query_service.count_verified(
+            self.conn.cursor(), label_filter=self.label_filter,
+            min_confidence=self.min_confidence, max_confidence=self.max_confidence,
+        )
+        self._refresh_known_labels()
+        self.render_mosaic()
+        self.update_status_bar()
+        message = f"Deleted {len(animals)} animal(s): {len(gone):,} box(es)."
+        logger.info(message)
+        self.status_label.setText(message)
+
+    def _refresh_animal_tiles(self, animals: list[query_service.AnimalInfo]) -> None:
+        """Re-read these animals' counts and labels and repaint their tiles in
+        place. The grid is not re-sorted, so nothing moves under the cursor (a
+        verified animal used to jump to the end, shifting every tile after it);
+        the order catches up on the next page, sort or filter change."""
+        cursor = self.conn.cursor()
+        fresh = {a.fixture: a for a in query_service.compute_animal_order(cursor, fixtures=[a.fixture for a in animals])}
+        for rect_widget in self._rect_widgets:
+            old = self._animals.get(rect_widget.roi_index)
+            if old is None or old.fixture not in fresh:
+                continue
+            new = fresh[old.fixture]
+            self._animals[rect_widget.roi_index] = new
+            rect_widget.row.label = new.label
+            rect_widget.row.verified = new.confirmed
+            rect_widget.caption = new.caption
+            rect_widget.update()
+        self._verified_count, self._unverified_count = query_service.count_verified(
+            cursor, label_filter=self.label_filter, min_confidence=self.min_confidence, max_confidence=self.max_confidence
+        )
+        if self.hide_verified or self.hide_unverified:
+            self.render_mosaic()  # a fully verified animal disappears under Hide verified, as a box would
+        self.update_status_bar()
+
     @Slot(tuple)
     def _on_similarity_error(self, err: tuple) -> None:
         logger.error("Similarity sort failed: %s", err[1])
@@ -2219,6 +2598,9 @@ class MainWindow(QMainWindow):
         also marks them verified (see ``annotation_service.apply_label``:
         labeling something is itself an act of review) -- then update just
         those tiles' captions/badges in place -- no requery, no rebuild."""
+        if self._in_animal_grid():
+            self._label_selected_animals(new_label)
+            return
         selected = self.selection_model.selected
         if not selected:
             logger.info("No ROIs selected.")
@@ -2260,6 +2642,15 @@ class MainWindow(QMainWindow):
         self._set_verified_for_selected(False)
 
     def _set_verified_for_selected(self, verified: bool) -> None:
+        if self._in_animal_grid():
+            # V confirms the boxes already carrying the animal's label; typing
+            # a label is how to settle a whole animal the detector called two
+            # names (see _label_selected_animals).
+            if verified:
+                self._label_selected_animals(None)
+            else:
+                self._unverify_selected_animals()
+            return
         selected = self.selection_model.selected
         if not selected:
             logger.info("No ROIs selected.")
@@ -2309,9 +2700,12 @@ class MainWindow(QMainWindow):
         if not selected:
             logger.info("No ROIs selected.")
             return
+        if self._in_animal_grid():
+            self._delete_animals(selected)
+            return
 
         count = len(selected)
-        noun = f"ROI #{selected[0].roi_index}" if count == 1 and not what else f"{count} {what}ROI(s)"
+        noun =f"ROI #{selected[0].roi_index}" if count == 1 and not what else f"{count} {what}ROI(s)"
         confirmed = QMessageBox.question(
             self,
             "Delete ROIs",
@@ -2336,6 +2730,11 @@ class MainWindow(QMainWindow):
 
     def unselect_all(self) -> None:
         self.selection_model.clear()
+
+    def select_all_on_page(self) -> None:
+        """Select every tile currently shown -- not ones hidden by Hide
+        verified/unverified, and not other pages."""
+        self.selection_model.set_selection(list(self._visible_widgets))
 
     # -- Page navigation --------------------------------------------------
 

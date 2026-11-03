@@ -109,6 +109,11 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         self.background_color = QtGui.QColor.fromRgb(25, 35, 45)
 
         self.is_selected = False
+        # Set by the "By animal" sort, where one tile stands for a whole
+        # fixture: replaces the original-label line (e.g. "7,330 boxes, 12
+        # differ"), and adds right-click entries as (text, callback) pairs.
+        self.caption: str | None = None
+        self.menu_actions: list[tuple[str, Callable[[], None]]] = []
 
         self.roi: np.ndarray | None = None
         self.pic: QtGui.QPixmap | None = None
@@ -203,6 +208,7 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         self._clicked_slot = None
         self._similarity_sort_slot = None
         self._delete_slot = None
+        self.menu_actions = []  # "By animal" callbacks close over the window and this tile
 
     # -- ROI loading ----------------------------------------------------------
 
@@ -514,7 +520,8 @@ class RectWidget(QtWidgets.QGraphicsWidget):
         bottom_font = QtGui.QFont("Arial", 8, QtGui.QFont.Weight.Normal)
         painter.setFont(bottom_font)
         bottom_text = QtGui.QFontMetrics(bottom_font).elidedText(
-            original_label or "", QtCore.Qt.TextElideMode.ElideRight, bottom_rect.width()
+            self.caption if self.caption is not None else original_label or "",
+            QtCore.Qt.TextElideMode.ElideRight, bottom_rect.width(),
         )
         painter.drawText(bottom_rect, QtCore.Qt.AlignmentFlag.AlignCenter, bottom_text)
 
@@ -564,6 +571,13 @@ class RectWidget(QtWidgets.QGraphicsWidget):
 
     def _handle_right_click(self, event) -> None:
         menu = QtWidgets.QMenu()
+
+        for text, callback in self.menu_actions:
+            # triggered passes `checked`; swallow it rather than let it land in
+            # the callback's first parameter.
+            menu.addAction(text).triggered.connect(lambda _checked=False, cb=callback: cb())
+        if self.menu_actions:
+            menu.addSeparator()
 
         similarity_sort = menu.addAction("Find similar")
         similarity_sort.triggered.connect(lambda: self.similaritySort.emit(self, False))

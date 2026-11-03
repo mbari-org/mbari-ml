@@ -32,6 +32,9 @@ def review(
         "Optional; defaults to $MBARIML_SAM3_MODEL, else the copy `mbariml sam3 download` fetched. "
         "Also needs Ultralytics' CLIP: pip install -e \".\\[sam3]\". `mbariml sam3 check` says what's missing.",
     ),
+    box_list: str = typer.Option(
+        None, "--list", help="Open with the boxes listed in this CSV (roi_index column; a 'suggested' or 'note' "
+        "column is shown on each tile). Same as the Open List... button."),
 ) -> None:
     """Launch the ROI review/labeling GUI."""
     # A native crash (Qt/PySide) otherwise dies with only "SIGSEGV" -- this
@@ -43,7 +46,7 @@ def review(
     from mbariml.gui.main_window import MainWindow
 
     qt_app = QApplication(sys.argv)
-    main_window = MainWindow(database_path, label, page_size, sam3_model=sam3_model)
+    main_window = MainWindow(database_path, label, page_size, sam3_model=sam3_model, box_list=box_list)
     main_window.show()
     sys.exit(qt_app.exec())
 

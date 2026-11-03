@@ -363,6 +363,15 @@ refine (optional)
 
     mbariml refine /data/results/yolo_predictions.duckdb /data/results/ --new-label noise
 
+fixtures (fixed / time-lapse camera)
+  Link boxes frame to frame by position into animals, so review's "By animal
+  (fixed camera)" sort can show one tile per animal instead of thousands of
+  boxes of the same sponge. Seconds on 575k boxes; writes the fixtures and
+  fixture_info tables only. One camera per database.
+
+    mbariml fixtures /data/results/yolo_predictions.duckdb
+    mbariml fixtures /data/results/yolo_predictions.duckdb --min-frames 50
+
 
 ==============================================================================
 REVIEW -- human review
@@ -373,10 +382,15 @@ review (interactive GUI)
 
     mbariml review /data/results/yolo_predictions.duckdb
     mbariml review /data/results/yolo_predictions.duckdb --label noise
+    mbariml review /data/results/yolo_predictions.duckdb --list suspects.csv
+
+  --list (or the Open List... button) shows only the boxes a CSV names
+  (roi_index column; a 'suggested' or 'note' column is printed on each tile).
 
   In the grid: click to select, Shift-click for a range, Ctrl/Cmd-click to
   add; drag a rectangle to select the tiles it touches, Cmd-drag to add more
-  rectangles; arrow keys navigate/extend. Type a label into the relabel field (free
+  rectangles, drag starting on a selected tile to deselect; arrow keys
+  navigate/extend. Type a label into the relabel field (free
   text, or pick from the dropdown of labels already in use) and press Enter,
   or click Label, to apply it to the selection; the label stays in the field
   for the next selection (Enter again), and typing replaces it. Right-click an ROI ->
@@ -398,8 +412,13 @@ review (interactive GUI)
   narrow the search). "Find similar with same label" and the "New Label"
   sort both use a tile's new label if it has one, else its original label --
   so a never-renamed tile is matched/sorted under its original name.
-  Delete removes the selection (asks first -- permanent); Escape clears it. A
-  tile-size slider and "Hide verified"/"Hide unverified" checkboxes (checking
+  Delete removes the selection (asks first -- permanent); Escape clears it.
+  Ctrl+A (Select Page) selects every tile shown, so Ctrl+A then V verifies a
+  page of look-alikes; sort "Outliers in label" shows each label's least
+  typical tiles first. Fixed camera: run `mbariml fixtures DB` once, then sort
+  "By animal (fixed camera)" -- one tile per animal; V verifies its boxes that
+  carry its label, a typed label sets all its boxes, right-click opens it,
+  Delete removes all its boxes (asks first, giving the count). A tile-size slider (down to 25%) and "Hide verified"/"Hide unverified" checkboxes (checking
   one unchecks the other) control what's shown, and
   Brightness/Contrast sliders below the tile-size slider stretch the
   thumbnails across the whole grid -- faint animals against sediment are much
