@@ -50,6 +50,11 @@ class MosaicRoiLoadingCoordinator(QObject):
         self._top_level_on_complete: Callable[[], None] | None = None
         self._cancel_event: Event | None = None
 
+    @property
+    def pending(self) -> list[RectWidget]:
+        """Widgets queued in the current pass but not dispatched yet."""
+        return list(self._pending)
+
     def cancel_pending(self) -> None:
         """Invalidate in-flight ROI refreshes."""
         self._generation += 1

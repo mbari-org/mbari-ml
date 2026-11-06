@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
 
 from mbariml import db
 from mbariml.gui import annotation_service, query_service, sam3_service
+from mbariml.gui.combo_completion import complete_inline
 from mbariml.gui.confidence_dialog import ConfidenceHiddenDialog, summarize as summarize_hidden
 from mbariml.gui.detail_view import DetailView
 from mbariml.gui.mosaic_view import MosaicView, MosaicVisibilityFilters
@@ -108,6 +109,12 @@ DISPLAY_ADJUST_DEBOUNCE_MS = 70
 LOCAL_CONTRAST_MAX_STEPS = 6
 LOCAL_CONTRAST_DEBOUNCE_MS = 200
 ROI_LOAD_CONCURRENCY = 8
+# With colour correction on, a tile costs a measurement of its whole source
+# frame (~80 ms for a 6720x4480 JPEG): a 500-tile page from 500 frames was
+# ~40 s of CPU, mostly for tiles never scrolled to. So only tiles within this
+# many screen heights of the view are decoded; scrolling brings in the rest.
+COLOUR_LOAD_MARGIN_SCREENS = 1
+SCROLL_LOAD_DEBOUNCE_MS = 100
 
 # Each pyqtgraph RectROI overlay (handles, region-changed wiring, a TextItem
 # label) costs ~1-1.5ms to construct on the GUI thread -- fine for the tens
@@ -293,11 +300,13 @@ class MainWindow(QMainWindow):
         self._verified_count = 0  # updated by every load_page() and verify/label/delete action
         self._unverified_count = 0
         self.sort_option = query_service.DEFAULT_SORT_OPTION
+        self._stacked_sort_item: str | None = None  # the Sort... dialog's entry in the dropdown
         # A precomputed ranking paged instead of SQL ORDER BY: a similarity
         # search (similarity_reference = the clicked ROI) or the "Outliers in
         # label" sort (similarity_reference None) -- see load_page.
         self.similarity_order: list[int] | None = None
         self.similarity_reference: int | None = None
+        self._similarity_in_list = False  # the ranking covers just the open list
         self._outlier_generation = 0
         # "By animal" sort: the ranking is one representative ROI per fixture
         # (`mbariml fixtures`), keyed here by that ROI. Opening an animal pages
@@ -306,12 +315,14 @@ class MainWindow(QMainWindow):
         self._animal_open: query_service.AnimalInfo | None = None
         self._animal_list_page = 0
         self._animal_generation = 0
-        # Open List / `review --list`: boxes from a CSV in file order, each
-        # tile showing the list's note (e.g. a suggested label). Wins over
-        # the sort until Close List.
+        # Open List / `review --list`: boxes from a CSV, each tile showing
+        # the list's note (e.g. a suggested label). Opens in file order
+        # ("List order"); the other sorts reorder just the listed boxes until
+        # Close List, which brings back the sort from before the list.
         self._box_list: list[int] | None = None
         self._box_list_notes: dict[int, str] = {}
         self._box_list_name = ""
+        self._sort_before_list = self.sort_option
         # Denominator for the status bar's "ranked M of T": how many ROIs
         # matched the search's filters at all, including any that had to be
         # skipped for want of an embedding. See count_similarity_pool.
@@ -337,6 +348,7 @@ class MainWindow(QMainWindow):
         self._zoom_percent = ZOOM_DEFAULT
         self._brightness = BRIGHTNESS_DEFAULT
         self._contrast_percent = CONTRAST_DEFAULT
+        self._sharpen = False
 
         self._rect_widgets: list[RectWidget] = []
         self._n_columns = 0
@@ -348,6 +360,8 @@ class MainWindow(QMainWindow):
         # actually on screen -- see MosaicSelectionCoordinator's
         # visible_widgets_getter.
         self._visible_widgets: list[RectWidget] = []
+        # Tiles of this page not decoded yet: hidden ones wait until shown (_load_shown_tiles).
+        self._unloaded_tiles: set[RectWidget] = set()
         self._page_load_generation = 0
         self._roi_loading_cancel_event = Event()
 
@@ -409,6 +423,12 @@ class MainWindow(QMainWindow):
 
         self.graphics_view = QGraphicsView()
         self.graphics_view.installEventFilter(self)
+        self._scroll_load_timer = QTimer(self)
+        self._scroll_load_timer.setSingleShot(True)
+        self._scroll_load_timer.timeout.connect(self._load_shown_tiles)
+        self.graphics_view.verticalScrollBar().valueChanged.connect(
+            lambda _value: self._scroll_load_timer.start(SCROLL_LOAD_DEBOUNCE_MS)
+        )
         self._mosaic_view = MosaicView(self.graphics_view)
 
         self.selection_model = SelectionModel(parent=self)
@@ -569,6 +589,13 @@ class MainWindow(QMainWindow):
         self.sort_dropdown.setCurrentText(self.sort_option)
         self.sort_dropdown.currentTextChanged.connect(self._on_sort_changed)
         sort_layout.addWidget(self.sort_dropdown)
+        sort_dialog_button = QPushButton("Sort...")
+        sort_dialog_button.setToolTip(
+            "Stack sort keys: sort by one, then break its ties by the next -- e.g. New Label, then "
+            "Sharpness, for each label's sharpest crops first. The stack is added to Sort by."
+        )
+        sort_dialog_button.clicked.connect(self._on_sort_dialog_clicked)
+        sort_layout.addWidget(sort_dialog_button)
         self.clear_similarity_button = QPushButton("Clear Similarity Sort")
         self.clear_similarity_button.setEnabled(False)
         self.clear_similarity_button.clicked.connect(self._on_clear_similarity_sort)
@@ -576,7 +603,7 @@ class MainWindow(QMainWindow):
         self.open_list_button = QPushButton("Open List...")
         self.open_list_button.setToolTip(
             "Show the boxes listed in a CSV (a roi_index column; a 'suggested' or 'note' column is shown on each "
-            "tile) -- e.g. an anomaly list. Close List returns to the sort."
+            "tile) -- e.g. an anomaly list. Sort by then sorts within the list; Close List returns to the sort."
         )
         self.open_list_button.clicked.connect(self._on_open_list_clicked)
         sort_layout.addWidget(self.open_list_button)
@@ -597,6 +624,7 @@ class MainWindow(QMainWindow):
         self.search_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.search_combo.setCurrentText(self.label_filter or "")
         self.search_combo.lineEdit().returnPressed.connect(self._on_search)
+        complete_inline(self.search_combo)
         # activated (not currentTextChanged) fires only when an item is
         # actually picked from the popup list, not on every keystroke while
         # typing -- typing shouldn't reload the whole grid character by
@@ -645,8 +673,26 @@ class MainWindow(QMainWindow):
         self.contrast_slider.setValue(CONTRAST_DEFAULT)
         self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
         contrast_layout.addWidget(self.contrast_slider)
+        self.sharpen_box = QCheckBox("Sharpen")
+        self.sharpen_box.setToolTip(
+            "Crisp up the tiles' edges (unsharp mask, scaled to how much each crop is "
+            "enlarged). Helps soft legs and texture; can't fix motion blur, and adds "
+            "grain to very dark crops. Display only."
+        )
+        self.sharpen_box.toggled.connect(self._on_sharpen_toggled)
+        contrast_layout.addWidget(self.sharpen_box)
+        self.fringes_box = QCheckBox("Fix colour fringes")
+        self.fringes_box.setToolTip(
+            "Shift each tile's red and blue back onto green where they've separated into "
+            "rainbow edges (measured on each crop). Narrows the rainbow smear on moving "
+            "animals rather than removing it. Display only."
+        )
+        self.fringes_box.toggled.connect(self._on_fringes_toggled)
+        contrast_layout.addWidget(self.fringes_box)
         reset_display_button = QPushButton("Reset")
-        reset_display_button.setToolTip("Return brightness and contrast to neutral.")
+        reset_display_button.setToolTip(
+            "Return brightness and contrast to neutral, and turn Sharpen and Fix colour fringes off."
+        )
         reset_display_button.clicked.connect(self._reset_display_adjustment)
         contrast_layout.addWidget(reset_display_button)
         controls_layout.addLayout(contrast_layout)
@@ -691,7 +737,7 @@ class MainWindow(QMainWindow):
             widget.setEnabled(False)  # until "Color-correct display" is on
         controls_layout.addLayout(colour_layout)
         controls_layout.addWidget(
-            QLabel("View-only: brightens/stretches the ROI thumbnails to help spot faint "
+            QLabel("View-only: brightens/stretches/sharpens the ROI thumbnails to help spot faint "
                    "animals. Never changes stored data.")
         )
 
@@ -750,6 +796,7 @@ class MainWindow(QMainWindow):
         # The last applied label stays in the field; focusing it selects
         # that text so typing replaces it (see eventFilter).
         self.label_combo.lineEdit().installEventFilter(self)
+        complete_inline(self.label_combo)
         label_editor_layout.addWidget(self.label_combo)
         label_button = QPushButton("Label")
         label_button.clicked.connect(self.update_labels)
@@ -857,15 +904,18 @@ class MainWindow(QMainWindow):
         if similarity_active:
             ranked = len(self.similarity_order)
             pool_total = self.similarity_pool_total
+            where = f" in list {self._box_list_name}" if self._similarity_in_list and self._box_list is not None else ""
             if pool_total is None or pool_total == ranked:
-                scope_text = f"all {ranked} matching ROIs"
+                scope_text = f"all {ranked} matching ROIs{where}"
             else:
-                scope_text = f"{ranked} of {pool_total} matching ROIs -- {pool_total - ranked} not embedded yet"
+                scope_text = f"{ranked} of {pool_total} matching ROIs{where} -- {pool_total - ranked} not embedded yet"
             mode_text = f" | sorted by similarity to ROI #{self.similarity_reference} ({scope_text})"
         elif outliers_active:
             mode_text = f" | least typical first within each label ({len(self.similarity_order)} ROIs)"
         elif list_active:
-            mode_text = f" | list {self._box_list_name}: {len(self.similarity_order):,} of {len(self._box_list):,} boxes shown"
+            sorted_text = "" if self.sort_option == query_service.LIST_ORDER_OPTION else f" by {self.sort_option}"
+            mode_text = (f" | list {self._box_list_name}{sorted_text}: "
+                         f"{len(self.similarity_order):,} of {len(self._box_list):,} boxes shown")
         elif animals_active and self._animal_open is not None:
             a = self._animal_open
             mode_text = f" | animal #{a.fixture} ({a.label}): {len(self.similarity_order):,} boxes, least typical first"
@@ -952,7 +1002,7 @@ class MainWindow(QMainWindow):
             return
         if self._box_list is not None and self.similarity_order is None and self.similarity_reference is None:
             self.similarity_order = query_service.filter_box_list(
-                self.conn.cursor(), self._box_list, self.label_filter,
+                self.conn.cursor(), self._box_list, self.label_filter, sort_option=self.sort_option,
                 exclude_verified=self.hide_verified, exclude_unverified=self.hide_unverified,
                 min_confidence=self.min_confidence, max_confidence=self.max_confidence,
             )
@@ -1092,14 +1142,20 @@ class MainWindow(QMainWindow):
                 zoom=zoom,
                 brightness=self._brightness,
                 contrast=self._contrast_percent / 100.0,
+                sharpen=self._sharpen,
             )
             for row in rows
         ]
-        if self._box_list is not None and self.similarity_reference is None:
+        if self._box_list is not None:
             for rect_widget in self._rect_widgets:
                 note = self._box_list_notes.get(rect_widget.roi_index)
                 if note:  # in place of the original-label line, so keep that label in it
                     rect_widget.caption = f"{rect_widget.row.original_label or ''} -> {note}"
+                rect_widget.menu_actions = [
+                    ("Find similar in list", lambda rw=rect_widget: self._on_similarity_sort_requested(rw, False, True)),
+                    ("Find similar in list with same label",
+                     lambda rw=rect_widget: self._on_similarity_sort_requested(rw, True, True)),
+                ]
         if self._in_animal_grid():
             for rect_widget in self._rect_widgets:
                 animal = self._animals.get(rect_widget.roi_index)
@@ -1113,15 +1169,9 @@ class MainWindow(QMainWindow):
                     (f"Open this animal ({animal.n:,} boxes)", lambda a=animal: self._open_animal(a)),
                     (f"Delete this animal ({animal.n:,} boxes)...", lambda rw=rect_widget: self._delete_animals([rw])),
                 ]
-        self.render_mosaic()
+        self._unloaded_tiles = set(self._rect_widgets)
+        self.render_mosaic()  # loads the shown tiles
         self.update_status_bar()
-
-        self._roi_loading_cancel_event = Event()
-        self._roi_loading.start_loading(
-            rect_widgets=self._rect_widgets,
-            on_complete=lambda: None,
-            cancel_event=self._roi_loading_cancel_event,
-        )
 
     def render_mosaic(self) -> None:
         visible_widgets = self._mosaic_view.select_visible_widgets(
@@ -1136,6 +1186,35 @@ class MainWindow(QMainWindow):
         # visible_widgets_getter docstring for why this must stay in sync
         # with what was actually just laid out, not _rect_widgets.
         self._visible_widgets = visible_widgets
+        self._load_shown_tiles()
+
+    def _load_shown_tiles(self) -> None:
+        """Decode the shown tiles that haven't been yet, those on screen first.
+        Tiles hidden by Hide verified/unverified wait until they're shown;
+        with colour correction on, so do tiles more than a screen above or
+        below the view (COLOUR_LOAD_MARGIN_SCREENS) until scrolled to."""
+        if not self._unloaded_tiles:
+            return
+        on_screen = self.graphics_view.mapToScene(self.graphics_view.viewport().rect()).boundingRect()
+        if self.colour_correct_box.isChecked():
+            margin = on_screen.height() * COLOUR_LOAD_MARGIN_SCREENS
+            near = on_screen.adjusted(0, -margin, 0, margin)
+            wanted = [w for w in self._visible_widgets if w.sceneBoundingRect().intersects(near)]
+        else:
+            wanted = self._visible_widgets
+        if not any(w in self._unloaded_tiles for w in wanted):
+            return  # e.g. a resize: leave the pass that's running alone
+        # Still queued from the last pass: hand back what isn't wanted now, keep the rest.
+        self._unloaded_tiles.update(self._roi_loading.pending)
+        todo = [w for w in wanted if w in self._unloaded_tiles]
+        self._unloaded_tiles.difference_update(todo)
+        todo.sort(key=lambda w: not w.sceneBoundingRect().intersects(on_screen))  # stable: grid order within each
+        self._roi_loading_cancel_event = Event()
+        self._roi_loading.start_loading(
+            rect_widgets=todo,
+            on_complete=lambda: None,
+            cancel_event=self._roi_loading_cancel_event,
+        )
 
     @Slot(int, int)
     def _on_roi_loading_progress(self, done: int, total: int) -> None:
@@ -1158,15 +1237,55 @@ class MainWindow(QMainWindow):
             self.sort_dropdown.setCurrentText(self.sort_option)
             self.sort_dropdown.blockSignals(False)
             return
+        if text == query_service.ANIMAL_SORT_OPTION and self._box_list is not None:
+            # An animal's V/relabel/delete reaches its boxes outside the list.
+            self._drop_box_list()
         self.sort_option = text
         self.similarity_order = None
         self.similarity_reference = None
         self.similarity_pool_total = None
-        self._box_list = None
         self._animals = None
         self._animal_open = None
         self.current_page = 0
         self.load_page()
+
+    # The dropdown's single SQL sorts as Sort... dialog keys, to start the
+    # dialog from what's shown.
+    _DROPDOWN_SORT_KEYS = {
+        "New Label": ("New Label", False),
+        "Original Label": ("Original Label", False),
+        "Image Name": ("Image Name", False),
+        "Sharpness": ("Sharpness", True),
+        "Aspect Ratio": ("Aspect Ratio", False),
+        "Confidence (high-low)": ("Confidence", True),
+        "Confidence (low-high)": ("Confidence", False),
+    }
+
+    def _on_sort_dialog_clicked(self) -> None:
+        """Sort...: compose a stacked sort (see mbariml.gui.sort_dialog). The
+        result becomes one entry in the Sort by dropdown -- the latest stack
+        replaces the previous one -- and is selected, which loads it."""
+        from mbariml.gui.sort_dialog import SortDialog
+
+        keys = query_service.stacked_sort_keys(self.sort_option)
+        if keys is None:
+            single = self._DROPDOWN_SORT_KEYS.get(self.sort_option)
+            keys = [single] if single else []
+        dialog = SortDialog(self, keys)
+        if not dialog.exec() or not dialog.keys():
+            return
+        name = query_service.stacked_sort_option(dialog.keys())
+        self.sort_dropdown.blockSignals(True)
+        if self._stacked_sort_item and self._stacked_sort_item != name:
+            self.sort_dropdown.removeItem(self.sort_dropdown.findText(self._stacked_sort_item))
+        if self.sort_dropdown.findText(name) < 0:
+            self.sort_dropdown.addItem(name)
+        self._stacked_sort_item = name
+        self.sort_dropdown.blockSignals(False)
+        if self.sort_dropdown.currentText() == name:
+            self._on_sort_changed(name)  # same stack again: reload anyway
+        else:
+            self.sort_dropdown.setCurrentText(name)
 
     def _on_clear_similarity_sort(self) -> None:
         """Drop the current similarity ranking and go back to normal
@@ -1240,6 +1359,20 @@ class MainWindow(QMainWindow):
         you ask constantly while reviewing."""
         self.brightness_slider.setValue(BRIGHTNESS_DEFAULT)
         self.contrast_slider.setValue(CONTRAST_DEFAULT)
+        self.sharpen_box.setChecked(False)
+        self.fringes_box.setChecked(False)
+
+    def _on_sharpen_toggled(self, checked: bool) -> None:
+        # One re-render per click, so no debounce like the sliders.
+        self._sharpen = checked
+        self._apply_display_adjustment()
+
+    def _on_fringes_toggled(self, checked: bool) -> None:
+        # Measured on the decoded crop, before colour correction, so the shown
+        # tiles are decoded again (threaded; hidden ones when they're shown).
+        self._roi_service.set_fix_fringes(checked)
+        self._unloaded_tiles = set(self._rect_widgets)
+        self._load_shown_tiles()
 
     def _schedule_display_adjustment(self) -> None:
         """Coalesce slider movement into one re-render (see
@@ -1250,7 +1383,7 @@ class MainWindow(QMainWindow):
     def _apply_display_adjustment(self) -> None:
         contrast = self._contrast_percent / 100.0
         for rect_widget in self._rect_widgets:
-            rect_widget.set_display_adjustment(self._brightness, contrast)
+            rect_widget.set_display_adjustment(self._brightness, contrast, self._sharpen)
 
     @staticmethod
     def _confidence_text(low: int, high: int) -> str:
@@ -1386,11 +1519,11 @@ class MainWindow(QMainWindow):
     def _refresh_colour_display(self) -> None:
         """Re-show the tiles and the full image after the colour correction
         changed (on/off, local contrast, a white picked or cleared)."""
-        # Re-decode every tile (threaded; each measures its frame on the
-        # worker if it isn't cached yet). Brightness/contrast still apply on
-        # top, in getpic.
-        for rect_widget in self._rect_widgets:
-            rect_widget.request_roi_refresh()
+        # Re-decode the shown tiles (threaded; each measures its frame on
+        # the worker if it isn't cached yet); hidden ones when they're shown.
+        # Brightness/contrast still apply on top, in getpic.
+        self._unloaded_tiles = set(self._rect_widgets)
+        self._load_shown_tiles()
 
         if self._current_detail_image_path is not None:
             image = self._roi_service.fetch_full_image(self._current_detail_image_path)
@@ -1693,6 +1826,7 @@ class MainWindow(QMainWindow):
             rect_widget.setParentItem(None)  # detach from the scene graph -- see MosaicView.clear()
             rect_widget.cleanup()  # break the reference cycle -- see RectWidget.cleanup()
             self._rect_widgets.remove(rect_widget)  # removal alone won't hide a stale tile
+            self._unloaded_tiles.discard(rect_widget)
             self.render_mosaic()
 
         logger.info("Deleted ROI #%s via the detail view.", roi_index)
@@ -2233,10 +2367,14 @@ class MainWindow(QMainWindow):
         self._show_embedding_status(f"Tightened {n} box(es); recomputing their embeddings...",
                                     f"Tightened {n} box(es) and recomputed their embeddings.", proposals)
 
-    def _on_similarity_sort_requested(self, rect_widget: RectWidget, same_label_only: bool) -> None:
+    def _on_similarity_sort_requested(
+        self, rect_widget: RectWidget, same_label_only: bool, in_list: bool = False
+    ) -> None:
         """Right-click menu action: re-rank every ROI (optionally restricted to
-        the clicked tile's own label) by embedding similarity to it."""
+        the clicked tile's own label) by embedding similarity to it. *in_list*:
+        only the boxes of the open list ("Find similar in list")."""
         roi_index = rect_widget.roi_index
+        roi_indices = self._box_list if in_list else None
         if same_label_only:
             # The clicked tile's effective label -- new_label if it has one,
             # else its original label -- matched against every candidate's
@@ -2268,6 +2406,7 @@ class MainWindow(QMainWindow):
             self.hide_unverified,
             self.min_confidence,
             self.max_confidence,
+            roi_indices,
         )
         worker.signals.result.connect(self._on_similarity_computed)
         worker.signals.error.connect(self._on_similarity_error)
@@ -2284,6 +2423,7 @@ class MainWindow(QMainWindow):
         exclude_unverified: bool,
         min_confidence: float | None,
         max_confidence: float | None,
+        roi_indices: list[int] | None,
     ):
         # .cursor() called here, i.e. on the worker thread that will use it.
         cursor = conn.cursor()
@@ -2296,6 +2436,7 @@ class MainWindow(QMainWindow):
             exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
             max_confidence=max_confidence,
+            roi_indices=roi_indices,
         )
         # Same pool, minus the embedding requirement -- so the GUI can say
         # "ranked M of T" and make it obvious whether the search really did
@@ -2308,12 +2449,13 @@ class MainWindow(QMainWindow):
             exclude_unverified=exclude_unverified,
             min_confidence=min_confidence,
             max_confidence=max_confidence,
+            roi_indices=roi_indices,
         )
-        return roi_index, order, pool_total
+        return roi_index, order, pool_total, roi_indices is not None
 
     @Slot(object)
     def _on_similarity_computed(self, payload) -> None:
-        roi_index, order, pool_total = payload
+        roi_index, order, pool_total, in_list = payload
         if order is None:
             QMessageBox.warning(
                 self, "No Embedding", f"ROI #{roi_index} has no embedding yet -- run `mbariml embed` first."
@@ -2323,6 +2465,7 @@ class MainWindow(QMainWindow):
         self.similarity_order = order
         self.similarity_reference = roi_index
         self.similarity_pool_total = pool_total
+        self._similarity_in_list = in_list and self._box_list is not None
         self.current_page = 0
         logger.info(
             "Sorted %d of %d matching ROI(s) by similarity to ROI #%s (every page, not just the one on screen)",
@@ -2352,6 +2495,7 @@ class MainWindow(QMainWindow):
             exclude_unverified=self.hide_unverified,
             min_confidence=self.min_confidence,
             max_confidence=self.max_confidence,
+            roi_indices=self._box_list,
         )
         worker.signals.result.connect(self._on_outlier_order_computed)
         worker.signals.error.connect(self._on_similarity_error)
@@ -2390,19 +2534,42 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 -- shown to the user, who picked the file
             QMessageBox.warning(self, "Open List", f"Can't read {path}:\n{exc}")
             return
+        if self._box_list is None:
+            self._sort_before_list = self.sort_option
         self._box_list, self._box_list_notes, self._box_list_name = ids, notes, Path(path).name
+        self.sort_dropdown.blockSignals(True)
+        if self.sort_dropdown.findText(query_service.LIST_ORDER_OPTION) < 0:
+            self.sort_dropdown.insertItem(0, query_service.LIST_ORDER_OPTION)
+        self.sort_dropdown.setCurrentText(query_service.LIST_ORDER_OPTION)
+        self.sort_dropdown.blockSignals(False)
+        self.sort_option = query_service.LIST_ORDER_OPTION
         self.similarity_order = None
         self.similarity_reference = None
+        self.similarity_pool_total = None
         self._animal_open = None
         self.current_page = 0
         self.load_page()
 
     def close_box_list(self) -> None:
-        self._box_list = None
-        self._box_list_notes = {}
+        self._drop_box_list()
         self.similarity_order = None
+        self.similarity_reference = None
+        self.similarity_pool_total = None
         self.current_page = 0
         self.load_page()
+
+    def _drop_box_list(self) -> None:
+        """Forget the list and its "List order" sort (back to the sort from
+        before the list, unless another was picked meanwhile); no reload."""
+        self._box_list = None
+        self._box_list_notes = {}
+        self.sort_dropdown.blockSignals(True)
+        if self.sort_dropdown.currentText() == query_service.LIST_ORDER_OPTION:
+            self.sort_dropdown.setCurrentText(self._sort_before_list)
+        self.sort_dropdown.removeItem(self.sort_dropdown.findText(query_service.LIST_ORDER_OPTION))
+        self.sort_dropdown.blockSignals(False)
+        if self.sort_option == query_service.LIST_ORDER_OPTION:
+            self.sort_option = self._sort_before_list
 
     # -- By animal (fixed camera) ------------------------------------------
 
@@ -2532,6 +2699,7 @@ class MainWindow(QMainWindow):
         self.selection_model.clear()
         self._mosaic_view.discard(removed)
         self._rect_widgets = [rw for rw in self._rect_widgets if rw.roi_index not in reps]
+        self._unloaded_tiles.difference_update(removed)
         for rep in reps:
             self._animals.pop(rep, None)
         self.similarity_order = [i for i in self.similarity_order if i not in reps]

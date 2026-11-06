@@ -40,7 +40,8 @@ which Ultralytics' SAM3 code needs, is installed separately from GitHub (MIT).
 
 The mosaic rendering/threading engine in `src/mbariml/gui/` (`mosaic_view.py`,
 `selection_coordinator.py`, `runnables.py`, and the core mechanics of
-`rect_widget.py`, `roi_loading_coordinator.py`, and `colors.py`) is adapted
+`rect_widget.py`, `roi_loading_coordinator.py`, and `colors.py`, and the layout
+of the stacked-sort dialog in `sort_dialog.py`) is adapted
 from [MBARI's vars-gridview](https://github.com/mbari-org/vars-gridview),
 translated from PyQt6 to PySide6 and trimmed to mbariml's DuckDB schema. The
 VARS/Annosaurus REST data layer (query controller, knowledgebase/concept

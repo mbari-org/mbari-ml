@@ -57,8 +57,60 @@ differ"), animals whose boxes all carry one label first, the most mixed last:
 shows the boxes a CSV names, in file order -- a `roi_index` (or `id`) column,
 plus an optional `suggested` or `note` column each tile shows as
 "current -> suggested". Search, Hide verified and the confidence range narrow
-it; Close List or Escape returns. For lists other tools write, such as a sweep
-for mislabelled verified boxes.
+it, and Sort by sorts within it ("List order" is the file's order; By animal
+leaves the list, since an animal's actions reach boxes outside it). Right-click
+**Find similar in list** ranks just the listed boxes by similarity. Close List
+or Escape returns to the sort from before. For lists other tools write, such
+as a sweep for mislabelled verified boxes.
+
+**Colour correction works on what you can see.** Each corrected tile needs
+its whole source frame measured (~80 ms for a 6720x4480 JPEG), and turning
+correction on re-did every tile on the page: 500 tiles from 500 frames, ~40 s
+of CPU, mostly for tiles never scrolled to. Now only tiles within a screen of
+the view are corrected (160 of 500 on a 2400x1400 window), on-screen first,
+and the rest as you scroll; tiles hidden by Hide verified/unverified wait
+until they're shown. The full frame in the detail view is corrected as
+before.
+
+**Label autocomplete no longer stops working.** Partway through a session
+the label and search fields stopped completing until review was restarted.
+Qt's built-in completer is connected only between focus-in and focus-out
+events and only hears key presses, not text from the macOS input method.
+The fields now complete from every edit themselves (the first label starting
+with what you typed, filled in and selected; Backspace removes it).
+
+**Sharpen checkbox.** Next to Contrast: an adaptive unsharp mask on the tiles'
+lightness (Lab L) at the size they're shown, its radius following each crop's
+enlargement. Lightness only, so colour fringes and colour noise aren't
+sharpened; and it fades out where the detail is no stronger than the crop's
+own noise. On 200 random Coral Observatory crops against plain enlargement
+(median): edge gradient +26% for +23% fine-grain noise. A plain RGB unsharp
+mask -- this checkbox's first version -- gave +29% for +70%; Richardson-Lucy
+deconvolution +43% for +80%; an edge-aware (guided filter) detail boost +19%
+for +81%. ~0.3 s to re-render a 500-tile page. It can't undo motion blur.
+Display only; Reset turns it off.
+
+**Fix colour fringes checkbox.** Bright animals show rainbow edges, red pulled
+one way and blue the other. The lens accounts for little of it (~1-1.5 px at
+the corners of a 6720x4480 Coral Observatory frame, measured on 1,485 patches),
+but single crops are off by 2-7 px. Each crop's red and blue are aligned onto
+green by ECC on gradient magnitude (kept only if that measurably reduces the
+fringe), then the colour (not the brightness) is median-filtered near edges.
+Fringe energy on 291 crops with separated channels (median, original = 1):
+phase correlation on raw channels -- this checkbox's first version, which
+barely did anything -- 0.975; ECC alone 0.80 (the best possible shift, found by
+brute force, 0.785); ECC + edge colour median 0.66. ~10-24 ms a crop, on the
+loading threads.
+
+Tiles are now enlarged with bicubic interpolation (was bilinear) and shrunk
+with pixel averaging, so enlarged crops are a little crisper.
+
+**Sharpness sorts sharpest first** (it was blurriest first), and **Sort...**
+stacks sort keys, as in vars-gridview: add keys, drag them into order, Reverse
+any of them; the first key sorts and each next one breaks the ties above it --
+New Label, then Sharpness shows each label's sharpest crops first. Keys: New
+Label, Original Label, Image Name, Sharpness, Confidence, Box Size, Aspect
+Ratio. The stack becomes an entry in Sort by and works inside an open list.
 
 **The grid no longer jumps.** The status line and the confidence count were
 plain labels, which ask for the width of their whole text; a long status

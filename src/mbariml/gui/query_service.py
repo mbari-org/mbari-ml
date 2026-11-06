@@ -50,16 +50,69 @@ EFFECTIVE_LABEL_SQL = "COALESCE(NULLIF(new_label, ''), label)"
 # Confidence comes both ways round: high-low to review the detector's surest
 # calls first, low-high to clear out false positives. DuckDB sorts NULLs last
 # either way, so a row with no score never leads the grid.
+#
+# Sharpness is the crop's Laplacian variance (higher = sharper), so it sorts
+# descending: the sharpest crops first, the blurriest last.
 SORT_COLUMNS = {
     "New Label": EFFECTIVE_LABEL_SQL,
     "Original Label": "label",
     "Image Name": "image_path",
-    "Sharpness": "sharpness",
+    "Sharpness": "sharpness DESC",
     "Aspect Ratio": "(x_max - x_min) / NULLIF(y_max - y_min, 0)",
     "Confidence (high-low)": "confidence DESC",
     "Confidence (low-high)": "confidence ASC",
 }
 DEFAULT_SORT_OPTION = "New Label"
+
+# What the Sort... dialog can stack (modelled on vars-gridview's sort dialog):
+# name -> (SQL expression, descending by default, (ascending text, descending
+# text)). Same allowlist rule as SORT_COLUMNS: a stacked ORDER BY is joined
+# from these fixed expressions only.
+SORT_KEYS = {
+    "New Label": (EFFECTIVE_LABEL_SQL, False, ("A-Z", "Z-A")),
+    "Original Label": ("label", False, ("A-Z", "Z-A")),
+    "Image Name": ("image_path", False, ("A-Z", "Z-A")),
+    "Sharpness": ("sharpness", True, ("blurriest first", "sharpest first")),
+    "Confidence": ("confidence", True, ("lowest first", "highest first")),
+    "Box Size": ("(x_max - x_min) * (y_max - y_min)", True, ("smallest first", "largest first")),
+    "Aspect Ratio": ("(x_max - x_min) / NULLIF(y_max - y_min, 0)", False, ("tallest first", "widest first")),
+}
+
+# Stacked sorts made in the dialog, by the name shown in the Sort by
+# dropdown: name -> (ORDER BY expression, [(key, descending), ...]).
+_STACKED_SORTS: dict[str, tuple[str, list[tuple[str, bool]]]] = {}
+
+
+def sort_key_text(key: str, descending: bool) -> str:
+    """'Sharpness (sharpest first)'."""
+    return f"{key} ({SORT_KEYS[key][2][descending]})"
+
+
+def stacked_sort_option(keys: list[tuple[str, bool]]) -> str:
+    """Register a stack of (SORT_KEYS name, descending) -- the first key
+    sorts, each next one breaks the previous one's ties -- and return its
+    sort option name, e.g. 'New Label (A-Z), then Sharpness (sharpest first)'."""
+    if not keys:
+        raise ValueError("a stacked sort needs at least one key")
+    name = ", then ".join(sort_key_text(key, desc) for key, desc in keys)
+    order = ", ".join(f"{SORT_KEYS[key][0]} {'DESC' if desc else 'ASC'}" for key, desc in keys)
+    _STACKED_SORTS[name] = (order, list(keys))
+    return name
+
+
+def stacked_sort_keys(sort_option: str) -> list[tuple[str, bool]] | None:
+    """The (key, descending) stack behind a stacked sort option, else None."""
+    entry = _STACKED_SORTS.get(sort_option)
+    return list(entry[1]) if entry else None
+
+
+def sort_sql(sort_option: str) -> str | None:
+    """The ORDER BY expression for a dropdown sort or a stacked one; None for
+    sorts SQL can't express (outliers, by animal, list order)."""
+    if sort_option in SORT_COLUMNS:
+        return SORT_COLUMNS[sort_option]
+    entry = _STACKED_SORTS.get(sort_option)
+    return entry[0] if entry else None
 
 # No embedding: no tile uses it, and fetching it cost more than everything
 # else on a page together -- 500 tiles x 1024 floats became 512,000 Python
@@ -172,6 +225,14 @@ def _confidence_conditions(min_confidence: float | None, max_confidence: float |
 # clustering/review has ever run -- would match nothing. And not "new_label
 # OR label", as it once did: that also matched rows already renamed to
 # something else, so searching "trash" kept showing tiles relabeled "animal".
+def _roi_indices_conditions(roi_indices: list[int] | None, params: list) -> list[str]:
+    """Restrict to *roi_indices* (an open box list) -- or nothing if None."""
+    if roi_indices is None:
+        return []
+    params.append(roi_indices)
+    return ["roi_index IN (SELECT unnest(?::INTEGER[]))"]
+
+
 def _build_where(
     label_filter: str | None,
     params: list,
@@ -180,6 +241,7 @@ def _build_where(
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    roi_indices: list[int] | None = None,
 ) -> str:
     conditions = []
     if label_filter:
@@ -190,6 +252,7 @@ def _build_where(
     if exclude_unverified:
         conditions.append("verified = 1")
     conditions += _confidence_conditions(min_confidence, max_confidence, params)
+    conditions += _roi_indices_conditions(roi_indices, params)
     if not conditions:
         return ""
     return " WHERE " + " AND ".join(conditions)
@@ -282,7 +345,7 @@ def fetch_page(
             if idx in by_roi_index
         ]
 
-    sort_column = SORT_COLUMNS.get(sort_option)
+    sort_column = sort_sql(sort_option)
     if sort_column is None:
         logger.warning("Unknown sort option %r, falling back to %s", sort_option, DEFAULT_SORT_OPTION)
         sort_column = SORT_COLUMNS[DEFAULT_SORT_OPTION]
@@ -464,6 +527,7 @@ def _build_similarity_pool_where(
     min_confidence: float | None = None,
     max_confidence: float | None = None,
     require_embedding: bool,
+    roi_indices: list[int] | None = None,
 ) -> tuple[str, list]:
     """WHERE clause defining a similarity search's ranking pool.
 
@@ -486,6 +550,7 @@ def _build_similarity_pool_where(
     if exclude_unverified:
         conditions.append("verified = 1")
     conditions += _confidence_conditions(min_confidence, max_confidence, params)
+    conditions += _roi_indices_conditions(roi_indices, params)
     if not conditions:
         return "", params
     return " WHERE " + " AND ".join(conditions), params
@@ -500,6 +565,7 @@ def count_similarity_pool(
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    roi_indices: list[int] | None = None,
 ) -> int:
     """How many ROIs a similarity search *could* rank -- the same pool
     :func:`compute_similarity_order` ranks, minus its ``embedding IS NOT
@@ -522,7 +588,7 @@ def count_similarity_pool(
         exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified,
         min_confidence=min_confidence, max_confidence=max_confidence,
-        require_embedding=False,
+        require_embedding=False, roi_indices=roi_indices,
     )
     return conn.execute("SELECT COUNT(*) FROM predictions" + where_sql, params).fetchone()[0]
 
@@ -537,6 +603,7 @@ def compute_similarity_order(
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    roi_indices: list[int] | None = None,
 ) -> list[int] | None:
     """Rank every ROI (respecting *label_filter*, if given) by cosine
     similarity of its embedding to ``roi_index``'s.
@@ -558,7 +625,8 @@ def compute_similarity_order(
     for why that distinction matters: excluding them only at display time
     left "Page X/Y" (== len(this ranking)) counting rows that could never
     actually be shown, and pages silently under-filled by however many of
-    their slots landed on an excluded ROI.
+    their slots landed on an excluded ROI. *roi_indices* (an open box list)
+    narrows the pool to those boxes.
 
     Returns ``roi_index`` values ordered most-similar-first, or ``None`` if
     the reference ROI has no embedding yet (requires ``mbariml embed`` to
@@ -578,7 +646,7 @@ def compute_similarity_order(
         exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified,
         min_confidence=min_confidence, max_confidence=max_confidence,
-        require_embedding=True,
+        require_embedding=True, roi_indices=roi_indices,
     )
     indices, matrix = _embedding_matrix(conn, where_sql, params, len(ref_row[0]))
     if len(indices) == 0:
@@ -647,6 +715,7 @@ def compute_outlier_order(
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    roi_indices: list[int] | None = None,
 ) -> list[int]:
     """Every matching ROI's ``roi_index``, label by label (alphabetically,
     like the "New Label" sort), and within each label the least typical first.
@@ -657,14 +726,15 @@ def compute_outlier_order(
     tiles, the ones that don't look like the rest of their label -- a
     mislabel, a bad crop, a different animal -- come first instead of being
     buried on page 40. ROIs with no embedding come last in their label.
-    Filters narrow the pool exactly as they do for similarity search.
+    Filters narrow the pool exactly as they do for similarity search;
+    *roi_indices* (an open box list) narrows it to those boxes.
     Does real work (a full scan + numpy) -- call from a worker thread.
     """
     where_sql, params = _build_similarity_pool_where(
         label_filter, "effective",
         exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
         min_confidence=min_confidence, max_confidence=max_confidence,
-        require_embedding=False,
+        require_embedding=False, roi_indices=roi_indices,
     )
     pool = conn.execute(
         f"SELECT roi_index, COALESCE({EFFECTIVE_LABEL_SQL}, '') AS effective_label FROM predictions" + where_sql, params
@@ -681,7 +751,7 @@ def compute_outlier_order(
             label_filter, "effective",
             exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
             min_confidence=min_confidence, max_confidence=max_confidence,
-            require_embedding=True,
+            require_embedding=True, roi_indices=roi_indices,
         )
         indices, matrix = _embedding_matrix(conn, emb_where, emb_params, dim_row[0])
         if len(indices):
@@ -699,6 +769,11 @@ def compute_outlier_order(
     # No embedding -> +inf: after every ranked ROI of its label.
     ranked = sorted(label_of, key=lambda i: (label_of[i].lower(), score.get(i, float("inf")), i))
     return ranked
+
+
+# Only in the dropdown while a box list is open: the list's own (file) order.
+# Every other sort then reorders just the listed boxes.
+LIST_ORDER_OPTION = "List order"
 
 
 def read_box_list(path: str) -> tuple[list[int], dict[int, str]]:
@@ -733,20 +808,26 @@ def filter_box_list(
     ids: list[int],
     label_filter: str | None = None,
     *,
+    sort_option: str = LIST_ORDER_OPTION,
     exclude_verified: bool = False,
     exclude_unverified: bool = False,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
 ) -> list[int]:
     """The listed boxes that still exist and pass the current search, Hide
-    verified/unverified and confidence range -- in list order."""
+    verified/unverified and confidence range -- in list order, or sorted by
+    *sort_option* (a ``SORT_COLUMNS`` key or a stacked sort) within the list."""
     params: list = []
     where = _build_where(
         label_filter, params, exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
-        min_confidence=min_confidence, max_confidence=max_confidence,
+        min_confidence=min_confidence, max_confidence=max_confidence, roi_indices=ids,
     )
-    where = (where + " AND" if where else " WHERE") + " roi_index IN (SELECT unnest(?::INTEGER[]))"
-    keep = {r[0] for r in conn.execute("SELECT roi_index FROM predictions" + where, [*params, ids]).fetchall()}
+    sort_column = sort_sql(sort_option)
+    if sort_column is not None:
+        return [r[0] for r in conn.execute(
+            f"SELECT roi_index FROM predictions{where} ORDER BY {sort_column}, id", params
+        ).fetchall()]
+    keep = {r[0] for r in conn.execute("SELECT roi_index FROM predictions" + where, params).fetchall()}
     return [i for i in ids if i in keep]
 
 
@@ -864,6 +945,7 @@ def fetch_animal_members(
 
 __all__ = [
     "RoiRow",
+    "LIST_ORDER_OPTION",
     "read_box_list",
     "filter_box_list",
     "AnimalInfo",
@@ -874,6 +956,11 @@ __all__ = [
     "FrameRoi",
     "SORT_COLUMNS",
     "DEFAULT_SORT_OPTION",
+    "SORT_KEYS",
+    "sort_key_text",
+    "stacked_sort_option",
+    "stacked_sort_keys",
+    "sort_sql",
     "count_rows",
     "count_verified",
     "count_hidden_by_confidence",

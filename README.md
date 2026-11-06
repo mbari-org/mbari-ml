@@ -529,7 +529,11 @@ while preserving the human labels.
   boxes a CSV names, in its order: a `roi_index` column, and optionally a
   `suggested` or `note` column shown on each tile ("Polychaeta -> Actiniaria").
   Search works within the list, so one kind of fix at a time is search, Ctrl+A,
-  type the label. Close List (or Escape) goes back.
+  type the label. Sort by sorts within the list too ("List order" is the
+  file's order); By animal leaves the list. Right-click **Find similar in
+  list** (or **...with same label**) ranks just the listed boxes; plain Find
+  similar still ranks the whole database, and Clear Similarity Sort comes back
+  to the list. Close List (or Escape) goes back to the sort you had before.
 - **Sort by "Outliers in label"** goes label by label, the *least typical*
   ROIs of each first (furthest from the label's mean embedding). After a
   similarity search has shown you pages of look-alikes, this surfaces the
@@ -552,8 +556,27 @@ while preserving the human labels.
   low-contrast crops from deep footage, are often far easier to identify
   stretched than at native exposure. Contrast pivots around mid-grey, so the
   two sliders act independently rather than fighting each other, and
-  **Reset** returns both to neutral. View-only: the stored ROI is never
-  modified, so this changes nothing you export.
+  **Reset** returns both to neutral (and turns Sharpen and Fix colour fringes
+  off). View-only: the
+  stored ROI is never modified, so this changes nothing you export.
+- **Sharpen** (next to Contrast) runs an adaptive unsharp mask on the tiles'
+  lightness at the size they're shown, its radius following how much each
+  crop is enlarged. It sharpens edges and backs off where the detail is no
+  stronger than the crop's noise, so sediment and dark water don't turn to
+  grain, and it leaves colour alone so fringes aren't sharpened. It can't undo
+  motion blur.
+- **Fix colour fringes** (next to Sharpen) shifts each tile's red and blue
+  channels back onto green where they've pulled apart into rainbow edges
+  (measured on each crop, kept only if it reduces the fringe), then smooths the
+  colour -- not the brightness -- along edges. On crops with separated channels
+  it removes about a third of the fringe; on a fast-moving animal the rainbow
+  smear narrows rather than disappears. Display only; Reset turns both off.
+- **Sort...** (next to Sort by) stacks sort keys, as vars-gridview does: Add
+  keys, drag them into order, Reverse any of them (or double-click). The first
+  key sorts and each next one breaks the ties above it -- New Label, then
+  Sharpness, shows each label's sharpest crops first. The stack is added to
+  Sort by under its name and works inside an open list. Sharpness on its own
+  sorts sharpest first.
 - **Color-correct display** removes the water's colour cast and restores
   contrast and the weak reds, on the tiles and the full image alike, for
   shallow sunlit footage and strobe-lit deep-sea footage alike. Per whole

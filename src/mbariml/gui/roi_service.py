@@ -44,6 +44,7 @@ class RoiService:
         # None when it's off. See correct_for_display.
         self._corrector = None
         self._correct_lock = threading.Lock()
+        self._fix_fringes = False  # see fringes_fixed_for_display
 
     def decode_roi(self, roi_blob: bytes | None) -> np.ndarray:
         """Decode a JPEG ROI blob into a BGR ``np.ndarray``.
@@ -94,6 +95,21 @@ class RoiService:
     def locate(self, image_path: str) -> str:
         """Where *image_path* is on disk now (see mbariml.paths.ImageLocator)."""
         return self._locator.locate(image_path) if self._locator else image_path
+
+    def set_fix_fringes(self, on: bool) -> None:
+        """Turn display colour-fringe removal on tile crops on or off."""
+        self._fix_fringes = bool(on)
+
+    def fringes_fixed_for_display(self, bgr: np.ndarray | None) -> np.ndarray | None:
+        """*bgr* (a tile crop) with red and blue shifted back onto green when
+        "Fix colour fringes" is on (see mbariml.gui.fringes), else unchanged.
+        Measured on the crop itself, so it's for crops, not full frames.
+        Safe to call from a worker thread."""
+        if not self._fix_fringes or bgr is None:
+            return bgr
+        from mbariml.gui.fringes import fix_fringes
+
+        return fix_fringes(bgr)
 
     def set_corrector(self, corrector) -> None:
         """Turn display colour correction on (a ``Corrector``) or off (None)."""

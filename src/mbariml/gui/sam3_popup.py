@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbariml.gui.combo_completion import complete_inline
 from mbariml.gui.sam3_service import Box, Candidate
 
 
@@ -68,6 +69,7 @@ class Sam3BoxPopup(QFrame):
         self._label_combo.setMinimumWidth(220)
         self._label_combo.lineEdit().setPlaceholderText("label")
         self._label_combo.lineEdit().returnPressed.connect(self._accept)
+        complete_inline(self._label_combo)
 
         self._hint = QLabel("Tab: next size · Enter: add · Esc: cancel")
         self._hint.setStyleSheet("color: #9a9da3; font-size: 11px;")

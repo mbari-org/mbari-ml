@@ -179,6 +179,9 @@ class MosaicView:
                 rows * rect_widget_height,
             )
             self._graphics_scene.setSceneRect(self._graphics_widget.boundingRect())
+            # Place the tiles now rather than on the next event-loop pass:
+            # loading picks the tiles on screen by their scene position.
+            self._layout.activate()
         finally:
             self._graphics_view.setUpdatesEnabled(True)
 
