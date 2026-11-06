@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import duckdb
 import numpy as np
 
+from mbariml import db
 from mbariml.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -518,6 +519,23 @@ SIMILARITY_LABEL_COLUMNS = {
 }
 
 
+def similarity_embedding_column(conn: duckdb.DuckDBPyConnection) -> str:
+    """The embedding column similarity search and the outlier sort compare:
+    BioCLIP-2's (``mbariml embed --model bioclip2``) once a database has any,
+    else DINOv3's. BioCLIP-2, trained on the tree of life, ranked deep-sea
+    taxa better (see mbariml.steps.embed)."""
+    if db.has_column(conn, "bioclip_embedding") and conn.execute(
+        "SELECT 1 FROM predictions WHERE bioclip_embedding IS NOT NULL LIMIT 1"
+    ).fetchone():
+        return "bioclip_embedding"
+    return "embedding"
+
+
+def embed_command_for(column: str) -> str:
+    """The command that fills *column*, for messages."""
+    return "mbariml embed --model bioclip2" if column == "bioclip_embedding" else "mbariml embed"
+
+
 def _build_similarity_pool_where(
     label_filter: str | None,
     label_mode: str,
@@ -528,6 +546,7 @@ def _build_similarity_pool_where(
     max_confidence: float | None = None,
     require_embedding: bool,
     roi_indices: list[int] | None = None,
+    embedding_column: str = "embedding",
 ) -> tuple[str, list]:
     """WHERE clause defining a similarity search's ranking pool.
 
@@ -541,7 +560,7 @@ def _build_similarity_pool_where(
     conditions = []
     params: list = []
     if require_embedding:
-        conditions.append("embedding IS NOT NULL")
+        conditions.append(f"{embedding_column} IS NOT NULL")
     if label_filter:
         conditions.append(f"{label_column} = ?")
         params.append(label_filter)
@@ -633,11 +652,12 @@ def compute_similarity_order(
     have run first). Does real work (a full-table scan + a numpy matmul) --
     call this from a worker thread, not the GUI thread.
     """
+    column = similarity_embedding_column(conn)
     ref_row = conn.execute(
-        "SELECT embedding FROM predictions WHERE roi_index = ?", (roi_index,)
+        f"SELECT {column} FROM predictions WHERE roi_index = ?", (roi_index,)
     ).fetchone()
     if not ref_row or ref_row[0] is None:
-        logger.warning("ROI #%s has no embedding yet -- run `mbariml embed` first.", roi_index)
+        logger.warning("ROI #%s has no %s yet -- run `%s` first.", roi_index, column, embed_command_for(column))
         return None
 
     where_sql, params = _build_similarity_pool_where(
@@ -646,9 +666,9 @@ def compute_similarity_order(
         exclude_verified=exclude_verified,
         exclude_unverified=exclude_unverified,
         min_confidence=min_confidence, max_confidence=max_confidence,
-        require_embedding=True, roi_indices=roi_indices,
+        require_embedding=True, roi_indices=roi_indices, embedding_column=column,
     )
-    indices, matrix = _embedding_matrix(conn, where_sql, params, len(ref_row[0]))
+    indices, matrix = _embedding_matrix(conn, where_sql, params, len(ref_row[0]), column)
     if len(indices) == 0:
         return []
     reference = np.asarray(ref_row[0], dtype=np.float32)
@@ -680,26 +700,30 @@ def compute_similarity_order(
     return indices[order].tolist()
 
 
-def _embedding_matrix(conn, where_sql: str, params: list, dim: int) -> tuple[np.ndarray, np.ndarray]:
+def _embedding_matrix(conn, where_sql: str, params: list, dim: int, column: str = "embedding") -> tuple[np.ndarray, np.ndarray]:
     """``(roi_index values, float32 matrix of their embeddings)`` for the rows *where_sql* selects.
 
-    Fetched flat (one float per row of the result) into a single numpy array
-    and reshaped, not fetchall(): that built a Python list of 1024 Python
-    floats per ROI, and on a 575,796-row database spent 46 of a whole-table
-    similarity search's 49 seconds doing it. Flat, the load takes ~3.5 s.
-    Each ROI's values come out contiguous with its roi_index repeated
-    alongside, so the first of every `dim` roi_index values names its row --
-    checked against the last, so a ragged embedding can't silently misalign
-    every row after it.
+    Fetched with fetchnumpy, which hands each row's list over as one numpy
+    array, then stacked -- not fetchall(), which built a Python list of 1024
+    Python floats per ROI and, on a 575,796-row database, spent 46 of a
+    whole-table similarity search's 49 seconds doing it. ~2 s now for
+    540,938 rows of either column. An earlier version fetched one row per
+    float (``unnest``) and relied on each ROI's values coming out
+    contiguous; DuckDB doesn't promise that, and for a column filled by a
+    bulk UPDATE (bioclip_embedding) they came out interleaved.
     """
-    query = "SELECT roi_index, unnest(embedding) AS value FROM predictions" + where_sql
-    flat = conn.execute(query, params).fetchnumpy()
-    values, row_ids = flat["value"], flat["roi_index"]
+    query = f"SELECT roi_index, {column} AS value FROM predictions" + where_sql
+    fetched = conn.execute(query, params).fetchnumpy()
+    row_ids, values = fetched["roi_index"], fetched["value"]
     if len(values) == 0:
         return np.zeros(0, dtype=np.int64), np.zeros((0, dim), dtype=np.float32)
-    if len(values) % dim or not np.array_equal(row_ids[::dim], row_ids[dim - 1::dim]):
-        raise ValueError("embeddings of different lengths in one database -- re-run `mbariml embed --force`")
-    return np.asarray(row_ids[::dim]), np.asarray(values, dtype=np.float32).reshape(-1, dim)
+    try:
+        matrix = np.stack(values).astype(np.float32, copy=False)
+    except ValueError:
+        matrix = None
+    if matrix is None or matrix.shape[1] != dim:
+        raise ValueError(f"{column} values of different lengths in one database -- re-run `{embed_command_for(column)} --force`")
+    return np.asarray(row_ids), matrix
 
 
 # Not in SORT_COLUMNS: no SQL expression can rank this, so it's computed in
@@ -744,16 +768,17 @@ def compute_outlier_order(
         return []
     label_of = dict(zip(pool_ids.tolist(), pool["effective_label"].tolist()))
 
-    dim_row = conn.execute("SELECT len(embedding) FROM predictions WHERE embedding IS NOT NULL LIMIT 1").fetchone()
+    column = similarity_embedding_column(conn)
+    dim_row = conn.execute(f"SELECT len({column}) FROM predictions WHERE {column} IS NOT NULL LIMIT 1").fetchone()
     score: dict[int, float] = {}
     if dim_row is not None:
         emb_where, emb_params = _build_similarity_pool_where(
             label_filter, "effective",
             exclude_verified=exclude_verified, exclude_unverified=exclude_unverified,
             min_confidence=min_confidence, max_confidence=max_confidence,
-            require_embedding=True, roi_indices=roi_indices,
+            require_embedding=True, roi_indices=roi_indices, embedding_column=column,
         )
-        indices, matrix = _embedding_matrix(conn, emb_where, emb_params, dim_row[0])
+        indices, matrix = _embedding_matrix(conn, emb_where, emb_params, dim_row[0], column)
         if len(indices):
             matrix -= matrix.mean(axis=0)
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -969,6 +994,8 @@ __all__ = [
     "fetch_known_labels",
     "fetch_effective_labels",
     "compute_similarity_order",
+    "similarity_embedding_column",
+    "embed_command_for",
     "compute_outlier_order",
     "OUTLIER_SORT_OPTION",
     "count_similarity_pool",

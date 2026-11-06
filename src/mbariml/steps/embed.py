@@ -66,6 +66,16 @@ Half precision is not an option: fp16 overflows to NaN in DINOv3, and bf16
 is only ~19% faster while moving embeddings off their fp32 values (cosine
 down to 0.996), which must not be mixed into a database embedded in fp32.
 
+BioCLIP-2 (``--model bioclip2``, ``imageomics/bioclip-2`` via open_clip,
+768-d) goes into its own column, ``bioclip_embedding``, next to DINOv3's
+``embedding``; review's similarity search and "Outliers in label" use it
+wherever a database has it. Trained on the tree of life, it separated
+deep-sea taxa better: on Coral Observatory crops, a 20-nearest-neighbour
+vote out of other days scored 0.622 macro accuracy against DINOv3's 0.585.
+Each crop is resized to 224x224 as a whole (bicubic) rather than the
+model's default resize-then-centre-crop, which cuts the ends off long, thin
+animals; the two differed by cosine down to 0.83 on elongated crops.
+
 IMPORTANT: embeddings from different backbones are not comparable. If you
 switch ``EMBEDDING_MODEL_NAME`` (or re-run this after a previous run used a
 different model), re-embed the *whole* database with ``--force`` -- do not
@@ -95,13 +105,16 @@ app = typer.Typer(help="Generate embeddings for ROIs stored as blobs in the data
 logger = get_logger(__name__)
 
 EMBEDDING_MODEL_NAME = "vit_large_patch16_dinov3.lvd1689m"
+BIOCLIP_MODEL_NAME = "hf-hub:imageomics/bioclip-2"
+# --model -> the predictions column its embeddings go in
+EMBEDDING_COLUMNS = {"dinov3": "embedding", "bioclip2": "bioclip_embedding"}
 
 
-@lru_cache(maxsize=1)
-def _load_embedding_model():
-    import timm
+@lru_cache(maxsize=2)
+def _load_embedding_model(model_key: str = "dinov3"):
+    """(forward, preprocess, device) for *model_key*, loaded once:
+    ``forward(batch)`` gives the embeddings of a preprocessed batch."""
     import torch
-    from timm.data import create_transform, resolve_data_config
 
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -112,6 +125,25 @@ def _load_embedding_model():
     else:
         device = torch.device("cpu")
         logger.info("Using CPU backend for embeddings (no GPU available) -- this will be slow.")
+
+    if model_key == "bioclip2":
+        import open_clip
+        from torchvision import transforms
+
+        logger.info("Loading embedding model: %s", BIOCLIP_MODEL_NAME)
+        model, _, _ = open_clip.create_model_and_transforms(BIOCLIP_MODEL_NAME)
+        model.eval()
+        model.to(device)
+        # The whole crop squeezed to 224x224 -- see the module docstring.
+        preprocess = transforms.Compose([
+            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize(open_clip.OPENAI_DATASET_MEAN, open_clip.OPENAI_DATASET_STD),
+        ])
+        return model.encode_image, preprocess, device
+
+    import timm
+    from timm.data import create_transform, resolve_data_config
 
     logger.info("Loading embedding model: %s", EMBEDDING_MODEL_NAME)
     model = timm.create_model(EMBEDDING_MODEL_NAME, pretrained=True, num_classes=0)
@@ -124,7 +156,7 @@ def _load_embedding_model():
     return model, preprocess, device
 
 
-def embed_roi_bgr(roi_bgr: np.ndarray) -> list[float]:
+def embed_roi_bgr(roi_bgr: np.ndarray, model_key: str = "dinov3") -> list[float]:
     """Compute one embedding for an already-decoded BGR ROI crop.
 
     The single-item counterpart to the batched pipeline below -- used by the
@@ -140,11 +172,11 @@ def embed_roi_bgr(roi_bgr: np.ndarray) -> list[float]:
     from PIL import Image
     import torch
 
-    model, preprocess, device = _load_embedding_model()
+    forward, preprocess, device = _load_embedding_model(model_key)
     rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
     tensor = preprocess(Image.fromarray(rgb)).unsqueeze(0).to(device)
     with torch.no_grad():
-        embedding = model(tensor).cpu().numpy()[0]
+        embedding = forward(tensor).float().cpu().numpy()[0]
     return embedding.tolist()
 
 
@@ -156,7 +188,7 @@ def _decode_roi(roi_blob: bytes) -> np.ndarray:
     return cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
 
 
-def _decode_and_preprocess_safe(roi_blob: bytes):
+def _decode_and_preprocess_safe(roi_blob: bytes, model_key: str = "dinov3"):
     """Decode one ROI and run it through the model's preprocessing transform,
     catching (rather than raising) any failure so one bad blob can't blow up
     the whole batch via executor.map. Pure CPU work with no GPU/model-state
@@ -165,13 +197,13 @@ def _decode_and_preprocess_safe(roi_blob: bytes):
     from PIL import Image
 
     try:
-        _, preprocess, _ = _load_embedding_model()
+        _, preprocess, _ = _load_embedding_model(model_key)
         return preprocess(Image.fromarray(_decode_roi(roi_blob))), None
     except Exception as exc:
         return None, exc
 
 
-def _prepare_batch(chunk: list[tuple], executor: ThreadPoolExecutor) -> tuple[list, list, int]:
+def _prepare_batch(chunk: list[tuple], executor: ThreadPoolExecutor, model_key: str = "dinov3") -> tuple[list, list, int]:
     """Decode + preprocess a batch's ROI blobs in parallel across `executor`'s
     threads. Returns (tensors, ids, num_failed), with per-item failures
     logged and excluded rather than aborting the whole batch."""
@@ -181,7 +213,8 @@ def _prepare_batch(chunk: list[tuple], executor: ThreadPoolExecutor) -> tuple[li
     tensors = []
     ok_ids = []
     failed = 0
-    for roi_id, (tensor, exc) in zip(ids, executor.map(_decode_and_preprocess_safe, blobs)):
+    results = executor.map(_decode_and_preprocess_safe, blobs, [model_key] * len(blobs))
+    for roi_id, (tensor, exc) in zip(ids, results):
         if exc is not None:
             failed += 1
             logger.error("Error decoding/preprocessing ROI id=%s; leaving embedding NULL", roi_id, exc_info=exc)
@@ -194,7 +227,7 @@ def _prepare_batch(chunk: list[tuple], executor: ThreadPoolExecutor) -> tuple[li
 _PREFETCH_BATCHES = 4  # decoded batches kept ready ahead of the GPU
 
 
-def _prefetch_batches(conn, ids: list[int], batch_size: int, executor: ThreadPoolExecutor):
+def _prefetch_batches(conn, ids: list[int], batch_size: int, executor: ThreadPoolExecutor, model_key: str = "dinov3"):
     """Yield ``(rows in batch, tensors, ok_ids, num_failed)`` per batch, with a
     background thread reading and decoding up to _PREFETCH_BATCHES batches
     ahead so the GPU never waits on the CPU.
@@ -218,7 +251,7 @@ def _prefetch_batches(conn, ids: list[int], batch_size: int, executor: ThreadPoo
                 chunk = cursor.execute(
                     "SELECT id, roi FROM predictions WHERE id IN (SELECT unnest(?)) ORDER BY id", [batch_ids]
                 ).fetchall()
-                tensors, ok_ids, n_failed = _prepare_batch(chunk, executor)
+                tensors, ok_ids, n_failed = _prepare_batch(chunk, executor, model_key)
                 ready.put((len(batch_ids), tensors, ok_ids, n_failed + len(batch_ids) - len(chunk)))
         except BaseException as exc:  # handed to the consumer, which re-raises it
             ready.put(exc)
@@ -242,23 +275,23 @@ def _prefetch_batches(conn, ids: list[int], batch_size: int, executor: ThreadPoo
         thread.join()
 
 
-def _run_forward_pass(tensors: list) -> np.ndarray:
+def _run_forward_pass(tensors: list, model_key: str = "dinov3") -> np.ndarray:
     """Run one forward pass over an already-preprocessed batch. Must be
     called from the main thread only -- GPU/MPS work isn't thread-parallel
     like the CPU preprocessing above."""
     import torch
 
-    model, _, device = _load_embedding_model()
+    forward, _, device = _load_embedding_model(model_key)
     batch = torch.stack(tensors).to(device)
     with torch.no_grad():
-        return model(batch).cpu().numpy()
+        return forward(batch).float().cpu().numpy()
 
 
-def _flush_pending(conn, pending: list[tuple]) -> None:
+def _flush_pending(conn, pending: list[tuple], column: str = "embedding") -> None:
     """Apply accumulated (id, embedding) pairs with ONE bulk UPDATE instead
     of one UPDATE per row/batch -- see the module docstring for why this
     matters (a lot) on DuckDB specifically."""
-    db.bulk_update(conn, "predictions", "id", "INTEGER", {"embedding": "FLOAT[]"}, pending)
+    db.bulk_update(conn, "predictions", "id", "INTEGER", {column: "FLOAT[]"}, pending)
 
 
 @app.command()
@@ -282,8 +315,15 @@ def embed(
         False, help="Recompute embeddings even for ROIs that already have one. "
         "Required after changing EMBEDDING_MODEL_NAME -- never mix embeddings from two different models in one database."
     ),
+    model: str = typer.Option(
+        "dinov3", help="dinov3 (the 'embedding' column; clustering and refine use it) or bioclip2 "
+        "(the 'bioclip_embedding' column; review's similarity search and outlier sort use it when present)."
+    ),
 ) -> None:
     """Generate embeddings for ROIs stored as blobs in the database and update the database."""
+    if model not in EMBEDDING_COLUMNS:
+        raise typer.BadParameter(f"--model must be one of {', '.join(EMBEDDING_COLUMNS)}")
+    column = EMBEDDING_COLUMNS[model]
     if decode_workers <= 0:
         decode_workers = min(16, os.cpu_count() or 4)
 
@@ -299,34 +339,36 @@ def embed(
     torch.set_num_threads(1)
 
     with db.connect(db_path, must_exist=True) as conn:
-        query = "SELECT id FROM predictions" if force else "SELECT id FROM predictions WHERE embedding IS NULL"
+        db.ensure_column(conn, "predictions", column, "FLOAT[]")
+        query = "SELECT id FROM predictions" if force else f"SELECT id FROM predictions WHERE {column} IS NULL"
         query += " ORDER BY id"  # sorted writes are much faster on DuckDB than unsorted ones
         if limit:
             query += f" LIMIT {int(limit)}"
         ids = [row[0] for row in conn.execute(query).fetchall()]
 
         if not ids:
-            logger.info("No ROIs without an embedding found in %s; nothing to do (use --force to recompute anyway).", db_path)
+            logger.info("No ROIs without a %s embedding found in %s; nothing to do (use --force to recompute anyway).", model, db_path)
             return
 
         logger.info(
-            "Embedding %d ROI(s) from %s using %s (batch size %d, %d decode workers, flush every %d)",
-            len(ids), db_path, EMBEDDING_MODEL_NAME, batch_size, decode_workers, flush_size,
+            "Embedding %d ROI(s) from %s using %s into %s (batch size %d, %d decode workers, flush every %d)",
+            len(ids), db_path, BIOCLIP_MODEL_NAME if model == "bioclip2" else EMBEDDING_MODEL_NAME, column,
+            batch_size, decode_workers, flush_size,
         )
-        _load_embedding_model()  # load once on the main thread before any worker touches the cache
+        _load_embedding_model(model)  # load once on the main thread before any worker touches the cache
 
         succeeded = 0
         failed = 0
         pending: list[tuple] = []
         with ThreadPoolExecutor(max_workers=decode_workers) as executor:
-            batches = _prefetch_batches(conn, ids, batch_size, executor)
+            batches = _prefetch_batches(conn, ids, batch_size, executor, model)
             with tqdm(total=len(ids), desc="Generating embeddings") as progress:
                 for n_rows, tensors, ok_ids, n_failed in batches:
                     failed += n_failed
 
                     if tensors:
                         try:
-                            embeddings = _run_forward_pass(tensors)
+                            embeddings = _run_forward_pass(tensors, model)
                             pending.extend((ok_ids[j], embeddings[j].tolist()) for j in range(len(ok_ids)))
                             succeeded += len(ok_ids)
                         except Exception:
@@ -336,10 +378,10 @@ def embed(
                     progress.update(n_rows)
 
                     if len(pending) >= flush_size:
-                        _flush_pending(conn, pending)
+                        _flush_pending(conn, pending, column)
                         pending = []
 
-            _flush_pending(conn, pending)  # apply whatever's left after the last full flush
+            _flush_pending(conn, pending, column)  # apply whatever's left after the last full flush
 
     logger.info("Done: %d embedded, %d failed", succeeded, failed)
     if failed:

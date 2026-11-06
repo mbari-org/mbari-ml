@@ -199,7 +199,7 @@ def insert_roi(
     return next_id
 
 
-def set_embedding(conn: duckdb.DuckDBPyConnection, roi_index: int, embedding: list[float]) -> None:
+def set_embedding(conn: duckdb.DuckDBPyConnection, roi_index: int, embedding: list[float], column: str = "embedding") -> None:
     """Store a freshly-computed embedding for one ROI.
 
     Used by the review GUI once its background embedding worker finishes
@@ -211,8 +211,12 @@ def set_embedding(conn: duckdb.DuckDBPyConnection, roi_index: int, embedding: li
     happens one ROI at a time as each box is drawn, not in a batch worth
     ``mbariml.db.bulk_update``'s staged-bulk-UPDATE treatment (what
     ``mbariml embed`` itself uses for exactly that batched case).
+    *column* is ``embedding`` (DINOv3) or ``bioclip_embedding`` (BioCLIP-2) --
+    one of mbariml.steps.embed.EMBEDDING_COLUMNS, never user input.
     """
-    conn.execute("UPDATE predictions SET embedding = ? WHERE roi_index = ?", (embedding, roi_index))
+    if column not in ("embedding", "bioclip_embedding"):
+        raise ValueError(f"not an embedding column: {column!r}")
+    conn.execute(f"UPDATE predictions SET {column} = ? WHERE roi_index = ?", (embedding, roi_index))
 
 
 def update_bbox(
@@ -227,7 +231,8 @@ def update_bbox(
 ) -> None:
     """Persist an edited box's geometry and its regenerated ROI crop.
 
-    Also clears the row's embedding: it described the old crop, so similarity
+    Also clears the row's embeddings (DINOv3's, and BioCLIP-2's where the
+    database has that column): they described the old crop, so similarity
     search and clustering would otherwise keep placing the box by what it
     used to contain. The review GUI recomputes it right after, in the
     background (see ``MainWindow._start_embedding``); if that ever fails,
@@ -248,6 +253,8 @@ def update_bbox(
         """,
         (x_min, y_min, x_max, y_max, roi_blob, sharpness, roi_index),
     )
+    if db.has_column(conn, "bioclip_embedding"):
+        conn.execute("UPDATE predictions SET bioclip_embedding = NULL WHERE roi_index = ?", (roi_index,))
 
 
 __all__ = ["apply_label", "set_verified", "label_animals", "set_animals_verified", "delete_animals", "delete_rois", "insert_roi", "set_embedding", "update_bbox"]

@@ -79,6 +79,28 @@ events and only hears key presses, not text from the macOS input method.
 The fields now complete from every edit themselves (the first label starting
 with what you typed, filled in and selected; Backspace removes it).
 
+**BioCLIP-2 embeddings for similarity search.** `mbariml embed DB --model
+bioclip2` stores BioCLIP-2 (`imageomics/bioclip-2`) embeddings in a new
+`bioclip_embedding` column next to DINOv3's. On Coral Observatory crops a
+20-nearest-neighbour vote from other days scored 0.622 macro accuracy with
+BioCLIP-2 against 0.585 with DINOv3, so review's Find similar and Outliers in
+label use it wherever a database has it, and boxes drawn or edited in review
+are embedded with both models. Crops are resized to 224x224 whole: the
+model's own resize-then-centre-crop cut the ends off long animals and moved
+their embeddings to cosine 0.83. ~107 ROIs/s on an M3 Ultra (MPS).
+Clustering and refine still use DINOv3.
+
+**Find similar ranks what you're browsing.** With a list open, right-click
+Find similar now ranks every page of the list (it ranked the whole database,
+so the list's look-alikes were mixed with every verified box elsewhere);
+Find similar in whole database is the way past it.
+
+**Embedding loads no longer depend on row order.** Similarity search read
+embeddings one float per result row and assumed each ROI's values came out
+together; DuckDB doesn't promise that, and for a column filled by a bulk
+UPDATE they came out interleaved, which the length check caught. Now each
+row's list is fetched whole and stacked: ~2 s for 540,938 rows, as before.
+
 **Sharpen checkbox.** Next to Contrast: an adaptive unsharp mask on the tiles'
 lightness (Lab L) at the size they're shown, its radius following each crop's
 enlargement. Lightness only, so colour fringes and colour noise aren't

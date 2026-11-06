@@ -490,10 +490,12 @@ while preserving the human labels.
   to `animal` is found by `animal`, not by `trash`. The dropdown lists exactly
   the labels a search can find; `--label` on the command line filters the same
   way, and "Find similar" ranks within the search by the same rule.
-- **Right-click** a thumbnail → **Find similar** to rank **every ROI in the database** by
-  embedding similarity to that one (most similar first), respecting the
-  current `--label` filter, "Hide verified"/"Hide unverified" and the
-  confidence range if set. This is a whole-dataset re-ranking, not a re-ordering of the page
+- **Right-click** a thumbnail → **Find similar** to rank **every ROI you're
+  browsing** by embedding similarity to that one (most similar first): the
+  whole database, or the open list if there is one, within the current search,
+  "Hide verified"/"Hide unverified" and the confidence range if set. It compares
+  BioCLIP-2 embeddings when the database has them (`mbariml embed --model
+  bioclip2`; see Embeddings below), otherwise DINOv3's. This is a whole-dataset re-ranking, not a re-ordering of the page
   you're on: the closest matches are pulled onto page 1 from wherever in the
   database they were, and every following page continues down the same
   ranking. The status line says so explicitly — *"sorted by similarity to
@@ -530,10 +532,10 @@ while preserving the human labels.
   `suggested` or `note` column shown on each tile ("Polychaeta -> Actiniaria").
   Search works within the list, so one kind of fix at a time is search, Ctrl+A,
   type the label. Sort by sorts within the list too ("List order" is the
-  file's order); By animal leaves the list. Right-click **Find similar in
-  list** (or **...with same label**) ranks just the listed boxes; plain Find
-  similar still ranks the whole database, and Clear Similarity Sort comes back
-  to the list. Close List (or Escape) goes back to the sort you had before.
+  file's order); By animal leaves the list. Right-click **Find similar** (or
+  **...with same label**) ranks just the listed boxes, every page of the list;
+  **Find similar in whole database** reaches past it, and Clear Similarity
+  Sort comes back to the list. Close List (or Escape) goes back to the sort you had before.
 - **Sort by "Outliers in label"** goes label by label, the *least typical*
   ROIs of each first (furthest from the label's mean embedding). After a
   similarity search has shown you pages of look-alikes, this surfaces the
@@ -638,7 +640,8 @@ while preserving the human labels.
   to review) and shows up in the detail view right away; the grid picks it
   up shortly after via the normal page refresh. Its embedding is computed
   right after, in the background (the status line says so), using the exact
-  same DINOv3 model/preprocessing `mbariml embed` uses -- directly
+  same DINOv3 model/preprocessing `mbariml embed` uses (and BioCLIP-2's too,
+  when the database has that column) -- directly
   comparable to every other embedding in the database, so a new box is
   immediately usable by similarity search/clustering, not stuck with
   `embedding IS NULL` until someone remembers to run `mbariml embed`
@@ -764,6 +767,16 @@ peak memory went from 41 GB (every blob in the table held for the whole
 run) to under 5 GB, and `--limit` no longer reads the whole table first.
 Half precision doesn't help: fp16 overflows to NaN in DINOv3, and bf16 is
 only ~19% faster and moves embeddings away from their fp32 values.
+
+**BioCLIP-2** (`mbariml embed DB --model bioclip2`; `imageomics/bioclip-2`
+via open_clip, 768-d) is stored in its own column, `bioclip_embedding`, next to
+DINOv3's. Trained on the tree of life, it separates deep-sea taxa better: on
+Coral Observatory crops, a 20-nearest-neighbour vote from other days scored
+0.622 macro accuracy against DINOv3's 0.585. Review's **Find similar** and
+**Outliers in label** use it whenever a database has it, and boxes drawn or
+edited in review get both embeddings; clustering and `refine` still use
+DINOv3. Each crop is resized to 224x224 whole rather than centre-cropped, so
+the ends of long, thin animals aren't cut off. ~107 ROIs/s on an M3 Ultra.
 
 It's safe to interrupt and resume any time: `mbariml embed` only processes
 rows with `embedding IS NULL`, so re-running after a `Ctrl-C` (or a crash)

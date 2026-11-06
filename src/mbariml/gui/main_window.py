@@ -83,7 +83,7 @@ from mbariml.gui.selection_coordinator import MosaicSelectionCoordinator, Rubber
 from mbariml.image_quality import compute_sharpness
 from mbariml.logging_utils import get_logger
 from mbariml.paths import ImageLocator
-from mbariml.steps.embed import embed_roi_bgr
+from mbariml.steps.embed import EMBEDDING_COLUMNS, embed_roi_bgr
 from mbariml import video
 
 logger = get_logger(__name__)
@@ -411,6 +411,10 @@ class MainWindow(QMainWindow):
         # dragged twice in quick succession starts two workers, and the older
         # result must not overwrite the newer one if it happens to land last.
         self._embed_generation: dict[int, int] = {}
+        # Models a new or edited box is embedded with: DINOv3 always, and
+        # BioCLIP-2 too once the database has its column (`mbariml embed
+        # --model bioclip2`), so similarity search can find the box.
+        self._embed_models = ["dinov3"] + (["bioclip2"] if db.has_column(self.conn, "bioclip_embedding") else [])
         # (message, message once done, ROIs still embedding) -- see _show_embedding_status.
         self._embed_status: tuple[str, str, set[int]] | None = None
 
@@ -1151,10 +1155,12 @@ class MainWindow(QMainWindow):
                 note = self._box_list_notes.get(rect_widget.roi_index)
                 if note:  # in place of the original-label line, so keep that label in it
                     rect_widget.caption = f"{rect_widget.row.original_label or ''} -> {note}"
+                # Find similar (the tile's own entries) ranks the list; these reach past it.
                 rect_widget.menu_actions = [
-                    ("Find similar in list", lambda rw=rect_widget: self._on_similarity_sort_requested(rw, False, True)),
-                    ("Find similar in list with same label",
-                     lambda rw=rect_widget: self._on_similarity_sort_requested(rw, True, True)),
+                    ("Find similar in whole database",
+                     lambda rw=rect_widget: self._on_similarity_sort_requested(rw, False, False)),
+                    ("Find similar in whole database with same label",
+                     lambda rw=rect_widget: self._on_similarity_sort_requested(rw, True, False)),
                 ]
         if self._in_animal_grid():
             for rect_widget in self._rect_widgets:
@@ -2033,21 +2039,22 @@ class MainWindow(QMainWindow):
         if roi_bgr is None:
             logger.warning("ROI #%s has no crop to embed (degenerate box); leaving embedding NULL.", roi_index)
             return
-        worker = Worker(self._embed_roi_worker, roi_index, generation, roi_bgr)
+        worker = Worker(self._embed_roi_worker, roi_index, generation, roi_bgr, list(self._embed_models))
         worker.signals.result.connect(self._on_roi_embedded)
         worker.signals.error.connect(self._on_roi_embed_error)
         self._start_worker(worker, self._gpu_pool)
 
     @staticmethod
-    def _embed_roi_worker(roi_index: int, generation: int, roi_bgr) -> tuple[int, int, list[float]]:
-        """Compute one embedding off the GUI thread -- the first call in a
-        session loads (and caches) the DINOv3 model, which can take a while
+    def _embed_roi_worker(roi_index: int, generation: int, roi_bgr, models: list[str]) -> tuple[int, int, dict]:
+        """Compute one box's embeddings ({column: vector}, one per model in
+        *models*) off the GUI thread -- the first call in a session loads
+        (and caches) each model, which can take a while
         (weight download on a fresh machine, then loading it onto the
         GPU/MPS device); every call after that is fast. See
         mbariml.steps.embed.embed_roi_bgr for the model/preprocessing
         itself, shared with `mbariml embed` so embeddings computed here are
         directly comparable to every other embedding in the database."""
-        return roi_index, generation, embed_roi_bgr(roi_bgr)
+        return roi_index, generation, {EMBEDDING_COLUMNS[m]: embed_roi_bgr(roi_bgr, m) for m in models}
 
     def _show_embedding_status(self, text: str, done_text: str, roi_indices) -> None:
         """Show *text* while the embeddings of *roi_indices* are computed, then
@@ -2060,11 +2067,12 @@ class MainWindow(QMainWindow):
     def _on_roi_embedded(self, payload) -> None:
         if self._closing:
             return
-        roi_index, generation, embedding = payload
+        roi_index, generation, embeddings = payload
         if self._embed_generation.get(roi_index) != generation:
             return  # the box changed again since; a newer embedding is on its way
         try:
-            annotation_service.set_embedding(self.conn, roi_index, embedding)
+            for column, embedding in embeddings.items():
+                annotation_service.set_embedding(self.conn, roi_index, embedding, column)
         except Exception:
             logger.exception("Error saving embedding for ROI #%s", roi_index)
             self.status_label.setText(f"ROI #{roi_index} saved, but its embedding failed to save -- see log.")
@@ -2086,7 +2094,8 @@ class MainWindow(QMainWindow):
         self._embed_status = None
         self.status_label.setText(
             "Box saved, but computing its embedding failed -- see log. "
-            "Run `mbariml embed` later to fill it in."
+            + ("Run `mbariml embed` and `mbariml embed --model bioclip2` later to fill it in."
+               if "bioclip2" in self._embed_models else "Run `mbariml embed` later to fill it in.")
         )
 
     # -- SAM3 (optional) -----------------------------------------------------------
@@ -2368,12 +2377,17 @@ class MainWindow(QMainWindow):
                                     f"Tightened {n} box(es) and recomputed their embeddings.", proposals)
 
     def _on_similarity_sort_requested(
-        self, rect_widget: RectWidget, same_label_only: bool, in_list: bool = False
+        self, rect_widget: RectWidget, same_label_only: bool, in_list: bool | None = None
     ) -> None:
-        """Right-click menu action: re-rank every ROI (optionally restricted to
-        the clicked tile's own label) by embedding similarity to it. *in_list*:
-        only the boxes of the open list ("Find similar in list")."""
+        """Right-click menu action: re-rank every ROI you're browsing --
+        every page of it, within the current search, Hide verified/unverified,
+        confidence range and open list (optionally only the clicked tile's own
+        label) -- by embedding similarity to it, most similar first on page 1.
+        *in_list* None: the open list if there is one; False: the whole
+        database ("Find similar in whole database")."""
         roi_index = rect_widget.roi_index
+        if in_list is None:
+            in_list = self._box_list is not None
         roi_indices = self._box_list if in_list else None
         if same_label_only:
             # The clicked tile's effective label -- new_label if it has one,
@@ -2458,7 +2472,9 @@ class MainWindow(QMainWindow):
         roi_index, order, pool_total, in_list = payload
         if order is None:
             QMessageBox.warning(
-                self, "No Embedding", f"ROI #{roi_index} has no embedding yet -- run `mbariml embed` first."
+                self, "No Embedding",
+                f"ROI #{roi_index} has no embedding yet -- run "
+                f"`{query_service.embed_command_for(query_service.similarity_embedding_column(self.conn))}` first."
             )
             self.update_status_bar()
             return
@@ -2477,8 +2493,8 @@ class MainWindow(QMainWindow):
         if pool_total > len(order):
             logger.warning(
                 "%d ROI(s) matching this search have no embedding and could not be ranked -- "
-                "run `mbariml embed` on this database to include them.",
-                pool_total - len(order),
+                "run `%s` on this database to include them.",
+                pool_total - len(order), query_service.embed_command_for(query_service.similarity_embedding_column(self.conn)),
             )
         self.load_page()
 
