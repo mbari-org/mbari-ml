@@ -296,18 +296,29 @@ class RectWidget(QtWidgets.QGraphicsWidget):
     def _adjusted(self, roi: np.ndarray) -> np.ndarray:
         """Apply the current display brightness/contrast to a thumbnail.
 
-        Contrast pivots around mid-grey (128) rather than around black:
-        ``cv2.convertScaleAbs``'s plain ``alpha * pixel + beta`` scales about
-        zero, so raising contrast would also wash the whole tile brighter and
-        the two sliders would fight each other. Folding ``128 * (1 - alpha)``
-        into beta keeps mid-grey fixed, so contrast stretches the range about
-        the middle and brightness alone shifts it -- which is what makes them
-        usable as two independent controls.
+        Both act on lightness only (Lab L, 0-255 units) and leave colour
+        alone. Contrast pivots on the thumbnail's own mean lightness, so it
+        spreads light and dark apart without making the tile as a whole
+        darker or brighter, and brightness alone shifts it -- two independent
+        controls.
+
+        It used to scale each of B, G and R about mid-grey (128). That also
+        stretched the differences between channels, so contrast raised
+        saturation (~40% at 1.5x) and pushed dim, warm areas toward red;
+        channels clipping at different levels shifted hue; and since most
+        footage is far darker than 128, more contrast mainly darkened it (on
+        ROV frames 1.5x even narrowed the visible lightness range) and turned
+        black borders grey.
         """
         if self._brightness == 0 and self._contrast == 1.0:
             return roi  # neutral: don't pay for a no-op conversion
-        beta = 128.0 * (1.0 - self._contrast) + self._brightness
-        return cv2.convertScaleAbs(roi, alpha=self._contrast, beta=beta)
+        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+        light = lab[:, :, 0].astype(np.float32)
+        pivot = float(light.mean())
+        lab[:, :, 0] = np.clip(
+            (light - pivot) * self._contrast + pivot + self._brightness + 0.5, 0, 255
+        ).astype(np.uint8)
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
     def set_display_adjustment(self, brightness: int, contrast: float, sharpen: bool = False) -> None:
         """Re-render this tile's thumbnail at a new brightness/contrast/sharpen.

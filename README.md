@@ -556,8 +556,9 @@ while preserving the human labels.
 - **Brightness / Contrast sliders** (below the tile-size slider) adjust the
   ROI thumbnails across the whole grid — faint animals against sediment, or
   low-contrast crops from deep footage, are often far easier to identify
-  stretched than at native exposure. Contrast pivots around mid-grey, so the
-  two sliders act independently rather than fighting each other, and
+  stretched than at native exposure. Both change lightness only, never
+  colour; contrast pivots on each tile's own mean lightness, so the two
+  sliders act independently rather than fighting each other, and
   **Reset** returns both to neutral (and turns Sharpen and Fix colour fringes
   off). View-only: the
   stored ROI is never modified, so this changes nothing you export.

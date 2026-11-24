@@ -63,6 +63,18 @@ leaves the list, since an animal's actions reach boxes outside it). Right-click
 or Escape returns to the sort from before. For lists other tools write, such
 as a sweep for mislabelled verified boxes.
 
+**Brightness and contrast change lightness only.** They scaled B, G and R
+separately about mid-grey (128), which stretched the differences between
+channels too: contrast also raised saturation (~40% at 1.5x on ROV frames)
+and pushed dim, warm areas toward red (mean a* -0.4 -> +2.4, b* +3.1 -> +10.6
+on colour-corrected Coral Observatory frames), channels clipping at different
+levels shifted hue, and since most footage is far darker than 128, more
+contrast mainly darkened it -- on ROV frames 1.5x narrowed the 5-95% lightness
+range (28.7 -> 23.4) -- and turned black borders grey. Both now act on Lab
+lightness, with contrast pivoting on the tile's own mean lightness: at 1.5x
+the range widens (ROV 28.7 -> 36.0, Coral Observatory 41 -> 62) with colour
+unchanged.
+
 **Colour correction works on what you can see.** Each corrected tile needs
 its whole source frame measured (~80 ms for a 6720x4480 JPEG), and turning
 correction on re-did every tile on the page: 500 tiles from 500 frames, ~40 s
